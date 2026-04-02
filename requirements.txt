@@ -1,0 +1,23 @@
+# Required Python packages for Migration Analysis Tool
+
+# GUI
+tkinter-tools>=0.1.0; platform_system == "Linux"
+
+# Excel/Spreadsheet handling
+openpyxl>=3.1.0
+
+# Image processing (for GUI)
+Pillow>=10.0.0
+
+# HTTP requests (for RTC REST API)
+requests>=2.31.0
+
+# AI Integration (Optional)
+google-generativeai>=0.3.0  # For Gemini AI
+openai>=1.0.0  # For OpenAI GPT
+
+# Windows-specific proxy authentication (Optional)
+requests-ntlm>=1.2.0; platform_system == "Windows"
+
+# Additional utilities
+python-dateutil>=2.8.2
