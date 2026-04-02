@@ -58,3 +58,47 @@ PROXY_PASS = os.environ.get("PROXY_PASS", "")  # leave empty → prompted on fir
 
 # In-memory cache so we only prompt once per session
 _proxy_cred_cache = {}
+
+# ---------------------------------------------------------------------------
+# Performance Optimization Configuration
+# ---------------------------------------------------------------------------
+# Maximum number of concurrent threads for parallel processing
+# Increase for faster baseline comparison (50 workers = near-instant)
+MAX_WORKERS = 50
+
+# Skip SCM CLI and use REST API directly for better performance
+# SCM CLI often times out (300s) on large snapshots
+# REST API is faster and more reliable
+SKIP_SCM_CLI = True
+
+# Enable lazy loading for tree views
+# Load tree children on-demand instead of all at once
+ENABLE_LAZY_LOAD = True
+
+# Batch size for UI updates (update UI every N items)
+# Higher = faster but less responsive visual feedback
+BATCH_SIZE = 500
+
+# Maximum number of threads for parallel directory scanning
+MAX_SCAN_THREADS = 4
+
+# Cache configuration
+ENABLE_FILE_COMPARISON_CACHE = True
+ENABLE_FOLDER_STRUCTURE_CACHE = True
+ENABLE_BASELINE_CACHE = True
+ENABLE_COMPONENT_COMPARISON_CACHE = True
+ENABLE_FILE_CONTENT_CACHE = True
+
+# Cache sizes (number of items)
+FILE_COMPARISON_CACHE_SIZE = 500
+FOLDER_STRUCTURE_CACHE_SIZE = 100
+BASELINE_CACHE_SIZE = 50
+COMPONENT_COMPARISON_CACHE_SIZE = 100
+FILE_CONTENT_CACHE_SIZE = 200
+
+# Cache TTL (time-to-live) in seconds
+CACHE_TTL_FILE_COMPARISON = 3600  # 1 hour
+CACHE_TTL_FOLDER_STRUCTURE = 1800  # 30 minutes
+CACHE_TTL_BASELINE = 7200  # 2 hours
+CACHE_TTL_COMPONENT_COMPARISON = 3600  # 1 hour
+CACHE_TTL_FILE_CONTENT = 3600  # 1 hour

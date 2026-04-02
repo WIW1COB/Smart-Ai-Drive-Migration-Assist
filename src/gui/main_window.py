@@ -3,6 +3,9 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import os
+import threading
+
+from src.utils.comparison_engine import compare_folders, cleanup_temp_dirs
 
 
 class MigrationAnalysisGUI:
@@ -191,7 +194,7 @@ class MigrationAnalysisGUI:
         button_frame = tk.Frame(self.root, bg="#EAF3FB")
         button_frame.pack(pady=20)
         
-        tk.Button(
+        self.compare_btn = tk.Button(
             button_frame,
             text="Start Comparison",
             bg="#003366",
@@ -200,7 +203,8 @@ class MigrationAnalysisGUI:
             width=20,
             height=2,
             command=self.start_comparison
-        ).pack()
+        )
+        self.compare_btn.pack()
     
     def create_progress_section(self):
         """Create progress display section"""
@@ -256,12 +260,129 @@ class MigrationAnalysisGUI:
     
     def start_comparison(self):
         """Start the comparison process"""
-        # TODO: Implement the actual comparison logic
-        # This should call the appropriate comparison functions from the core modules
-        messagebox.showinfo(
-            "Not Implemented",
-            "Comparison logic needs to be implemented.\nRefer to test.py for the complete implementation."
-        )
+        mode = self.comparison_mode.get()
+        
+        if mode == "folder":
+            # Get folder paths
+            folder1 = self.folder1_entry.get().strip()
+            folder2 = self.folder2_entry.get().strip()
+            
+            # Validate inputs
+            if not folder1 or not folder2:
+                messagebox.showerror(
+                    "Missing Input",
+                    "Please select both folders to compare."
+                )
+                return
+            
+            # Check if paths exist
+            if not (os.path.exists(folder1) and os.path.exists(folder2)):
+                messagebox.showerror(
+                    "Invalid Path",
+                    "One or both folder paths do not exist."
+                )
+                return
+            
+            # Show progress and start comparison in background thread
+            self.run_folder_comparison(folder1, folder2)
+        
+        else:  # snapshot mode
+            messagebox.showinfo(
+                "Not Implemented",
+                "Snapshot comparison will be implemented in the next update.\n"
+                "For now, please use Folder/ZIP Comparison mode."
+            )
+    
+    def run_folder_comparison(self, folder1, folder2):
+        """Run folder comparison in background thread"""
+        # Reset progress
+        self.progress_bar['value'] = 0
+        self.progress_label.config(text="Starting comparison...")
+        self.root.update()
+        
+        # Disable compare button during processing
+        self.compare_btn.config(state='disabled')
+        
+        # Progress callback
+        def update_progress(current, total, message):
+            percentage = int((current / total) * 100) if total > 0 else 0
+            self.progress_bar['value'] = percentage
+            self.progress_label.config(text=message)
+            self.root.update_idletasks()
+        
+        # RTC info (if enabled)
+        rtc_info = None
+        if self.rtc_enabled_var.get():
+            rtc_info = {
+                'enabled': True,
+                'username': None,  # TODO: Add credential dialog
+                'password': None,
+                'repository_path': folder2,
+                'workspace_name': None,
+                'stream_name': None
+            }
+        
+        # Run comparison in background thread
+        def comparison_thread():
+            try:
+                result = compare_folders(
+                    folder1,
+                    folder2,
+                    progress_callback=update_progress,
+                    custom_mappings=None,  # TODO: Add file mapping dialog
+                    rtc_info=rtc_info
+                )
+                
+                # Update UI on completion (must run in main thread)
+                self.root.after(0, lambda: self.on_comparison_complete(result))
+                
+            except Exception as e:
+                error_msg = f"Comparison failed: {str(e)}"
+                self.root.after(0, lambda: self.on_comparison_error(error_msg))
+        
+        thread = threading.Thread(target=comparison_thread, daemon=True)
+        thread.start()
+    
+    def on_comparison_complete(self, result):
+        """Handle comparison completion"""
+        self.compare_btn.config(state='normal')
+        
+        if result.get('success'):
+            # Show success message with report location
+            output_dir = result['report_paths']['output_dir']
+            csv_path = result['report_paths']['csv']
+            excel_path = result['report_paths']['excel']
+            
+            total_files = len(result['results'])
+            
+            message = (
+                f"✅ Comparison Complete!\n\n"
+                f"Total Files Compared: {total_files}\n\n"
+                f"Reports saved to:\n{output_dir}\n\n"
+                f"📊 Excel Report: {os.path.basename(excel_path)}\n"
+                f"📄 CSV Report: {os.path.basename(csv_path)}\n\n"
+                f"HTML diff files are also generated for modified files."
+            )
+            
+            self.progress_label.config(
+                text=f"✅ Done! {total_files} files compared. Reports saved to {output_dir}"
+            )
+            
+            messagebox.showinfo("Comparison Complete", message)
+            
+            # Clean up temp directories from ZIP extraction
+            if result.get('temp_dirs'):
+                cleanup_temp_dirs(result['temp_dirs'])
+        else:
+            error= result.get('error', 'Unknown error')
+            messagebox.showerror("Comparison Failed", f"Error: {error}")
+            self.progress_label.config(text=f"❌ Failed: {error}")
+    
+    def on_comparison_error(self, error_msg):
+        """Handle comparison error"""
+        self.compare_btn.config(state='normal')
+        self.progress_label.config(text=f"❌ Error occurred")
+        messagebox.showerror("Error", error_msg)
     
     def run(self):
         """Run the GUI application"""
