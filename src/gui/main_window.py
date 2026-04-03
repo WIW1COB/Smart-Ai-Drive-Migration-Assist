@@ -6,6 +6,7 @@ import os
 import threading
 
 from src.utils.comparison_engine import compare_folders, cleanup_temp_dirs
+from src.gui.results_viewer import show_results_dialog
 
 
 class MigrationAnalysisGUI:
@@ -348,33 +349,42 @@ class MigrationAnalysisGUI:
         self.compare_btn.config(state='normal')
         
         if result.get('success'):
-            # Show success message with report location
-            output_dir = result['report_paths']['output_dir']
-            csv_path = result['report_paths']['csv']
-            excel_path = result['report_paths']['excel']
-            
-            total_files = len(result['results'])
-            
-            message = (
-                f"✅ Comparison Complete!\n\n"
-                f"Total Files Compared: {total_files}\n\n"
-                f"Reports saved to:\n{output_dir}\n\n"
-                f"📊 Excel Report: {os.path.basename(excel_path)}\n"
-                f"📄 CSV Report: {os.path.basename(csv_path)}\n\n"
-                f"HTML diff files are also generated for modified files."
-            )
-            
+            # Hide progress widgets temporarily
+            self.progress_bar['value'] = 100
             self.progress_label.config(
-                text=f"✅ Done! {total_files} files compared. Reports saved to {output_dir}"
+                text=f"✅ Comparison complete! Showing results..."
             )
+            self.root.update()
             
-            messagebox.showinfo("Comparison Complete", message)
+            # Show interactive results dialog
+            try:
+                show_results_dialog(
+                    self.root,
+                    result['results'],
+                    result['folder1_display'],
+                    result['folder2_display'],
+                    result['folder1'],
+                    result['folder2'],
+                    result['files1'],
+                    result['files2'],
+                    result['report_paths']
+                )
+            except Exception as e:
+                messagebox.showerror("Error", f"Error showing results: {str(e)}")
             
             # Clean up temp directories from ZIP extraction
             if result.get('temp_dirs'):
                 cleanup_temp_dirs(result['temp_dirs'])
+            
+            # Show final success message
+            output_dir = result['report_paths']['output_dir']
+            total_files = len(result['results'])
+            
+            self.progress_label.config(
+                text=f"✅ Done! {total_files} files compared. Reports saved to:\n{output_dir}"
+            )
         else:
-            error= result.get('error', 'Unknown error')
+            error = result.get('error', 'Unknown error')
             messagebox.showerror("Comparison Failed", f"Error: {error}")
             self.progress_label.config(text=f"❌ Failed: {error}")
     

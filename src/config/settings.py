@@ -38,7 +38,7 @@ SNAPSHOT2_URL = None
 # Google Gemini Flash — FREE AI model used for AI Smart Merge
 # Get a FREE key (no credit card) at: https://aistudio.google.com/app/apikey
 # Sign in with any Google account → "Create API key" → paste below
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyD2TwpunJMKwCRsDh97-IqYsTWd__1W-UY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyA7WYR7WHYS6qHd45kIh3o2LuQjTJbwTzQ")
 
 # OpenAI GPT-4o-mini — used to enhance AI Suggest (optional; heuristics work without it)
 # Get your key at: https://platform.openai.com/api-keys
