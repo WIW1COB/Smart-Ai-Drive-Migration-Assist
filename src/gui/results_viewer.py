@@ -55,7 +55,7 @@ class ComparisonResultsDialog:
         # Create dialog
         self.dialog = tk.Toplevel(parent)
         self.dialog.title("Comparison Results - Interactive Viewer with AI")
-        self.dialog.geometry("1600x900")
+        self.dialog.geometry("1600x1000")
         self.dialog.configure(bg="#f0f4f7")
         self.dialog.grab_set()  # Modal
         
@@ -438,8 +438,12 @@ class ComparisonResultsDialog:
         button_frame = tk.Frame(self.dialog, bg="#f0f4f7")
         button_frame.pack(fill="x", padx=10, pady=10)
         
+        # Button row 1: Report operations
+        button_row1 = tk.Frame(button_frame)
+        button_row1.pack(fill="x", padx=5, pady=3)
+        
         tk.Button(
-            button_frame,
+            button_row1,
             text="📁 Open Reports Folder",
             command=self.open_reports_folder,
             bg="#1976D2",
@@ -450,7 +454,7 @@ class ComparisonResultsDialog:
         ).pack(side="left", padx=5)
         
         tk.Button(
-            button_frame,
+            button_row1,
             text="📊 Open Excel Report",
             command=self.open_excel_report,
             bg="#27ae60",
@@ -461,7 +465,7 @@ class ComparisonResultsDialog:
         ).pack(side="left", padx=5)
         
         tk.Button(
-            button_frame,
+            button_row1,
             text="📄 Open CSV Report",
             command=self.open_csv_report,
             bg="#f39c12",
@@ -472,7 +476,7 @@ class ComparisonResultsDialog:
         ).pack(side="left", padx=5)
         
         tk.Button(
-            button_frame,
+            button_row1,
             text="✕ Close",
             command=self.dialog.destroy,
             bg="#c62828",
@@ -481,6 +485,32 @@ class ComparisonResultsDialog:
             padx=20,
             pady=8
         ).pack(side="right", padx=5)
+        
+        # Button row 2: Analysis operations
+        button_row2 = tk.Frame(button_frame)
+        button_row2.pack(fill="x", padx=5, pady=3)
+        
+        tk.Button(
+            button_row2,
+            text="🔍 Interface Differences",
+            command=self.show_interface_diff,
+            bg="#9C27B0",
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+            padx=15,
+            pady=8
+        ).pack(side="left", padx=5)
+        
+        tk.Button(
+            button_row2,
+            text="🔬 Interface Analysis Tool",
+            command=self.open_interface_analysis_tool,
+            bg="#1565c0",
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+            padx=15,
+            pady=8
+        ).pack(side="left", padx=5)
     
     def populate_results(self):
         """Populate the tree with results"""
@@ -1049,6 +1079,318 @@ class ComparisonResultsDialog:
             width=15
         ).pack(side="right", padx=10)
     
+    def show_interface_diff(self):
+        """Show interface differences between folders (C/C++ interfaces)"""
+        try:
+            from src.utils.interface_diff import InterfaceDiffEngine, Severity, ChangeType
+            import threading
+            
+            # Show progress
+            progress_win = tk.Toplevel(self.dialog)
+            progress_win.title("Interface Analysis")
+            progress_win.geometry("500x120")
+            progress_win.configure(bg="white")
+            progress_win.transient(self.dialog)
+            progress_win.grab_set()
+            
+            tk.Label(
+                progress_win,
+                text="🔍 Analyzing C/C++ interfaces...",
+                font=("Segoe UI", 12, "bold"),
+                bg="white"
+            ).pack(pady=15)
+            
+            status_label = tk.Label(
+                progress_win,
+                text="Parsing source files and extracting interfaces...",
+                font=("Segoe UI", 9),
+                bg="white",
+                fg="gray"
+            )
+            status_label.pack(pady=5)
+            
+            progress_bar = ttk.Progressbar(progress_win, mode='indeterminate', length=400)
+            progress_bar.pack(pady=10)
+            progress_bar.start(10)
+            
+            progress_win.update()
+            
+            # Container for result
+            result_container = {'diff': None, 'error': None}
+            
+            def run_analysis():
+                """Run interface diff in background thread"""
+                try:
+                    engine = InterfaceDiffEngine()
+                    baseline_diff = engine.compare_baselines(
+                        self.folder1_actual,
+                        self.folder2_actual
+                    )
+                    result_container['diff'] = baseline_diff
+                except Exception as e:
+                    result_container['error'] = str(e)
+            
+            # Start analysis in background
+            analysis_thread = threading.Thread(target=run_analysis, daemon=True)
+            analysis_thread.start()
+            
+            # Wait for completion with status updates
+            elapsed = 0
+            while analysis_thread.is_alive():
+                progress_win.update()
+                analysis_thread.join(timeout=0.5)
+                elapsed += 0.5
+                
+                # Update status based on elapsed time
+                if elapsed < 5:
+                    status_label.config(text="Parsing source files and extracting interfaces...")
+                elif elapsed < 10:
+                    status_label.config(text="Comparing functions, structs, enums, macros...")
+                else:
+                    status_label.config(text="Analyzing changes and categorizing severity...")
+            
+            progress_bar.stop()
+            progress_win.destroy()
+            
+            # Check for errors
+            if result_container['error']:
+                messagebox.showerror("Analysis Error", 
+                                   f"Error analyzing interfaces:\n\n{result_container['error']}")
+                return
+            
+            # Show results
+            self.show_interface_diff_results(result_container['diff'])
+            
+        except ImportError as e:
+            messagebox.showerror(
+                "Module Not Found",
+                "Interface analysis modules not found.\n\n"
+                "Make sure interface_parser.py and interface_diff.py\n"
+                "are in src/utils/ directory."
+            )
+        except Exception as e:
+            messagebox.showerror("Error", f"Error running interface analysis:\n\n{str(e)}")
+    
+    def show_interface_diff_results(self, baseline_diff):
+        """Show interface diff results in a new window"""
+        from src.utils.interface_diff import Severity, ChangeType
+        
+        result_win = tk.Toplevel(self.dialog)
+        result_win.title("Interface Differences - C/C++ Analysis")
+        result_win.geometry("1400x850")
+        result_win.configure(bg="white")
+        
+        # Header
+        header = tk.Frame(result_win, bg="#9C27B0", height=60)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+        
+        tk.Label(
+            header,
+            text="🔍 Interface Differences Analysis",
+            font=("Segoe UI", 14, "bold"),
+            bg="#9C27B0",
+            fg="white"
+        ).pack(side="left", padx=20, pady=15)
+        
+        # Summary bar
+        summary_frame = tk.Frame(result_win, bg="#F5F5F5", height=80)
+        summary_frame.pack(fill="x")
+        summary_frame.pack_propagate(False)
+        
+        summary_text = (
+            f"Total Files: {baseline_diff.total_files}  |  "
+            f"Modified: {baseline_diff.files_modified}  |  "
+            f"Added: {baseline_diff.files_added}  |  "
+            f"Removed: {baseline_diff.files_removed}\n"
+            f"🔴 Breaking Changes: {baseline_diff.breaking_changes}  |  "
+            f"🟡 Review Needed: {baseline_diff.review_needed}  |  "
+            f"🟢 Safe Changes: {baseline_diff.safe_changes}"
+        )
+        
+        tk.Label(
+            summary_frame,
+            text=summary_text,
+            font=("Segoe UI", 10, "bold"),
+            bg="#F5F5F5",
+            fg="#333333",
+            justify="left"
+        ).pack(side="left", padx=20, pady=15)
+        
+        # Main content
+        content_frame = tk.Frame(result_win, bg="white")
+        content_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Filter frame
+        filter_frame = tk.Frame(content_frame, bg="white")
+        filter_frame.pack(fill="x", padx=5, pady=5)
+        
+        tk.Label(filter_frame, text="Filter:", font=("Segoe UI", 9), bg="white").pack(side="left", padx=5)
+        
+        filter_var = tk.StringVar()
+        tk.Entry(filter_frame, textvariable=filter_var, font=("Segoe UI", 9), width=30).pack(side="left", padx=5)
+        
+        severity_var = tk.StringVar(value="All")
+        severity_combo = ttk.Combobox(
+            filter_frame,
+            textvariable=severity_var,
+            values=["All", "Breaking", "Review", "Safe"],
+            state="readonly",
+            width=15,
+            font=("Segoe UI", 9)
+        )
+        severity_combo.pack(side="left", padx=10)
+        
+        # Tree view
+        tree_frame = tk.Frame(content_frame, bg="white")
+        tree_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        
+        vsb = tk.Scrollbar(tree_frame, orient="vertical")
+        hsb = tk.Scrollbar(tree_frame, orient="horizontal")
+        
+        columns = ("File", "Interface", "Type", "Change", "Severity", "Details")
+        tree = ttk.Treeview(
+            tree_frame,
+            columns=columns,
+            show="headings",
+            yscrollcommand=vsb.set,
+            xscrollcommand=hsb.set
+        )
+        
+        vsb.config(command=tree.yview)
+        hsb.config(command=tree.xview)
+        
+        tree.heading("File", text="File")
+        tree.heading("Interface", text="Interface Name")
+        tree.heading("Type", text="Type")
+        tree.heading("Change", text="Change")
+        tree.heading("Severity", text="Severity")
+        tree.heading("Details", text="Details")
+        
+        tree.column("File", width=250, anchor="w")
+        tree.column("Interface", width=200, anchor="w")
+        tree.column("Type", width=100, anchor="center")
+        tree.column("Change", width=100, anchor="center")
+        tree.column("Severity", width=100, anchor="center")
+        tree.column("Details", width=400, anchor="w")
+        
+        tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+        
+        # Configure tags with actual Severity enum
+        tree.tag_configure("breaking", background="#FFCDD2", foreground="#B71C1C")
+        tree.tag_configure("review", background="#FFF9C4", foreground="#F57F17")
+        tree.tag_configure("safe", background="#C8E6C9", foreground="#1B5E20")
+        tree.tag_configure("info", background="#E3F2FD", foreground="#0D47A1")
+        
+        # Populate tree
+        all_items = []
+        for file_path, file_diff in sorted(baseline_diff.file_diffs.items()):
+            for diff in file_diff.diffs:
+                severity_tag = {
+                    Severity.BREAKING: "breaking",
+                    Severity.REVIEW: "review",
+                    Severity.SAFE: "safe",
+                    Severity.INFO: "info"
+                }.get(diff.severity, "info")
+                
+                item_id = tree.insert(
+                    "",
+                    "end",
+                    values=(
+                        file_path,
+                        diff.element_name,
+                        diff.interface_type.value,
+                        diff.change_type.value,
+                        diff.severity.value,
+                        diff.diff_summary
+                    ),
+                    tags=(severity_tag,)
+                )
+                all_items.append((item_id, file_path, diff))
+        
+        # Filter function
+        def apply_filter(*args):
+            filter_text = filter_var.get().lower()
+            severity_filter = severity_var.get()
+            
+            for item_id, file_path, diff in all_items:
+                show = True
+                
+                if filter_text and filter_text not in file_path.lower() and filter_text not in diff.element_name.lower():
+                    show = False
+                
+                if severity_filter != "All":
+                    if severity_filter.lower() != diff.severity.value:
+                        show = False
+                
+                if show:
+                    tree.reattach(item_id, "", "end")
+                else:
+                    tree.detach(item_id)
+        
+        filter_var.trace_add("write", apply_filter)
+        severity_combo.bind("<<ComboboxSelected>>", apply_filter)
+        
+        # Bottom buttons
+        btn_frame = tk.Frame(result_win, bg="white")
+        btn_frame.pack(fill="x", pady=10)
+        
+        def export_to_csv():
+            """Export interface diff to CSV"""
+            csv_path = filedialog.asksaveasfilename(
+                defaultextension=".csv",
+                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+                initialfile="interface_differences.csv",
+                title="Save Interface Diff Report"
+            )
+            
+            if csv_path:
+                try:
+                    import csv
+                    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+                        writer = csv.writer(f)
+                        writer.writerow(["File", "Interface", "Type", "Change", "Severity", "Details"])
+                        
+                        for file_path, file_diff in sorted(baseline_diff.file_diffs.items()):
+                            for diff in file_diff.diffs:
+                                writer.writerow([
+                                    file_path,
+                                    diff.element_name,
+                                    diff.interface_type.value,
+                                    diff.change_type.value,
+                                    diff.severity.value,
+                                    diff.diff_summary
+                                ])
+                    
+                    messagebox.showinfo("Exported", f"Interface diff exported to:\n{csv_path}")
+                except Exception as e:
+                    messagebox.showerror("Export Failed", f"Error exporting to CSV:\n\n{str(e)}")
+        
+        tk.Button(
+            btn_frame,
+            text="💾 Export to CSV",
+            command=export_to_csv,
+            bg="#1976D2",
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+            width=15
+        ).pack(side="left", padx=10)
+        
+        tk.Button(
+            btn_frame,
+            text="Close",
+            command=result_win.destroy,
+            bg="#666666",
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+            width=15
+        ).pack(side="right", padx=10)
+    
     def open_reports_folder(self):
         """Open the reports folder in file explorer"""
         output_dir = self.report_paths['output_dir']
@@ -1082,6 +1424,29 @@ class ComparisonResultsDialog:
                 webbrowser.open(f'file://{os.path.abspath(csv_path)}')
         else:
             messagebox.showerror("Error", f"CSV file not found: {csv_path}")
+    
+    def open_interface_analysis_tool(self):
+        """Open the interface analysis tool GUI."""
+        try:
+            from .interface_diff_viewer import show_interface_diff_viewer
+            
+            # Show the interface diff viewer with paths
+            viewer = show_interface_diff_viewer(
+                self.dialog,
+                baseline_path=self.folder1_actual,
+                target_path=self.folder2_actual
+            )
+            
+        except ImportError as e:
+            messagebox.showerror(
+                "Import Error",
+                f"Could not import interface analysis tool:\n\n{str(e)}"
+            )
+        except Exception as e:
+            messagebox.showerror(
+                "Error",
+                f"Error opening interface analysis tool:\n\n{str(e)}"
+            )
     
     def show(self):
         """Show the dialog and wait for it to close"""

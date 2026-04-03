@@ -28,9 +28,10 @@ class MigrationAnalysisGUI:
         # Comparison Mode Selection
         self.create_mode_selection()
         
-        # Input frames
-        self.create_folder_input_frame()
-        self.create_snapshot_input_frame()
+        # Input frames (all 3 modes)
+        self.create_folder_input_frame()       # Offline → Offline
+        self.create_snapshot_input_frame()     # Online → Online
+        self.create_hybrid_input_frame()       # Online → Offline
         
         # RTC Integration Section
         self.create_rtc_section()
@@ -40,6 +41,9 @@ class MigrationAnalysisGUI:
         
         # Progress section
         self.create_progress_section()
+        
+        # Initially show offline_offline mode
+        self.toggle_input_mode()
     
     def create_header(self):
         """Create the Bosch-style header"""
@@ -73,32 +77,54 @@ class MigrationAnalysisGUI:
             font=("Segoe UI", 11, "bold")
         ).pack(side="left", padx=5)
         
-        self.comparison_mode = tk.StringVar(value="folder")
+        self.comparison_mode = tk.StringVar(value="offline_offline")
         
+        # Mode 1: Offline → Offline (Folders/ZIPs)
         tk.Radiobutton(
             mode_frame,
-            text="Folder/ZIP Comparison",
+            text="📁 Offline → Offline",
             variable=self.comparison_mode,
-            value="folder",
+            value="offline_offline",
             bg="#EAF3FB",
             font=("Segoe UI", 10),
             command=self.toggle_input_mode
         ).pack(side="left", padx=10)
         
+        # Mode 2: Online → Online (RTC URLs)
         tk.Radiobutton(
             mode_frame,
-            text="RTC Snapshot Comparison",
+            text="🌐 Online → Online",
             variable=self.comparison_mode,
-            value="snapshot",
+            value="online_online",
+            bg="#EAF3FB",
+            font=("Segoe UI", 10),
+            command=self.toggle_input_mode
+        ).pack(side="left", padx=10)
+        
+        # Mode 3: Online → Offline (RTC URL + Folder)
+        tk.Radiobutton(
+            mode_frame,
+            text="🔄 Online → Offline",
+            variable=self.comparison_mode,
+            value="online_offline",
             bg="#EAF3FB",
             font=("Segoe UI", 10),
             command=self.toggle_input_mode
         ).pack(side="left", padx=10)
     
     def create_folder_input_frame(self):
-        """Create folder input section"""
+        """Create offline → offline input section (Folders/ZIPs)"""
         self.folder_input_frame = tk.Frame(self.root, bg="#EAF3FB")
         self.folder_input_frame.pack(fill="x")
+        
+        # Info label
+        tk.Label(
+            self.folder_input_frame,
+            text="📁 Offline → Offline: Compare local folders or ZIP files",
+            bg="#EAF3FB",
+            font=("Segoe UI", 9, "italic"),
+            fg="#666666"
+        ).pack(pady=(5, 10))
         
         tk.Label(
             self.folder_input_frame,
@@ -137,12 +163,21 @@ class MigrationAnalysisGUI:
         ).pack(pady=5)
     
     def create_snapshot_input_frame(self):
-        """Create snapshot input section"""
+        """Create online → online input section (RTC URLs)"""
         self.snapshot_input_frame = tk.Frame(self.root, bg="#EAF3FB")
+        
+        # Info label
+        tk.Label(
+            self.snapshot_input_frame,
+            text="🌐 Online → Online: Compare RTC snapshots/workspaces via URLs",
+            bg="#EAF3FB",
+            font=("Segoe UI", 9, "italic"),
+            fg="#666666"
+        ).pack(pady=(5, 10))
         
         tk.Label(
             self.snapshot_input_frame,
-            text="Platform Snapshot URL/ID:",
+            text="Platform Snapshot/Workspace URL or UUID:",
             bg="#EAF3FB",
             font=("Segoe UI", 11)
         ).pack(pady=(5, 5))
@@ -152,7 +187,7 @@ class MigrationAnalysisGUI:
         
         tk.Label(
             self.snapshot_input_frame,
-            text="From RTC web: Copy snapshot URL (with id=_xxxxx) or just the UUID",
+            text="📝 From RTC web: Copy snapshot URL (with id=_xxxxx) or just the UUID like _ojreQAAbEfG1br8X33nQcA",
             bg="#EAF3FB",
             font=("Segoe UI", 8),
             fg="gray"
@@ -160,7 +195,7 @@ class MigrationAnalysisGUI:
         
         tk.Label(
             self.snapshot_input_frame,
-            text="Project Snapshot URL/ID:",
+            text="Project Snapshot/Workspace URL or UUID:",
             bg="#EAF3FB",
             font=("Segoe UI", 11)
         ).pack(pady=(10, 5))
@@ -170,11 +205,60 @@ class MigrationAnalysisGUI:
         
         tk.Label(
             self.snapshot_input_frame,
-            text="From RTC web: Copy snapshot URL (with id=_xxxxx) or just the UUID",
+            text="📝 From RTC web: Copy snapshot URL (with id=_xxxxx) or just the UUID like _i3S_vwAaEfG3rPS3zZLwKA",
             bg="#EAF3FB",
             font=("Segoe UI", 8),
             fg="gray"
         ).pack()
+    
+    def create_hybrid_input_frame(self):
+        """Create online → offline input section (RTC URL + Local Folder)"""
+        self.hybrid_input_frame = tk.Frame(self.root, bg="#EAF3FB")
+        
+        # Info label
+        tk.Label(
+            self.hybrid_input_frame,
+            text="🔄 Online → Offline: Compare RTC snapshot with local folder",
+            bg="#EAF3FB",
+            font=("Segoe UI", 9, "italic"),
+            fg="#666666"
+        ).pack(pady=(5, 10))
+        
+        tk.Label(
+            self.hybrid_input_frame,
+            text="Platform Snapshot/Workspace URL or UUID (Online):",
+            bg="#EAF3FB",
+            font=("Segoe UI", 11)
+        ).pack(pady=(5, 5))
+        
+        self.hybrid_url_entry = tk.Entry(self.hybrid_input_frame, width=85)
+        self.hybrid_url_entry.pack()
+        
+        tk.Label(
+            self.hybrid_input_frame,
+            text="📝 From RTC web: Copy snapshot URL or UUID",
+            bg="#EAF3FB",
+            font=("Segoe UI", 8),
+            fg="gray"
+        ).pack()
+        
+        tk.Label(
+            self.hybrid_input_frame,
+            text="Project Folder or ZIP (Offline):",
+            bg="#EAF3FB",
+            font=("Segoe UI", 11)
+        ).pack(pady=(10, 5))
+        
+        self.hybrid_folder_entry = tk.Entry(self.hybrid_input_frame, width=85)
+        self.hybrid_folder_entry.pack()
+        
+        tk.Button(
+            self.hybrid_input_frame,
+            text="Browse",
+            bg="#007B3E",
+            fg="white",
+            command=lambda: self.browse_folder(self.hybrid_folder_entry)
+        ).pack(pady=5)
     
     def create_rtc_section(self):
         """Create RTC integration section"""
@@ -228,13 +312,21 @@ class MigrationAnalysisGUI:
         self.progress_bar.pack(pady=5)
     
     def toggle_input_mode(self):
-        """Toggle between folder and snapshot input modes"""
-        if self.comparison_mode.get() == "folder":
-            self.snapshot_input_frame.pack_forget()
+        """Toggle between different input modes"""
+        mode = self.comparison_mode.get()
+        
+        # Hide all frames first
+        self.folder_input_frame.pack_forget()
+        self.snapshot_input_frame.pack_forget()
+        self.hybrid_input_frame.pack_forget()
+        
+        # Show the appropriate frame
+        if mode == "offline_offline":
             self.folder_input_frame.pack(fill="x", before=self.rtc_frame)
-        else:
-            self.folder_input_frame.pack_forget()
+        elif mode == "online_online":
             self.snapshot_input_frame.pack(fill="x", before=self.rtc_frame)
+        elif mode == "online_offline":
+            self.hybrid_input_frame.pack(fill="x", before=self.rtc_frame)
     
     def browse_folder(self, entry_field):
         """Browse for folder or ZIP file"""
@@ -263,8 +355,8 @@ class MigrationAnalysisGUI:
         """Start the comparison process"""
         mode = self.comparison_mode.get()
         
-        if mode == "folder":
-            # Get folder paths
+        if mode == "offline_offline":
+            # Offline → Offline: Folders/ZIPs
             folder1 = self.folder1_entry.get().strip()
             folder2 = self.folder2_entry.get().strip()
             
@@ -287,11 +379,57 @@ class MigrationAnalysisGUI:
             # Show progress and start comparison in background thread
             self.run_folder_comparison(folder1, folder2)
         
-        else:  # snapshot mode
+        elif mode == "online_online":
+            # Online → Online: RTC Snapshots/URLs
+            url1 = self.snapshot1_entry.get().strip()
+            url2 = self.snapshot2_entry.get().strip()
+            
+            if not url1 or not url2:
+                messagebox.showerror(
+                    "Missing Input",
+                    "Please enter both RTC snapshot URLs or UUIDs."
+                )
+                return
+            
             messagebox.showinfo(
-                "Not Implemented",
-                "Snapshot comparison will be implemented in the next update.\n"
-                "For now, please use Folder/ZIP Comparison mode."
+                "Feature Coming Soon",
+                "🌐 Online → Online Mode\n\n"
+                "RTC Snapshot comparison via URLs will be implemented soon.\n\n"
+                "This feature will:\n"
+                "• Download snapshots from RTC server\n"
+                "• Extract components and files\n"
+                "• Compare them automatically\n\n"
+                "For now, please use Offline → Offline mode."
+            )
+        
+        elif mode == "online_offline":
+            # Online → Offline: RTC URL + Local Folder
+            url = self.hybrid_url_entry.get().strip()
+            folder = self.hybrid_folder_entry.get().strip()
+            
+            if not url or not folder:
+                messagebox.showerror(
+                    "Missing Input",
+                    "Please enter RTC URL and select a local folder."
+                )
+                return
+            
+            if not os.path.exists(folder):
+                messagebox.showerror(
+                    "Invalid Path",
+                    "The local folder path does not exist."
+                )
+                return
+            
+            messagebox.showinfo(
+                "Feature Coming Soon",
+                "🔄 Online → Offline Mode\n\n"
+                "Comparing RTC snapshot with local folder will be implemented soon.\n\n"
+                "This feature will:\n"
+                "• Download snapshot from RTC server\n"
+                "• Compare with your local folder\n"
+                "• Generate comparison reports\n\n"
+                "For now, please use Offline → Offline mode."
             )
     
     def run_folder_comparison(self, folder1, folder2):
