@@ -812,13 +812,15 @@ class ComparisonResultsDialog:
             "Confirm AI Merge",
             f"Run AI Smart Merge on:\n{self.current_file}\n\n"
             "This will use Gemini Flash to intelligently merge both versions.\n"
-            "The process may take 30-60 seconds."
+            "The process may take 30-60 seconds.\n\n"
+            "Note: Free tier has rate limits (15 requests/min, 1500/day)"
         ):
             return
         
         try:
             from src.ai import ai_merge_with_gemini
             from src.config import settings
+            import threading
             
             if not hasattr(settings, 'GEMINI_API_KEY') or not settings.GEMINI_API_KEY or settings.GEMINI_API_KEY.startswith("YOUR-"):
                 messagebox.showerror(
@@ -829,10 +831,10 @@ class ComparisonResultsDialog:
                 )
                 return
             
-            # Show progress
+            # Show progress window with status label
             progress_win = tk.Toplevel(self.dialog)
             progress_win.title("AI Smart Merge")
-            progress_win.geometry("500x120")
+            progress_win.geometry("550x150")
             progress_win.configure(bg="white")
             progress_win.transient(self.dialog)
             progress_win.grab_set()
@@ -844,33 +846,92 @@ class ComparisonResultsDialog:
                 bg="white"
             ).pack(pady=15)
             
-            tk.Label(
+            status_label = tk.Label(
                 progress_win,
-                text="This may take 30-60 seconds...",
+                text="Sending request to Gemini API...",
                 font=("Segoe UI", 9),
                 bg="white",
                 fg="gray"
-            ).pack(pady=5)
+            )
+            status_label.pack(pady=5)
+            
+            progress_bar = ttk.Progressbar(progress_win, mode='indeterminate', length=400)
+            progress_bar.pack(pady=10)
+            progress_bar.start(10)
             
             progress_win.update()
             
-            # Run Gemini merge
-            merged_content, dep_report, warnings = ai_merge_with_gemini(
-                self.current_path1,
-                self.current_path2,
-                self.current_status,
-                self.current_file,
-                self.files1,
-                self.files2,
-                self.folder1_actual,
-                self.folder2_actual,
-                settings.GEMINI_API_KEY
-            )
+            # Container for result
+            result_container = {'merged': None, 'report': None, 'warnings': None, 'error': None}
             
+            def run_merge():
+                """Run merge in background thread"""
+                try:
+                    merged_content, dep_report, warnings_list = ai_merge_with_gemini(
+                        self.current_path1,
+                        self.current_path2,
+                        self.current_status,
+                        self.current_file,
+                        self.files1,
+                        self.files2,
+                        self.folder1_actual,
+                        self.folder2_actual,
+                        settings.GEMINI_API_KEY
+                    )
+                    result_container['merged'] = merged_content
+                    result_container['report'] = dep_report
+                    result_container['warnings'] = warnings_list
+                except Exception as e:
+                    result_container['error'] = str(e)
+            
+            # Start merge in background
+            merge_thread = threading.Thread(target=run_merge, daemon=True)
+            merge_thread.start()
+            
+            # Wait for completion with status updates
+            elapsed = 0
+            while merge_thread.is_alive():
+                progress_win.update()
+                merge_thread.join(timeout=0.5)
+                elapsed += 0.5
+                
+                # Update status based on elapsed time
+                if elapsed < 10:
+                    status_label.config(text="Sending request to Gemini API...")
+                elif elapsed < 30:
+                    status_label.config(text="Analyzing files and generating merge... (this may take a while)")
+                elif elapsed < 60:
+                    status_label.config(text="Still processing... Gemini is working on it...")
+                else:
+                    status_label.config(text="Taking longer than expected... Almost done...")
+            
+            progress_bar.stop()
             progress_win.destroy()
             
+            # Check for errors
+            if result_container['error']:
+                error_msg = result_container['error']
+                if "Rate Limit" in error_msg or "429" in error_msg:
+                    messagebox.showerror(
+                        "Rate Limit Exceeded",
+                        "Gemini API Rate Limit Hit\n\n"
+                        "The free tier has limits:\n"
+                        "• 15 requests per minute\n"
+                        "• 1,500 requests per day\n\n"
+                        "Please wait 1-2 minutes and try again.\n\n"
+                        "Tip: Check your quota at:\n"
+                        "https://aistudio.google.com/app/apikey"
+                    )
+                else:
+                    messagebox.showerror("AI Merge Error", f"Error during AI merge:\n\n{error_msg}")
+                return
+            
             # Show merged result
-            self.show_merge_result(merged_content, dep_report, warnings)
+            self.show_merge_result(
+                result_container['merged'],
+                result_container['report'],
+                result_container['warnings']
+            )
             
         except Exception as e:
             messagebox.showerror("AI Merge Error", f"Error during AI merge:\n\n{str(e)}")

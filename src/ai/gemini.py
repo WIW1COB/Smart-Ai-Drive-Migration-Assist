@@ -21,7 +21,11 @@ def _gemini_call(api_key, system_prompt, user_prompt, max_tokens=8192):
     """Send a message to Google Gemini Flash and return the text response.
     Automatically routes through the corporate Bosch NTLM proxy.
     Password is requested once via a popup and cached for the session.
+    Includes retry logic for rate limiting (429 errors).
     """
+    import time
+    import requests as _req
+    
     url = f"{_GEMINI_API_URL}?key={urllib.parse.quote(api_key.strip())}"
     headers  = {"content-type": "application/json"}
     payload  = _json.dumps({
@@ -29,8 +33,6 @@ def _gemini_call(api_key, system_prompt, user_prompt, max_tokens=8192):
         "contents":           [{"parts": [{"text": user_prompt}]}],
         "generationConfig":   {"maxOutputTokens": max_tokens, "temperature": 0.3},
     })
-
-    import requests as _req
 
     def _build_session(user, password):
         """Return a requests.Session configured with NTLM proxy auth."""
@@ -80,10 +82,46 @@ def _gemini_call(api_key, system_prompt, user_prompt, max_tokens=8192):
     user, password = _get_credentials()
     sess = _build_session(user, password)
 
-    resp = sess.post(url, data=payload.encode(), headers=headers, timeout=90, verify=True)
-    resp.raise_for_status()
-    data = resp.json()
-    return data["candidates"][0]["content"]["parts"][0]["text"]
+    # Retry logic with exponential backoff for rate limiting
+    max_retries = 3
+    base_delay = 2  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            resp = sess.post(url, data=payload.encode(), headers=headers, timeout=90, verify=True)
+            resp.raise_for_status()
+            data = resp.json()
+            return data["candidates"][0]["content"]["parts"][0]["text"]
+            
+        except _req.exceptions.HTTPError as e:
+            if e.response.status_code == 429:  # Rate limit error
+                if attempt < max_retries - 1:  # Not the last attempt
+                    wait_time = base_delay * (2 ** attempt)  # Exponential backoff: 2s, 4s, 8s
+                    print(f"⚠️ Rate limit hit. Waiting {wait_time}s before retry {attempt + 2}/{max_retries}...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    # Last attempt failed
+                    raise ValueError(
+                        "Gemini API Rate Limit Exceeded\n\n"
+                        "The free tier of Gemini API has limits:\n"
+                        "• 15 requests per minute\n"
+                        "• 1 million tokens per minute\n"
+                        "• 1,500 requests per day\n\n"
+                        "Please wait a minute and try again, or:\n"
+                        "1. Check your quota at: https://aistudio.google.com/app/apikey\n"
+                        "2. Consider upgrading to paid tier for higher limits\n"
+                        "3. Use the request less frequently"
+                    ) from e
+            else:
+                # Other HTTP errors
+                raise ValueError(f"Gemini API Error ({e.response.status_code}): {str(e)}") from e
+                
+        except _req.exceptions.RequestException as e:
+            raise ValueError(f"Network error calling Gemini API: {str(e)}") from e
+    
+    # Should not reach here, but just in case
+    raise ValueError("Failed to call Gemini API after all retries")
 
 
 def _read_file_safe(path, max_chars=8000):
