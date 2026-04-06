@@ -83,10 +83,18 @@ class ComparisonResultsDialog:
         # Statistics bar
         self.create_stats_bar()
         
-        # Main paned window (left: file list, right: editor/actions)
-        main_paned = tk.PanedWindow(self.dialog, orient="horizontal", 
+        # Action buttons bar (moved to top for visibility)
+        button_frame = self.create_bottom_buttons()
+        button_frame.pack(fill="x", padx=10, pady=5, expand=False)
+        
+        # CONTAINER FRAME for main content (expands to fill available space)
+        content_container = tk.Frame(self.dialog, bg="white")
+        content_container.pack(fill="both", expand=True, padx=8, pady=5)
+        
+        # Main paned window (left: file list, right: editor/actions) - inside container
+        main_paned = tk.PanedWindow(content_container, orient="horizontal", 
                                     bg="#b0bec5", sashwidth=5, sashrelief="raised")
-        main_paned.pack(fill="both", expand=True, padx=8, pady=5)
+        main_paned.pack(fill="both", expand=True)
         
         # LEFT PANE: File list
         left_pane = self.create_file_list_pane()
@@ -95,9 +103,6 @@ class ComparisonResultsDialog:
         # RIGHT PANE: Actions and editor
         right_pane = self.create_action_pane()
         main_paned.add(right_pane, minsize=700)
-        
-        # Bottom button frame
-        self.create_bottom_buttons()
     
     def create_ai_status_bar(self):
         """Create AI status indicator bar"""
@@ -434,83 +439,82 @@ class ComparisonResultsDialog:
         return editor, vsb
     
     def create_bottom_buttons(self):
-        """Create bottom action buttons"""
-        button_frame = tk.Frame(self.dialog, bg="#f0f4f7")
-        button_frame.pack(fill="x", padx=10, pady=10)
+        """Create bottom action buttons - returns frame for caller to pack"""
+        button_frame = tk.Frame(self.dialog, bg="#f0f4f7", relief="raised", bd=1)
+        # ✅ Do NOT pack here - let caller handle packing
         
-        # Button row 1: Report operations
-        button_row1 = tk.Frame(button_frame)
-        button_row1.pack(fill="x", padx=5, pady=3)
+        # Single row with all buttons (compact sizing)
+        button_row = tk.Frame(button_frame, bg="#f0f4f7")
+        button_row.pack(fill="x", padx=5, pady=3)
         
         tk.Button(
-            button_row1,
-            text="📁 Open Reports Folder",
+            button_row,
+            text="📁 Reports",
             command=self.open_reports_folder,
             bg="#1976D2",
             fg="white",
-            font=("Segoe UI", 10, "bold"),
-            padx=15,
-            pady=8
-        ).pack(side="left", padx=5)
+            font=("Segoe UI", 8),
+            padx=8,
+            pady=4
+        ).pack(side="left", padx=2)
         
         tk.Button(
-            button_row1,
-            text="📊 Open Excel Report",
+            button_row,
+            text="📊 Excel",
             command=self.open_excel_report,
             bg="#27ae60",
             fg="white",
-            font=("Segoe UI", 10, "bold"),
-            padx=15,
-            pady=8
-        ).pack(side="left", padx=5)
+            font=("Segoe UI", 8),
+            padx=8,
+            pady=4
+        ).pack(side="left", padx=2)
         
         tk.Button(
-            button_row1,
-            text="📄 Open CSV Report",
+            button_row,
+            text="📄 CSV",
             command=self.open_csv_report,
             bg="#f39c12",
             fg="white",
-            font=("Segoe UI", 10, "bold"),
-            padx=15,
-            pady=8
-        ).pack(side="left", padx=5)
+            font=("Segoe UI", 8),
+            padx=8,
+            pady=4
+        ).pack(side="left", padx=2)
         
         tk.Button(
-            button_row1,
+            button_row,
+            text="🔍 Interface Diff",
+            command=self.show_interface_diff,
+            bg="#9C27B0",
+            fg="white",
+            font=("Segoe UI", 8),
+            padx=8,
+            pady=4
+        ).pack(side="left", padx=2)
+        
+        tk.Button(
+            button_row,
+            text="🔬 Analysis Tool",
+            command=self.open_interface_analysis_tool,
+            bg="#1565c0",
+            fg="white",
+            font=("Segoe UI", 8),
+            padx=8,
+            pady=4
+        ).pack(side="left", padx=2)
+        
+        tk.Button(
+            button_row,
             text="✕ Close",
             command=self.dialog.destroy,
             bg="#c62828",
             fg="white",
-            font=("Segoe UI", 10, "bold"),
-            padx=20,
-            pady=8
-        ).pack(side="right", padx=5)
+            font=("Segoe UI", 8),
+            padx=10,
+            pady=4
+        ).pack(side="right", padx=2)
         
-        # Button row 2: Analysis operations
-        button_row2 = tk.Frame(button_frame)
-        button_row2.pack(fill="x", padx=5, pady=3)
-        
-        tk.Button(
-            button_row2,
-            text="🔍 Interface Differences",
-            command=self.show_interface_diff,
-            bg="#9C27B0",
-            fg="white",
-            font=("Segoe UI", 10, "bold"),
-            padx=15,
-            pady=8
-        ).pack(side="left", padx=5)
-        
-        tk.Button(
-            button_row2,
-            text="🔬 Interface Analysis Tool",
-            command=self.open_interface_analysis_tool,
-            bg="#1565c0",
-            fg="white",
-            font=("Segoe UI", 10, "bold"),
-            padx=15,
-            pady=8
-        ).pack(side="left", padx=5)
+        # ✅ IMPORTANT: Return the button frame so caller can pack it
+        return button_frame
     
     def populate_results(self):
         """Populate the tree with results"""
@@ -1426,11 +1430,11 @@ class ComparisonResultsDialog:
             messagebox.showerror("Error", f"CSV file not found: {csv_path}")
     
     def open_interface_analysis_tool(self):
-        """Open the interface analysis tool GUI."""
+        """Open the enhanced interface analysis tool GUI."""
         try:
-            from .interface_diff_viewer import show_interface_diff_viewer
+            from .interface_diff_viewer_enhanced import show_interface_diff_viewer
             
-            # Show the interface diff viewer with paths
+            # Show the enhanced interface diff viewer with paths
             viewer = show_interface_diff_viewer(
                 self.dialog,
                 baseline_path=self.folder1_actual,
@@ -1440,8 +1444,18 @@ class ComparisonResultsDialog:
         except ImportError as e:
             messagebox.showerror(
                 "Import Error",
-                f"Could not import interface analysis tool:\n\n{str(e)}"
+                f"Could not import interface analysis tool:\n\n{str(e)}\n\nTrying fallback version..."
             )
+            # Fallback to original version
+            try:
+                from .interface_diff_viewer import show_interface_diff_viewer
+                viewer = show_interface_diff_viewer(
+                    self.dialog,
+                    baseline_path=self.folder1_actual,
+                    target_path=self.folder2_actual
+                )
+            except Exception as fallback_error:
+                messagebox.showerror("Error", f"Both versions failed:\n{str(fallback_error)}")
         except Exception as e:
             messagebox.showerror(
                 "Error",
