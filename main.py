@@ -7,6 +7,14 @@ Main entry point for the application.
 import sys
 import os
 
+# Load environment variables from .env when running from terminal
+try:
+    from dotenv import load_dotenv  # type: ignore
+    load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+except Exception:
+    # .env loading is optional; app can still run with OS-level env vars
+    pass
+
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 

@@ -16,7 +16,7 @@ class ComparisonResultsDialog:
     - Color-coded file list with filters
     - Copy files between folders (F1→F2, F2→F1)
     - AI Suggest (which version to keep)
-    - AI Smart Merge (Gemini Flash)
+    - AI Smart Merge (Azure OpenAI Farm)
     - File editor tabs
     - View HTML diffs
     """
@@ -107,26 +107,28 @@ class ComparisonResultsDialog:
     def create_ai_status_bar(self):
         """Create AI status indicator bar"""
         from src.config import settings
-        
-        gemini_ready = bool(hasattr(settings, 'GEMINI_API_KEY') and 
-                           settings.GEMINI_API_KEY and 
-                           not settings.GEMINI_API_KEY.startswith("YOUR-"))
+
+        aoai_ready = bool(
+            hasattr(settings, 'AOAI_FARM_SUBSCRIPTION_KEY')
+            and settings.AOAI_FARM_SUBSCRIPTION_KEY
+            and str(settings.AOAI_FARM_SUBSCRIPTION_KEY).strip().lower() != "none"
+        )
         openai_ready = bool(hasattr(settings, 'OPENAI_API_KEY') and 
                            settings.OPENAI_API_KEY and 
                            settings.OPENAI_API_KEY.strip().startswith("sk-"))
-        
-        ai_bar = tk.Frame(self.dialog, bg="#1B5E20" if gemini_ready else "#B71C1C", height=28)
+
+        ai_bar = tk.Frame(self.dialog, bg="#1B5E20" if aoai_ready else "#B71C1C", height=28)
         ai_bar.pack(fill="x")
         ai_bar.pack_propagate(False)
-        
-        gemini_status = "Gemini Flash ✔ READY" if gemini_ready else "Gemini Flash ✘ Key not set"
+
+        aoai_status = "Azure OpenAI Farm ✔ READY" if aoai_ready else "Azure OpenAI Farm ✘ Key not set"
         openai_status = "OpenAI GPT-4o-mini ✔ READY" if openai_ready else "OpenAI (heuristics only)"
         
         tk.Label(
             ai_bar,
-            text=f"  🤖 AI Features:  {gemini_status}  |  {openai_status}",
+            text=f"  🤖 AI Features:  {aoai_status}  |  {openai_status}",
             font=("Segoe UI", 8, "bold"),
-            bg="#1B5E20" if gemini_ready else "#B71C1C",
+            bg="#1B5E20" if aoai_ready else "#B71C1C",
             fg="white"
         ).pack(side="left", padx=12, pady=5)
     
@@ -375,7 +377,7 @@ class ComparisonResultsDialog:
         
         self.btn_ai_merge = tk.Button(
             row2,
-            text="🔀 AI Smart Merge (Gemini Flash)",
+            text="🔀 AI Smart Merge (Azure OpenAI Farm)",
             command=self.run_ai_merge,
             bg="#006064",
             fg="white",
@@ -845,23 +847,26 @@ class ComparisonResultsDialog:
         if not messagebox.askyesno(
             "Confirm AI Merge",
             f"Run AI Smart Merge on:\n{self.current_file}\n\n"
-            "This will use Gemini Flash to intelligently merge both versions.\n"
+            "This will use Azure OpenAI (Farm) to intelligently merge both versions.\n"
             "The process may take 30-60 seconds.\n\n"
-            "Note: Free tier has rate limits (15 requests/min, 1500/day)"
+            "Note: Requires env var GENAIPLATFORM_FARM_SUBSCRIPTION_KEY"
         ):
             return
         
         try:
-            from src.ai import ai_merge_with_gemini
+            from src.ai import ai_merge_with_azure_openai
             from src.config import settings
             import threading
-            
-            if not hasattr(settings, 'GEMINI_API_KEY') or not settings.GEMINI_API_KEY or settings.GEMINI_API_KEY.startswith("YOUR-"):
+
+            if (not hasattr(settings, 'AOAI_FARM_SUBSCRIPTION_KEY')
+                or not settings.AOAI_FARM_SUBSCRIPTION_KEY
+                or str(settings.AOAI_FARM_SUBSCRIPTION_KEY).strip().lower() == 'none'):
                 messagebox.showerror(
                     "API Key Missing",
-                    "Gemini API key not configured.\n\n"
-                    "Get a FREE key at: https://aistudio.google.com/app/apikey\n"
-                    "Then update GEMINI_API_KEY in src/config/settings.py"
+                    "Azure OpenAI Farm subscription key not configured.\n\n"
+                    "Set environment variable:\n"
+                    "  GENAIPLATFORM_FARM_SUBSCRIPTION_KEY\n\n"
+                    "Restart the app after setting it."
                 )
                 return
             
@@ -875,14 +880,14 @@ class ComparisonResultsDialog:
             
             tk.Label(
                 progress_win,
-                text="🔀 Merging files with Gemini Flash AI...",
+                text="🔀 Merging files with Azure OpenAI (Farm)...",
                 font=("Segoe UI", 12, "bold"),
                 bg="white"
             ).pack(pady=15)
             
             status_label = tk.Label(
                 progress_win,
-                text="Sending request to Gemini API...",
+                text="Sending request to Azure OpenAI...",
                 font=("Segoe UI", 9),
                 bg="white",
                 fg="gray"
@@ -901,7 +906,7 @@ class ComparisonResultsDialog:
             def run_merge():
                 """Run merge in background thread"""
                 try:
-                    merged_content, dep_report, warnings_list = ai_merge_with_gemini(
+                    merged_content, dep_report, warnings_list = ai_merge_with_azure_openai(
                         self.current_path1,
                         self.current_path2,
                         self.current_status,
@@ -910,7 +915,7 @@ class ComparisonResultsDialog:
                         self.files2,
                         self.folder1_actual,
                         self.folder2_actual,
-                        settings.GEMINI_API_KEY
+                        settings.AOAI_FARM_SUBSCRIPTION_KEY
                     )
                     result_container['merged'] = merged_content
                     result_container['report'] = dep_report
@@ -931,11 +936,11 @@ class ComparisonResultsDialog:
                 
                 # Update status based on elapsed time
                 if elapsed < 10:
-                    status_label.config(text="Sending request to Gemini API...")
+                    status_label.config(text="Sending request to Azure OpenAI...")
                 elif elapsed < 30:
                     status_label.config(text="Analyzing files and generating merge... (this may take a while)")
                 elif elapsed < 60:
-                    status_label.config(text="Still processing... Gemini is working on it...")
+                    status_label.config(text="Still processing... model is working on it...")
                 else:
                     status_label.config(text="Taking longer than expected... Almost done...")
             
@@ -945,19 +950,7 @@ class ComparisonResultsDialog:
             # Check for errors
             if result_container['error']:
                 error_msg = result_container['error']
-                if "Rate Limit" in error_msg or "429" in error_msg:
-                    messagebox.showerror(
-                        "Rate Limit Exceeded",
-                        "Gemini API Rate Limit Hit\n\n"
-                        "The free tier has limits:\n"
-                        "• 15 requests per minute\n"
-                        "• 1,500 requests per day\n\n"
-                        "Please wait 1-2 minutes and try again.\n\n"
-                        "Tip: Check your quota at:\n"
-                        "https://aistudio.google.com/app/apikey"
-                    )
-                else:
-                    messagebox.showerror("AI Merge Error", f"Error during AI merge:\n\n{error_msg}")
+                messagebox.showerror("AI Merge Error", f"Error during AI merge:\n\n{error_msg}")
                 return
             
             # Show merged result

@@ -33,19 +33,30 @@ SNAPSHOT1_URL = None
 SNAPSHOT2_URL = None
 
 # ---------------------------------------------------------------------------
-# AI Configuration — set your API keys here (tool-level, no UI entry needed)
+# AI Configuration — set keys via environment variables
 # ---------------------------------------------------------------------------
-# Google Gemini Flash — FREE AI model used for AI Smart Merge
-# Get a FREE key (no credit card) at: https://aistudio.google.com/app/apikey
-# Sign in with any Google account → "Create API key" → paste below
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyA7WYR7WHYS6qHd45kIh3o2LuQjTJbwTzQ")
+# Azure OpenAI (Bosch Farm) — used for AI Smart Merge
+# Required env var:
+#   GENAIPLATFORM_FARM_SUBSCRIPTION_KEY
+AOAI_FARM_SUBSCRIPTION_KEY = os.environ.get("GENAIPLATFORM_FARM_SUBSCRIPTION_KEY", "")
 
-# OpenAI GPT-4o-mini — used to enhance AI Suggest (optional; heuristics work without it)
-# Get your key at: https://platform.openai.com/api-keys
+# These defaults match your provided snippet; override via env if needed.
+AOAI_FARM_ENDPOINT = os.environ.get("AOAI_FARM_ENDPOINT", "https://aoai-farm.bosch-temp.com/api")
+AOAI_FARM_DEPLOYMENT = os.environ.get(
+    "AOAI_FARM_DEPLOYMENT",
+    "askbosch-prod-farm-openai-gpt-41-mini-2025-04-14",
+)
+AOAI_FARM_API_VERSION = os.environ.get("AOAI_FARM_API_VERSION", "2025-04-14-preview")
+
+# Model name used in request payload. Some Azure setups require the deployment name here;
+# the merge code will try this first, then fall back to AOAI_FARM_DEPLOYMENT.
+AOAI_FARM_MODEL = os.environ.get("AOAI_FARM_MODEL", "gpt-5-2025-08-07")
+
+# OpenAI API key — used to enhance AI Suggest (optional; heuristics work without it)
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
 # ---------------------------------------------------------------------------
-# Corporate Proxy Configuration (for Gemini API calls)
+# Corporate Proxy Configuration (optional; used for outbound HTTP calls)
 # ---------------------------------------------------------------------------
 # Auto-detected Bosch proxy. Change PROXY_URL to "" to disable.
 PROXY_URL = os.environ.get("HTTPS_PROXY",

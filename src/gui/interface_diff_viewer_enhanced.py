@@ -224,11 +224,17 @@ class EnhancedInterfaceDiffViewer:
         self.window.configure(bg="#ECEFF1")
         
         # State variables
-        self.baseline_path = tk.StringVar()
-        self.target_path = tk.StringVar()
+        self.baseline_root = tk.StringVar()
+        self.target_root = tk.StringVar()
+        self.diff_scope_baseline_path = tk.StringVar()
+        self.diff_scope_target_path = tk.StringVar()
         self.diff_result = None
         self.is_analyzing = False
-        
+
+        # Scope settings
+        self.diff_scope_mode = tk.StringVar(value="whole_workspace")  # "whole_workspace" or "subfolder_only"
+        self.enable_full_dependency = tk.BooleanVar(value=True)
+
         # Dependency analysis
         self.dependency_graph_baseline = None
         self.dependency_graph_target = None
@@ -373,7 +379,7 @@ class EnhancedInterfaceDiffViewer:
         ).pack(side="left", padx=5)
         
         baseline_entry = tk.Entry(
-            baseline_row, textvariable=self.baseline_path,
+            baseline_row, textvariable=self.baseline_root,
             font=("Segoe UI", 9), relief="solid", bd=1
         )
         baseline_entry.pack(side="left", fill="x", expand=True, padx=5)
@@ -396,7 +402,7 @@ class EnhancedInterfaceDiffViewer:
         ).pack(side="left", padx=5)
         
         target_entry = tk.Entry(
-            target_row, textvariable=self.target_path,
+            target_row, textvariable=self.target_root,
             font=("Segoe UI", 9), relief="solid", bd=1
         )
         target_entry.pack(side="left", fill="x", expand=True, padx=5)
@@ -408,7 +414,72 @@ class EnhancedInterfaceDiffViewer:
         )
         target_btn.pack(side="left", padx=2)
         ToolTip(target_btn, "Select target folder (Stream 2)")
-        
+
+        # Interface Diff Scope section
+        scope_frame = tk.LabelFrame(input_container, text="🔍 Interface Diff Scope",
+                                   bg="#F5F5F5", fg="#1976D2",
+                                   font=("Segoe UI", 9, "bold"),
+                                   relief="groove", bd=1)
+        scope_frame.pack(fill="x", padx=15, pady=5)
+
+        scope_inner = tk.Frame(scope_frame, bg="#F5F5F5")
+        scope_inner.pack(fill="x", padx=10, pady=8)
+
+        # Scope mode selection
+        scope_mode_frame = tk.Frame(scope_inner, bg="#F5F5F5")
+        scope_mode_frame.pack(fill="x", pady=2)
+
+        tk.Label(scope_mode_frame, text="Diff Scope:", bg="#F5F5F5", font=("Segoe UI", 8, "bold")).pack(side="left", padx=5)
+
+        whole_workspace_rb = tk.Radiobutton(
+            scope_mode_frame, text="Whole workspace",
+            variable=self.diff_scope_mode, value="whole_workspace",
+            bg="#F5F5F5", font=("Segoe UI", 8),
+            command=self._update_scope_paths
+        )
+        whole_workspace_rb.pack(side="left", padx=10)
+
+        subfolder_rb = tk.Radiobutton(
+            scope_mode_frame, text="Subfolder/module only:",
+            variable=self.diff_scope_mode, value="subfolder_only",
+            bg="#F5F5F5", font=("Segoe UI", 8),
+            command=self._update_scope_paths
+        )
+        subfolder_rb.pack(side="left", padx=10)
+
+        # Subfolder picker (initially disabled)
+        self.subfolder_frame = tk.Frame(scope_inner, bg="#F5F5F5")
+        self.subfolder_frame.pack(fill="x", pady=2)
+
+        tk.Label(self.subfolder_frame, text="Subfolder:", bg="#F5F5F5", font=("Segoe UI", 8, "bold"), width=10, anchor="e").pack(side="left", padx=5)
+
+        self.subfolder_path = tk.StringVar()
+        subfolder_entry = tk.Entry(
+            self.subfolder_frame, textvariable=self.subfolder_path,
+            font=("Segoe UI", 9), relief="solid", bd=1, state="disabled"
+        )
+        subfolder_entry.pack(side="left", fill="x", expand=True, padx=5)
+
+        subfolder_btn = tk.Button(
+            self.subfolder_frame, text="📁", command=self._browse_subfolder,
+            bg="#1976D2", fg="white", font=("Segoe UI", 9),
+            width=3, relief="flat", cursor="hand2", state="disabled"
+        )
+        subfolder_btn.pack(side="left", padx=2)
+        ToolTip(subfolder_btn, "Select subfolder for diff scope")
+
+        # Dependency analysis option
+        dep_frame = tk.Frame(scope_inner, bg="#F5F5F5")
+        dep_frame.pack(fill="x", pady=5)
+
+        self.full_dep_check = tk.Checkbutton(
+            dep_frame, text="Dependency & Impact: always analyze full workspace",
+            variable=self.enable_full_dependency,
+            bg="#F5F5F5", font=("Segoe UI", 8),
+            activebackground="#F5F5F5"
+        )
+        self.full_dep_check.pack(side="left", padx=5)
+
         # Action bar with clear hierarchy
         action_frame = tk.Frame(input_container, bg="#FFFFFF", relief="raised", bd=1)
         action_frame.pack(fill="x", padx=15, pady=5)
@@ -745,6 +816,29 @@ Features:
             maximum=100, length=200, mode='determinate'
         )
         # Don't pack initially
+
+    def _show_progress_bar(self):
+        """Show progress bar in the status bar."""
+        try:
+            if not self.progress_bar.winfo_ismapped():
+                self.progress_bar.pack(side="right", padx=10)
+        except Exception:
+            # If widget isn't fully initialized yet, ignore
+            pass
+
+    def _hide_progress_bar(self):
+        """Hide progress bar in the status bar."""
+        try:
+            if self.progress_bar.winfo_ismapped():
+                self.progress_bar.pack_forget()
+        except Exception:
+            pass
+
+    def _set_progress(self, percent: int, status: Optional[str] = None):
+        """Update progress bar and optional status text (UI thread only)."""
+        self.progress_var.set(max(0, min(100, int(percent))))
+        if status:
+            self.status_var.set(status)
     
     # ==========================================
     # Event Handlers and Business Logic
@@ -753,24 +847,116 @@ Features:
     def _browse_baseline(self):
         folder = filedialog.askdirectory(title="Select Baseline Folder (Stream 1)")
         if folder:
-            self.baseline_path.set(folder)
+            self.baseline_root.set(folder)
+            self.diff_scope_baseline_path.set(folder)  # Initially same as root
             self.status_var.set(f"Baseline: {os.path.basename(folder)}")
-    
+
     def _browse_target(self):
         folder = filedialog.askdirectory(title="Select Target Folder (Stream 2)")
         if folder:
-            self.target_path.set(folder)
+            self.target_root.set(folder)
+            self._update_scope_paths()  # Update scope paths based on current mode
             self.status_var.set(f"Target: {os.path.basename(folder)}")
+
+    def _update_scope_paths(self):
+        """Update diff scope paths based on selected mode."""
+        baseline_root = self.baseline_root.get()
+        target_root = self.target_root.get()
+
+        if self.diff_scope_mode.get() == "whole_workspace":
+            # Scope is same as roots
+            self.diff_scope_baseline_path.set(baseline_root)
+            self.diff_scope_target_path.set(target_root)
+            # Disable subfolder controls
+            self.subfolder_path.set("")
+            self._enable_subfolder_controls(False)
+        else:  # subfolder_only
+            # Use subfolder path if set, otherwise root
+            subfolder = self.subfolder_path.get()
+            if subfolder and os.path.exists(subfolder):
+                # Calculate relative path from root
+                try:
+                    rel_path = os.path.relpath(subfolder, target_root)
+                    if not rel_path.startswith('..'):
+                        self.diff_scope_target_path.set(subfolder)
+                    else:
+                        self.diff_scope_target_path.set(target_root)
+                except:
+                    self.diff_scope_target_path.set(target_root)
+            else:
+                self.diff_scope_target_path.set(target_root)
+
+            # For baseline, try to mirror the subfolder if it exists
+            if subfolder and target_root:
+                try:
+                    rel_path = os.path.relpath(subfolder, target_root)
+                    if not rel_path.startswith('..'):
+                        baseline_subfolder = os.path.join(baseline_root, rel_path)
+                        if os.path.exists(baseline_subfolder):
+                            self.diff_scope_baseline_path.set(baseline_subfolder)
+                        else:
+                            self.diff_scope_baseline_path.set(baseline_root)
+                    else:
+                        self.diff_scope_baseline_path.set(baseline_root)
+                except:
+                    self.diff_scope_baseline_path.set(baseline_root)
+            else:
+                self.diff_scope_baseline_path.set(baseline_root)
+
+            # Enable subfolder controls
+            self._enable_subfolder_controls(True)
+
+    def _enable_subfolder_controls(self, enable):
+        """Enable or disable subfolder selection controls."""
+        state = "normal" if enable else "disabled"
+        try:
+            # Enable/disable the entry and button
+            for child in self.subfolder_frame.winfo_children():
+                if isinstance(child, tk.Entry) or isinstance(child, tk.Button):
+                    child.config(state=state)
+        except:
+            pass
+
+    def _browse_subfolder(self):
+        """Browse for subfolder within target root."""
+        target_root = self.target_root.get()
+        if not target_root:
+            messagebox.showwarning("No Target", "Please select target folder first")
+            return
+
+        initial_dir = target_root
+        folder = filedialog.askdirectory(title="Select Subfolder for Diff Scope",
+                                        initialdir=initial_dir)
+        if folder:
+            # Validate it's within target root
+            try:
+                rel_path = os.path.relpath(folder, target_root)
+                if rel_path.startswith('..'):
+                    messagebox.showwarning("Invalid Subfolder",
+                                          "Selected folder must be within the target root folder")
+                    return
+            except:
+                messagebox.showwarning("Invalid Subfolder",
+                                      "Selected folder must be within the target root folder")
+                return
+
+            self.subfolder_path.set(folder)
+            self._update_scope_paths()
     
     def _start_analysis(self):
         """Start interface analysis with loading indicator."""
-        if not self.baseline_path.get() or not self.target_path.get():
+        if not self.baseline_root.get() or not self.target_root.get():
             messagebox.showwarning("Missing Input",
                                   "Please select both baseline and target folders")
             return
         
         # Disable analyze button
         self.analyze_btn.config(state="disabled", text="⏳ ANALYZING...")
+
+        # Show progress bar
+        self._show_progress_bar()
+        self._set_progress(0, "🔄 Starting analysis...")
+        self.status_icon.config(fg="#FFC107")
         
         # Start analysis in background
         thread = threading.Thread(target=self._analyze_interfaces, daemon=True)
@@ -781,43 +967,46 @@ Features:
         try:
             self.is_analyzing = True
             
-            # Phase 1: Parse interfaces
-            self.window.after(0, lambda: self.loading.show("Parsing baseline interfaces..."))
-            self.window.after(0, lambda: self.status_var.set("🔄 Phase 1/3: Parsing baseline..."))
+            # Phase 1: Interface diff
+            self.window.after(0, lambda: self._set_progress(10, "🔄 Phase 1/3: Parsing & comparing interfaces..."))
             
             engine = InterfaceDiffEngine(ignore_patterns=['*_test.c', '*_mock.c'])
-            
-            self.window.after(0, lambda: self.loading.show("Parsing target interfaces..."))
-            self.window.after(0, lambda: self.status_var.set("🔄 Phase 2/3: Parsing target..."))
-            
+
             self.diff_result = engine.compare_baselines(
-                self.baseline_path.get(),
-                self.target_path.get()
+                self.baseline_root.get(),
+                self.target_root.get(),
+                self.diff_scope_baseline_path.get(),
+                self.diff_scope_target_path.get()
             )
+
+            self.window.after(0, lambda: self._set_progress(70, "🔄 Phase 2/3: Preparing results..."))
             
-            # Phase 2: Build dependency graphs (if enabled)
-            if self.enable_dependency_analysis.get() and DEPENDENCY_AVAILABLE:
-                self.window.after(0, lambda: self.loading.show("Building dependency graphs..."))
-                self.window.after(0, lambda: self.status_var.set("🔄 Phase 3/3: Analyzing dependencies..."))
-                
+            # Phase 2: Build dependency graphs (if enabled and full workspace analysis enabled)
+            if self.enable_dependency_analysis.get() and self.enable_full_dependency.get() and DEPENDENCY_AVAILABLE:
+                self.window.after(0, lambda: self._set_progress(80, "🔄 Phase 3/3: Building dependency graph..."))
+
                 try:
                     builder = DependencyGraphBuilder()
-                    self.dependency_graph_target = builder.build_graph(self.target_path.get())
+                    self.dependency_graph_target = builder.build_graph(self.target_root.get())
                     self.impact_analyzer_target = ImpactAnalyzer(self.dependency_graph_target)
                 except Exception as e:
                     logger.exception("Dependency analysis failed")
+
+            self.window.after(0, lambda: self._set_progress(95, "🔄 Rendering results..."))
             
             # Display results
             self.window.after(0, self._display_results)
-            self.window.after(0, lambda: self.loading.hide())
-            self.window.after(0, lambda: self.status_var.set("✅ Analysis complete"))
+            self.window.after(0, lambda: self._set_progress(100, "✅ Analysis complete"))
             self.window.after(0, lambda: self.status_icon.config(fg="#66BB6A"))
+            # Hide progress bar shortly after completion
+            self.window.after(800, self._hide_progress_bar)
             
         except Exception as e:
-            self.window.after(0, lambda: self.loading.hide())
             self.window.after(0, lambda: messagebox.showerror("Analysis Error", f"Error:\n\n{str(e)}"))
             self.window.after(0, lambda: self.status_var.set(f"❌ Analysis failed: {str(e)}"))
             self.window.after(0, lambda: self.status_icon.config(fg="#EF5350"))
+            self.window.after(0, lambda: self._set_progress(0))
+            self.window.after(0, self._hide_progress_bar)
             logger.exception("Analysis failed")
         finally:
             self.is_analyzing = False
@@ -843,14 +1032,12 @@ Features:
         
         # Update summary
         self._update_summary_stats()
-        
-        # Show completion message
+
+        # No popup on completion (keep it inline)
         total = len(self.all_diffs)
-        messagebox.showinfo("Analysis Complete",
-                           f"Found {total} interface changes\n\n" +
-                           f"🔴 Breaking: {self.diff_result.breaking_changes}\n" +
-                           f"🟡 Review: {self.diff_result.review_needed}\n" +
-                          f"🟢 Safe: {self.diff_result.safe_changes}")
+        self.status_var.set(
+            f"✅ Analysis complete: {total} changes | 🔴 {self.diff_result.breaking_changes} | 🟡 {self.diff_result.review_needed} | 🟢 {self.diff_result.safe_changes}"
+        )
     
     def _build_hierarchical_tree(self, file_groups):
         """Build hierarchical tree grouped by file."""
@@ -913,10 +1100,13 @@ Features:
         breaking = self.diff_result.breaking_changes
         review = self.diff_result.review_needed
         safe = self.diff_result.safe_changes
-        
+
+        # Build scope info
+        scope_info = self._get_scope_display_info()
+
         # Update main summary
         self.summary_label.config(
-            text=f"📊 Analysis Results: {total} interfaces analyzed across {len(self.file_groups)} files",
+            text=f"📊 Analysis Results: {total} interfaces analyzed across {len(self.file_groups)} files | {scope_info}",
             font=("Segoe UI", 9, "bold"),
             fg="#1976D2"
         )
@@ -933,17 +1123,37 @@ Features:
         # Update filter count
         self.filter_count_label.config(text=f"Showing all {total} changes")
     
+    def _get_scope_display_info(self):
+        """Get display string for current scope settings."""
+        if self.diff_scope_mode.get() == "whole_workspace":
+            diff_scope = "full workspace"
+        else:
+            target_root = self.target_root.get()
+            diff_scope_path = self.diff_scope_target_path.get()
+            if diff_scope_path and diff_scope_path != target_root:
+                try:
+                    rel_path = os.path.relpath(diff_scope_path, target_root)
+                    diff_scope = rel_path.replace('\\', '/')
+                except:
+                    diff_scope = "subfolder"
+            else:
+                diff_scope = "full workspace"
+
+        dep_scope = "full workspace" if self.enable_full_dependency.get() else "diff scope only"
+
+        return f"Diff scope: {diff_scope} | Dependency scope: {dep_scope}"
+
     def _add_stat_box(self, parent, value, label, color):
         """Add a stat box to summary."""
         box = tk.Frame(parent, bg=color, relief="flat", bd=0)
         box.pack(side="left", padx=5)
-        
+
         tk.Label(
             box, text=str(value),
             bg=color, fg="white",
             font=("Segoe UI", 14, "bold")
         ).pack(padx=10, pady=2)
-        
+
         tk.Label(
             box, text=label,
             bg=color, fg="white",
@@ -1006,6 +1216,64 @@ Features:
             tab.config(state="disabled")
         if self.tab_dependencies:
             self.tab_dependencies.config(state="disabled")
+
+    def _add_suggestions(self, widget, diff, file_path, impact):
+        """Add deterministic suggestions based on change characteristics."""
+        widget.insert("end", "\n═══ SUGGESTED ACTIONS ═══\n\n")
+
+        suggestions = []
+
+        # Severity-based suggestions
+        if diff.severity == Severity.BREAKING:
+            suggestions.append("🔴 HIGH PRIORITY: This breaking change requires immediate attention")
+            suggestions.append("  • Update all call sites before deploying")
+            suggestions.append("  • Consider backward compatibility wrapper if possible")
+
+            if diff.interface_type == InterfaceType.FUNCTION:
+                suggestions.append("  • Function signature change - update all callers")
+            elif diff.interface_type == InterfaceType.STRUCT:
+                suggestions.append("  • Struct change - may break memory layout")
+
+        elif diff.severity == Severity.REVIEW:
+            suggestions.append("🟡 MEDIUM PRIORITY: Manual review recommended")
+            suggestions.append("  • Check for implicit assumptions in calling code")
+
+        else:  # SAFE
+            suggestions.append("🟢 LOW PRIORITY: Appears safe to deploy")
+            suggestions.append("  • Still verify in test environment")
+
+        # Impact-based suggestions
+        if impact and impact.all_dependents:
+            blast_radius = len(impact.all_dependents)
+            if blast_radius > 10:
+                suggestions.append(f"💥 HIGH BLAST RADIUS: {blast_radius} files affected")
+                suggestions.append("  • Plan phased rollout")
+                suggestions.append("  • Consider feature flags for gradual migration")
+            elif blast_radius > 5:
+                suggestions.append(f"⚠️ MEDIUM BLAST RADIUS: {blast_radius} files affected")
+                suggestions.append("  • Update in logical groups")
+            else:
+                suggestions.append(f"✅ LOW BLAST RADIUS: {blast_radius} files affected")
+                suggestions.append("  • Can be updated incrementally")
+
+            # Suggest top impacted files
+            if impact.direct_dependents:
+                top_deps = sorted(impact.direct_dependents)[:5]
+                suggestions.append(f"  • Start with direct dependents: {', '.join(top_deps)}")
+
+        # Interface type specific suggestions
+        if diff.interface_type == InterfaceType.FUNCTION:
+            suggestions.append("🔧 FUNCTION CHANGE: Focus on parameter compatibility")
+        elif diff.interface_type == InterfaceType.STRUCT:
+            suggestions.append("📦 STRUCT CHANGE: Check for padding/size implications")
+        elif diff.interface_type == InterfaceType.ENUM:
+            suggestions.append("🔢 ENUM CHANGE: Verify switch statements and default cases")
+
+        # Display suggestions
+        for suggestion in suggestions:
+            widget.insert("end", f"{suggestion}\n")
+
+        widget.insert("end", "\n")
 
         # Kick off reference search asynchronously (doesn't block UI)
         if self.tab_dependencies:
@@ -1073,9 +1341,45 @@ Features:
             impact = self.impact_analyzer_target.analyze_impact(file_path)
             widget.insert("end", "\n═══ DEPENDENCY IMPACT ═══\n\n")
             widget.insert("end", f"Files Affected: {len(impact.all_dependents)}\n")
-            widget.insert("end", f"  • Direct: {len(impact.direct_dependents)}\n")
+
+            # Categorize impact by scope
+            if impact.all_dependents:
+                in_scope_impact = []
+                out_of_scope_impact = []
+
+                target_root = self.target_root.get()
+                diff_scope = self.diff_scope_target_path.get()
+
+                for dep in impact.all_dependents:
+                    if diff_scope and diff_scope != target_root:
+                        dep_abs = os.path.join(target_root, dep)
+                        try:
+                            rel_to_scope = os.path.relpath(dep_abs, diff_scope)
+                            if not rel_to_scope.startswith('..'):
+                                in_scope_impact.append(dep)
+                            else:
+                                out_of_scope_impact.append(dep)
+                        except:
+                            out_of_scope_impact.append(dep)
+                    else:
+                        in_scope_impact.append(dep)
+
+                widget.insert("end", f"  • In-scope: {len(in_scope_impact)}\n")
+                widget.insert("end", f"  • Out-of-scope: {len(out_of_scope_impact)}\n")
+            else:
+                widget.insert("end", f"  • Direct: {len(impact.direct_dependents)}\n")
+
             widget.insert("end", f"  • Headers: {impact.headers_affected}\n")
             widget.insert("end", f"  • Sources: {impact.sources_affected}\n")
+
+        # Add suggestions based on severity and impact
+        impact_data = None
+        if self.impact_analyzer_target:
+            try:
+                impact_data = self.impact_analyzer_target.analyze_impact(file_path)
+            except:
+                pass
+        self._add_suggestions(widget, diff, file_path, impact_data)
     
     def _write_dependencies_tab(self, widget, diff, file_path):
         """Write dependency information (file include graph + interface references placeholder)."""
@@ -1095,15 +1399,72 @@ Features:
 
                 widget.insert("end", f"\n📤 Reverse Includes / Dependents ({len(node.included_by)}):\n")
                 if node.included_by:
-                    for inc_by in sorted(node.included_by)[:25]:
-                        widget.insert("end", f"  • {inc_by}\n")
+                    # Categorize dependents by scope
+                    in_scope = []
+                    out_of_scope = []
+
+                    target_root = self.target_root.get()
+                    diff_scope = self.diff_scope_target_path.get()
+
+                    for dep in sorted(node.included_by):
+                        if diff_scope and diff_scope != target_root:
+                            # Check if dependent is within the diff scope
+                            dep_abs = os.path.join(target_root, dep)
+                            try:
+                                rel_to_scope = os.path.relpath(dep_abs, diff_scope)
+                                if not rel_to_scope.startswith('..'):
+                                    in_scope.append(dep)
+                                else:
+                                    out_of_scope.append(dep)
+                            except:
+                                out_of_scope.append(dep)
+                        else:
+                            # Whole workspace scope, everything is in scope
+                            in_scope.append(dep)
+
+                    widget.insert("end", f"    In-scope dependents ({len(in_scope)}):\n")
+                    for dep in in_scope[:15]:  # Limit to top 15
+                        widget.insert("end", f"      • {dep}\n")
+                    if len(in_scope) > 15:
+                        widget.insert("end", f"      ... and {len(in_scope) - 15} more\n")
+
+                    widget.insert("end", f"    Out-of-scope dependents ({len(out_of_scope)}):\n")
+                    for dep in out_of_scope[:15]:  # Limit to top 15
+                        widget.insert("end", f"      • {dep}\n")
+                    if len(out_of_scope) > 15:
+                        widget.insert("end", f"      ... and {len(out_of_scope) - 15} more\n")
                 else:
                     widget.insert("end", "  (none)\n")
 
-                widget.insert("end", f"\n🎯 Impact Radius: {len(impact.all_dependents)} file(s) transitively depend on this file\n")
-                widget.insert("end", f"    Direct dependents: {len(impact.direct_dependents)}\n")
-                widget.insert("end", f"    Headers affected:  {impact.headers_affected}\n")
-                widget.insert("end", f"    Sources affected:  {impact.sources_affected}\n")
+                # Categorize impact radius by scope
+                if impact.all_dependents:
+                    in_scope_impact = []
+                    out_of_scope_impact = []
+
+                    target_root = self.target_root.get()
+                    diff_scope = self.diff_scope_target_path.get()
+
+                    for dep in impact.all_dependents:
+                        if diff_scope and diff_scope != target_root:
+                            dep_abs = os.path.join(target_root, dep)
+                            try:
+                                rel_to_scope = os.path.relpath(dep_abs, diff_scope)
+                                if not rel_to_scope.startswith('..'):
+                                    in_scope_impact.append(dep)
+                                else:
+                                    out_of_scope_impact.append(dep)
+                            except:
+                                out_of_scope_impact.append(dep)
+                        else:
+                            in_scope_impact.append(dep)
+
+                    widget.insert("end", f"\n🎯 Impact Radius: {len(impact.all_dependents)} file(s) transitively depend on this file\n")
+                    widget.insert("end", f"    In-scope impact: {len(in_scope_impact)}\n")
+                    widget.insert("end", f"    Out-of-scope impact: {len(out_of_scope_impact)}\n")
+                    widget.insert("end", f"    Headers affected:  {impact.headers_affected}\n")
+                    widget.insert("end", f"    Sources affected:  {impact.sources_affected}\n")
+                else:
+                    widget.insert("end", f"\n🎯 Impact Radius: {len(impact.all_dependents)} file(s) transitively depend on this file\n")
             else:
                 widget.insert("end", "Dependency graph node not found for this file (path resolution issue).\n")
         else:
@@ -1123,10 +1484,10 @@ Features:
         """Start a background search for interface references and update Dependencies tab."""
         if not self.diff_result or not self.tab_dependencies:
             return
-        if not self.target_path.get():
+        if not self.target_root.get():
             return
 
-        root = self.target_path.get()
+        root = self.target_root.get()
         key = (root, diff.element_name, diff.interface_type.value)
 
         # If cached, update immediately
@@ -1198,22 +1559,58 @@ Features:
 
                 try:
                     with open(abs_path, 'r', encoding='utf-8', errors='ignore') as f:
-                        for idx, line in enumerate(f, start=1):
-                            if not pattern.search(line):
+                        content = f.read()
+                        lines = content.splitlines()
+
+                        # Preprocess content to remove strings and comments (similar to parser)
+                        processed_content = self._preprocess_content_for_search(content)
+
+                        for idx, line in enumerate(lines, start=1):
+                            original_line = line
+                            processed_line = processed_content.splitlines()[idx-1] if idx-1 < len(processed_content.splitlines()) else ""
+
+                            if not pattern.search(processed_line):
                                 continue
+
+                            # Additional heuristics for functions: exclude likely definitions
+                            if interface_type == InterfaceType.FUNCTION:
+                                # Skip if line looks like a function definition (has return type before name)
+                                stripped = original_line.strip()
+                                # Check for common return type patterns before function name
+                                func_def_pattern = re.compile(rf'\b(?:void|int|char|float|double|bool|uint\d+_t|int\d+_t|struct\s+\w+|enum\s+\w+|const\s+\w+|\w+\s*\*)\s+(?:\w+\s+)*{re.escape(interface_name)}\s*\(')
+                                if func_def_pattern.search(stripped):
+                                    continue
+
+                                # Skip if it's clearly a declaration/definition in header
+                                if abs_path.endswith('.h') or abs_path.endswith('.hpp'):
+                                    # Check for patterns like "extern", "static", or ending with ";"
+                                    if re.search(r'\b(?:extern|static)\b', stripped) or stripped.rstrip().endswith(';'):
+                                        continue
 
                             # Heuristic: exclude the definition/declaration line in its own file
                             if exclude_rel_path and rel_path == exclude_rel_path.replace('\\', '/'):
                                 if exclude_line and abs(idx - exclude_line) <= 2:
                                     continue
 
-                            results.append((rel_path, idx, line.strip()))
+                            results.append((rel_path, idx, original_line.strip()))
                             if len(results) >= max_results:
                                 return results
                 except Exception:
                     continue
 
         return results
+
+    def _preprocess_content_for_search(self, content: str) -> str:
+        """Remove string literals and comments to avoid false regex matches."""
+        # Remove string literals
+        content = re.sub(r'"(?:[^"\\]|\\.)*"', '""', content)
+        # Remove character literals
+        content = re.sub(r"'(?:[^'\\]|\\.)*'", "''", content)
+        # Remove multi-line comments
+        content = re.sub(r'/\*.*?\*/', '', content, flags=re.DOTALL)
+        # Remove single-line comments
+        content = re.sub(r'//.*', '', content)
+        return content
 
     def _update_dependencies_with_references(self, diff, rel_file_path: str, refs):
         """Update the Dependencies tab with reference results."""
@@ -1230,20 +1627,54 @@ Features:
             self.tab_dependencies.config(state="disabled")
             return
 
-        # Group references by file
-        grouped = defaultdict(list)
+        # Categorize references by scope
+        in_scope_refs = defaultdict(list)
+        out_of_scope_refs = defaultdict(list)
+
+        target_root = self.target_root.get()
+        diff_scope = self.diff_scope_target_path.get()
+
         for relp, line_no, text in refs:
-            grouped[relp].append((line_no, text))
+            if diff_scope and diff_scope != target_root:
+                file_abs = os.path.join(target_root, relp)
+                try:
+                    rel_to_scope = os.path.relpath(file_abs, diff_scope)
+                    if not rel_to_scope.startswith('..'):
+                        in_scope_refs[relp].append((line_no, text))
+                    else:
+                        out_of_scope_refs[relp].append((line_no, text))
+                except:
+                    out_of_scope_refs[relp].append((line_no, text))
+            else:
+                in_scope_refs[relp].append((line_no, text))
 
-        total = sum(len(v) for v in grouped.values())
-        self.tab_dependencies.insert("end", f"Found {total} reference(s) across {len(grouped)} file(s):\n\n")
+        total_in_scope = sum(len(v) for v in in_scope_refs.values())
+        total_out_scope = sum(len(v) for v in out_of_scope_refs.values())
+        total = total_in_scope + total_out_scope
 
-        for relp in sorted(grouped.keys()):
-            self.tab_dependencies.insert("end", f"📄 {relp} ({len(grouped[relp])})\n")
-            for line_no, text in grouped[relp][:25]:
-                self.tab_dependencies.insert("end", f"  L{line_no}: {text}\n")
-            if len(grouped[relp]) > 25:
-                self.tab_dependencies.insert("end", f"  ... and {len(grouped[relp]) - 25} more\n")
+        self.tab_dependencies.insert("end", f"Found {total} reference(s) across {len(in_scope_refs) + len(out_of_scope_refs)} file(s):\n")
+        self.tab_dependencies.insert("end", f"  • {total_in_scope} in scope, {total_out_scope} out of scope\n\n")
+
+        # Display in-scope references
+        if in_scope_refs:
+            self.tab_dependencies.insert("end", f"📄 In-scope files ({len(in_scope_refs)} files, {total_in_scope} refs):\n")
+            for relp in sorted(in_scope_refs.keys()):
+                self.tab_dependencies.insert("end", f"  📄 {relp} ({len(in_scope_refs[relp])})\n")
+                for line_no, text in in_scope_refs[relp][:10]:  # Limit per file
+                    self.tab_dependencies.insert("end", f"    L{line_no}: {text}\n")
+                if len(in_scope_refs[relp]) > 10:
+                    self.tab_dependencies.insert("end", f"    ... and {len(in_scope_refs[relp]) - 10} more\n")
+            self.tab_dependencies.insert("end", "\n")
+
+        # Display out-of-scope references
+        if out_of_scope_refs:
+            self.tab_dependencies.insert("end", f"📄 Out-of-scope files ({len(out_of_scope_refs)} files, {total_out_scope} refs):\n")
+            for relp in sorted(out_of_scope_refs.keys()):
+                self.tab_dependencies.insert("end", f"  📄 {relp} ({len(out_of_scope_refs[relp])})\n")
+                for line_no, text in out_of_scope_refs[relp][:10]:  # Limit per file
+                    self.tab_dependencies.insert("end", f"    L{line_no}: {text}\n")
+                if len(out_of_scope_refs[relp]) > 10:
+                    self.tab_dependencies.insert("end", f"    ... and {len(out_of_scope_refs[relp]) - 10} more\n")
             self.tab_dependencies.insert("end", "\n")
 
         self.tab_dependencies.config(state="disabled")
@@ -1380,12 +1811,14 @@ Features:
 def show_interface_diff_viewer(parent=None, baseline_path=None, target_path=None):
     """Show the enhanced interface diff viewer."""
     viewer = EnhancedInterfaceDiffViewer(parent)
-    
+
     if baseline_path:
-        viewer.baseline_path.set(baseline_path)
+        viewer.baseline_root.set(baseline_path)
+        viewer.diff_scope_baseline_path.set(baseline_path)
     if target_path:
-        viewer.target_path.set(target_path)
-    
+        viewer.target_root.set(target_path)
+        viewer.diff_scope_target_path.set(target_path)
+
     return viewer
 
 

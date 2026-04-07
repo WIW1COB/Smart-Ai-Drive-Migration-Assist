@@ -170,7 +170,9 @@ class InterfaceDiffEngine:
         self.ignore_patterns = ignore_patterns or ['*_test.c', '*_mock.c', 'test_*.c']
         self.parser = InterfaceParser(ignore_patterns=self.ignore_patterns)
     
-    def compare_baselines(self, baseline_path: str, target_path: str) -> BaselineDiff:
+    def compare_baselines(self, baseline_path: str, target_path: str,
+                          baseline_scope: Optional[str] = None,
+                          target_scope: Optional[str] = None) -> BaselineDiff:
         """
         Compare all interfaces between two baselines.
         
@@ -182,17 +184,29 @@ class InterfaceDiffEngine:
             BaselineDiff with all differences
         """
         logger.info(f"Comparing baselines:")
-        logger.info(f"  Baseline: {baseline_path}")
-        logger.info(f"  Target:   {target_path}")
-        
+        logger.info(f"  Baseline root: {baseline_path}")
+        logger.info(f"  Target root:   {target_path}")
+        logger.info(f"  Baseline scope: {baseline_scope or 'full'}")
+        logger.info(f"  Target scope:   {target_scope or 'full'}")
+
         result = BaselineDiff(baseline_path=baseline_path, target_path=target_path)
-        
+
+        # Determine actual paths to parse based on scope
+        baseline_parse_path = baseline_scope if baseline_scope else baseline_path
+        target_parse_path = target_scope if target_scope else target_path
+
         # Parse both baselines
         logger.info("Parsing baseline interfaces...")
-        baseline_interfaces = self.parser.parse_folder(baseline_path)
-        
+        baseline_interfaces = self.parser.parse_folder(baseline_parse_path)
+
         logger.info("Parsing target interfaces...")
-        target_interfaces = self.parser.parse_folder(target_path)
+        target_interfaces = self.parser.parse_folder(target_parse_path)
+
+        # Adjust relative paths to be root-relative if parsing subfolder
+        if baseline_scope and baseline_scope != baseline_path:
+            baseline_interfaces = self._adjust_relative_paths(baseline_interfaces, baseline_scope, baseline_path)
+        if target_scope and target_scope != target_path:
+            target_interfaces = self._adjust_relative_paths(target_interfaces, target_scope, target_path)
         
         # Get all file paths
         baseline_files = set(baseline_interfaces.keys())
@@ -609,7 +623,25 @@ class InterfaceDiffEngine:
                     return area
         
         return "General"
-    
+
+    def _adjust_relative_paths(self, interfaces: Dict[str, FileInterfaces],
+                              scope_path: str, root_path: str) -> Dict[str, FileInterfaces]:
+        """Adjust relative paths from scope-relative to root-relative."""
+        adjusted = {}
+
+        for rel_path, file_interfaces in interfaces.items():
+            # Calculate new relative path from root
+            abs_path = os.path.join(scope_path, rel_path)
+            new_rel_path = os.path.relpath(abs_path, root_path)
+
+            # Update file_path in each interface element
+            for interface in file_interfaces.all_elements():
+                interface.file_path = os.path.join(root_path, new_rel_path)
+
+            adjusted[new_rel_path] = file_interfaces
+
+        return adjusted
+
     def _log_summary(self, result: BaselineDiff):
         """Log comparison summary."""
         logger.info("=" * 60)
