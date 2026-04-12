@@ -4,9 +4,17 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import os
 import threading
+import json
+import logging
 
 from src.utils.comparison_engine import compare_folders, cleanup_temp_dirs
 from src.gui.results_viewer import show_results_dialog
+from src.rtc.connection import RTCConnection, get_rtc_connection
+from src.config import settings
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 class MigrationAnalysisGUI:
@@ -17,6 +25,12 @@ class MigrationAnalysisGUI:
         self.root.title("Migration Analysis Report Generator")
         self.root.geometry("780x540")
         self.root.config(bg="#EAF3FB")
+        
+        # RTC Connection variables
+        self.rtc_username = tk.StringVar()
+        self.rtc_password = tk.StringVar()
+        self.rtc_server_url = tk.StringVar(value=settings.RTC_SERVER_URL)
+        self.rtc_connection = None
         
         self.setup_ui()
     
@@ -391,16 +405,25 @@ class MigrationAnalysisGUI:
                 )
                 return
             
-            messagebox.showinfo(
-                "Feature Coming Soon",
-                "🌐 Online → Online Mode\n\n"
-                "RTC Snapshot comparison via URLs will be implemented soon.\n\n"
-                "This feature will:\n"
-                "• Download snapshots from RTC server\n"
-                "• Extract components and files\n"
-                "• Compare them automatically\n\n"
-                "For now, please use Offline → Offline mode."
-            )
+            # Check if different
+            rtc_temp = RTCConnection(self.rtc_server_url.get(), "", "")
+            uuid1 = rtc_temp.extract_snapshot_uuid(url1)
+            uuid2 = rtc_temp.extract_snapshot_uuid(url2)
+            
+            if uuid1 == uuid2:
+                messagebox.showerror(
+                    "Invalid Input",
+                    "⚠️ Both snapshot URLs point to the SAME snapshot!\n\n"
+                    "Please select two different snapshots for comparison."
+                )
+                return
+            
+            # Request credentials if not already provided
+            if not self.rtc_username.get() or not self.rtc_password.get():
+                self.show_credential_dialog()
+            else:
+                # Start comparison with existing credentials
+                self.start_snapshot_comparison(url1, url2)
         
         elif mode == "online_offline":
             # Online → Offline: RTC URL + Local Folder
@@ -424,13 +447,408 @@ class MigrationAnalysisGUI:
             messagebox.showinfo(
                 "Feature Coming Soon",
                 "🔄 Online → Offline Mode\n\n"
-                "Comparing RTC snapshot with local folder will be implemented soon.\n\n"
-                "This feature will:\n"
-                "• Download snapshot from RTC server\n"
-                "• Compare with your local folder\n"
-                "• Generate comparison reports\n\n"
-                "For now, please use Offline → Offline mode."
+                "Comparing RTC snapshot with local folder will be implemented soon."
             )
+    
+    def show_credential_dialog(self):
+        """Show dialog to input RTC credentials"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("RTC Login")
+        dialog.geometry("450x300")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+        
+        # Center the dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_width() // 2)
+        y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
+        dialog.geometry(f"+{x}+{y}")
+        
+        # Header
+        header = tk.Frame(dialog, bg='#003366', height=60)
+        header.pack(fill=tk.X)
+        header.pack_propagate(False)
+        
+        tk.Label(
+            header,
+            text="🔐 RTC Login",
+            font=('Segoe UI', 14, 'bold'),
+            bg='#003366',
+            fg='white'
+        ).pack(pady=15)
+        
+        # Main frame
+        main_frame = tk.Frame(dialog, bg='white')
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=15)
+        
+        tk.Label(
+            main_frame,
+            text="Enter RTC credentials:",
+            font=('Segoe UI', 10),
+            bg='white'
+        ).pack(anchor=tk.W, pady=(0, 10))
+        
+        # Username
+        tk.Label(main_frame, text="Username:", font=('Segoe UI', 10), bg='white').pack(anchor=tk.W)
+        username_entry = ttk.Entry(main_frame, textvariable=self.rtc_username, width=40)
+        username_entry.pack(fill=tk.X, pady=(0, 10))
+        
+        # Password
+        tk.Label(main_frame, text="Password:", font=('Segoe UI', 10), bg='white').pack(anchor=tk.W)
+        password_entry = ttk.Entry(main_frame, textvariable=self.rtc_password, show='●', width=40)
+        password_entry.pack(fill=tk.X, pady=(0, 15))
+        
+        def on_ok():
+            username = self.rtc_username.get().strip()
+            password = self.rtc_password.get().strip()
+            
+            if not username or not password:
+                messagebox.showerror('Error', 'Please enter both username and password.')
+                return
+            
+            dialog.destroy()
+            
+            # Get snapshot URLs
+            url1 = self.snapshot1_entry.get().strip()
+            url2 = self.snapshot2_entry.get().strip()
+            
+            # Start comparison
+            self.start_snapshot_comparison(url1, url2)
+        
+        def on_cancel():
+            dialog.destroy()
+        
+        # Buttons
+        button_frame = tk.Frame(main_frame, bg='white')
+        button_frame.pack(pady=(10, 0))
+        
+        tk.Button(
+            button_frame,
+            text="✓ Login",
+            command=on_ok,
+            font=('Segoe UI', 10, 'bold'),
+            bg='#007B3E',
+            fg='white',
+            padx=20,
+            pady=8
+        ).pack(side=tk.LEFT, padx=5)
+        
+        tk.Button(
+            button_frame,
+            text="✕ Cancel",
+            command=on_cancel,
+            font=('Segoe UI', 10, 'bold'),
+            bg='#666666',
+            fg='white',
+            padx=20,
+            pady=8
+        ).pack(side=tk.LEFT, padx=5)
+        
+        username_entry.focus()
+        dialog.bind('<Return>', lambda e: on_ok())
+        dialog.bind('<Escape>', lambda e: on_cancel())
+    
+    def start_snapshot_comparison(self, url1, url2):
+        """Start RTC snapshot comparison in background thread"""
+        # Disable button during processing
+        self.compare_btn.config(state='disabled')
+        self.progress_bar['value'] = 0
+        self.progress_label.config(text="🌐 Connecting to RTC server...")
+        self.root.update()
+        
+        # Run in background thread
+        thread = threading.Thread(
+            target=self._snapshot_comparison_thread,
+            args=(url1, url2),
+            daemon=True
+        )
+        thread.start()
+    
+    def _snapshot_comparison_thread(self, url1, url2):
+        """
+        Background thread for snapshot comparison with comprehensive error handling
+        
+        Steps:
+        1. Validate inputs
+        2. Test RTC connection
+        3. Fetch snapshot 1 components
+        4. Fetch snapshot 2 components
+        5. Compare snapshots (component-level)
+        6. Optionally fetch file-level details
+        7. Display results
+        """
+        try:
+            logger.info("=" * 80)
+            logger.info("SNAPSHOT COMPARISON STARTED")
+            logger.info("=" * 80)
+            
+            # Get credentials
+            username = self.rtc_username.get()
+            password = self.rtc_password.get()
+            server_url = self.rtc_server_url.get()
+            
+            # Validate credentials
+            self.root.after(0, lambda: self._update_progress(5, "Validating credentials..."))
+            if not username or not password:
+                error_msg = "Username and password are required"
+                logger.error(f"Validation failed: {error_msg}")
+                self.root.after(0, lambda: messagebox.showerror('Validation Error', error_msg))
+                self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+                self.root.after(0, lambda: self._update_progress(0, "Ready"))
+                return
+            
+            logger.info(f"Server: {server_url}")
+            logger.info(f"Username: {username}")
+            
+            # Test connection (with retries)
+            self.root.after(0, lambda: self._update_progress(8, "🔗 Testing RTC connection (with retries)..."))
+            rtc_conn = None
+            error_msg = None
+            
+            for attempt in range(1, 4):  # 3 attempts
+                logger.info(f"Connection attempt {attempt}/3...")
+                rtc_conn, error_msg = get_rtc_connection(username, password, server_url)
+                
+                if rtc_conn:
+                    logger.info("✓ RTC connection successful")
+                    break
+                
+                if attempt < 3:
+                    logger.warning(f"Attempt {attempt} failed: {error_msg}, retrying...")
+                    import time
+                    time.sleep(2)  # Wait 2 seconds before retry
+            
+            if not rtc_conn:
+                detailed_error = self._format_connection_error(error_msg)
+                logger.error(f"Connection failed after 3 attempts: {error_msg}")
+                self.root.after(0, lambda: messagebox.showerror('Connection Error', detailed_error))
+                self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+                self.root.after(0, lambda: self._update_progress(0, "Ready"))
+                return
+            
+            # Extract and validate UUIDs
+            self.root.after(0, lambda: self._update_progress(10, "Validating snapshot URLs..."))
+            logger.info("Extracting snapshot UUIDs...")
+            
+            uuid1 = rtc_conn.extract_snapshot_uuid(url1)
+            uuid2 = rtc_conn.extract_snapshot_uuid(url2)
+            
+            logger.info(f"Snapshot 1 UUID: {uuid1}")
+            logger.info(f"Snapshot 2 UUID: {uuid2}")
+            
+            # Validate UUIDs
+            if not uuid1 or not uuid2:
+                error_msg = "Could not extract snapshot UUIDs. Please verify the URLs/UUIDs are correct."
+                logger.error(error_msg)
+                self.root.after(0, lambda: messagebox.showerror('Invalid Input', error_msg))
+                self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+                self.root.after(0, lambda: self._update_progress(0, "Ready"))
+                return
+            
+            if uuid1 == uuid2:
+                error_msg = "⚠️ Both snapshot UUIDs are identical!\n\nPlease select two different snapshots."
+                logger.error(f"UUID validation error: {error_msg}")
+                self.root.after(0, lambda: messagebox.showerror('Duplicate Snapshot', error_msg))
+                self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+                self.root.after(0, lambda: self._update_progress(0, "Ready"))
+                return
+            
+            # Fetch snapshot 1 components
+            self.root.after(0, lambda: self._update_progress(20, "⬇️ Fetching Snapshot 1 components..."))
+            logger.info("Fetching components from Snapshot 1...")
+            
+            snap1_components = rtc_conn.fetch_snapshot_components(uuid1, 'Snapshot 1')
+            
+            if not snap1_components:
+                error_msg = "❌ No components found in Snapshot 1\n\nPossible reasons:\n" \
+                           "• Invalid snapshot UUID\n" \
+                           "• Snapshot does not exist\n" \
+                           "• Permission denied\n" \
+                           "• Network connectivity issue"
+                logger.error("Failed to fetch components from Snapshot 1")
+                self.root.after(0, lambda: messagebox.showerror('Snapshot 1 Error', error_msg))
+                self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+                self.root.after(0, lambda: self._update_progress(0, "Ready"))
+                return
+            
+            logger.info(f"✓ Snapshot 1: Found {len(snap1_components)} components")
+            
+            # Fetch snapshot 2 components
+            self.root.after(
+                0,
+                lambda: self._update_progress(50,f"⬇️ Fetching Snapshot 2 components ({len(snap1_components)} in Snapshot 1)...")
+            )
+            logger.info("Fetching components from Snapshot 2...")
+            
+            snap2_components = rtc_conn.fetch_snapshot_components(uuid2, 'Snapshot 2')
+            
+            if not snap2_components:
+                error_msg = "❌ No components found in Snapshot 2\n\nPossible reasons:\n" \
+                           "• Invalid snapshot UUID\n" \
+                           "• Snapshot does not exist\n" \
+                           "• Permission denied\n" \
+                           "• Network connectivity issue"
+                logger.error("Failed to fetch components from Snapshot 2")
+                self.root.after(0, lambda: messagebox.showerror('Snapshot 2 Error', error_msg))
+                self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+                self.root.after(0, lambda: self._update_progress(0, "Ready"))
+                return
+            
+            logger.info(f"✓ Snapshot 2: Found {len(snap2_components)} components")
+            
+            # Compare snapshots
+            self.root.after(0, lambda: self._update_progress(70, "🔍 Comparing components..."))
+            logger.info(f"Comparing {len(snap1_components)} vs {len(snap2_components)} components...")
+            
+            comparison_results = rtc_conn.compare_snapshots(snap1_components, snap2_components)
+            
+            # Calculate statistics
+            modified = sum(1 for r in comparison_results if r['status'] == 'Modified')
+            added = sum(1 for r in comparison_results if 'Added' in r['status'])
+            removed = sum(1 for r in comparison_results if 'Removed' in r['status'])
+            unchanged = sum(1 for r in comparison_results if r['status'] == 'Unchanged')
+            
+            logger.info(f"Comparison results:")
+            logger.info(f"  Modified: {modified}")
+            logger.info(f"  Added: {added}")
+            logger.info(f"  Removed: {removed}")
+            logger.info(f"  Unchanged: {unchanged}")
+            logger.info(f"  Total: {len(comparison_results)}")
+            
+            # Display results
+            self.root.after(0, lambda: self._display_snapshot_results(comparison_results))
+            
+            self.root.after(0, lambda: self._update_progress(
+                100,
+                f"✅ Comparison complete: {len(comparison_results)} components" \
+                f" ({modified} modified, {added} added, {removed} removed)"
+            ))
+            
+            logger.info("=" * 80)
+            logger.info("SNAPSHOT COMPARISON COMPLETED SUCCESSFULLY")
+            logger.info("=" * 80)
+            
+            self.root.after(2000, lambda: self.compare_btn.config(state='normal'))
+            
+        except Exception as e:
+            logger.error(f"Snapshot comparison error: {e}", exc_info=True)
+            error_msg = f"Snapshot comparison failed:\n\n{type(e).__name__}:\n{str(e)[:200]}"
+            self.root.after(0, lambda: messagebox.showerror('Error', error_msg))
+            self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+            self.root.after(0, lambda: self._update_progress(0, "Ready"))
+    
+    def _format_connection_error(self, error_msg):
+        """Format connection error message with troubleshooting tips"""
+        if not error_msg:
+            return "Unknown connection error"
+        
+        tips = ""
+        if "resolve host" in error_msg.lower():
+            tips = "\n\nTroubleshooting:\n" \
+                   "• Check network connection\n" \
+                   "• Verify RTC server URL is reachable\n" \
+                   "• May need VPN (if off-site)"
+        elif "authentication" in error_msg.lower() or "401" in error_msg:
+            tips = "\n\nTroubleshooting:\n" \
+                   "• Verify username and password\n" \
+                   "• Check credentials are correct\n" \
+                   "• Account may need RTC permissions"
+        elif "timeout" in error_msg.lower():
+            tips = "\n\nTroubleshooting:\n" \
+                   "• Server may be slow or offline\n" \
+                   "• Try again in a moment\n" \
+                   "• Check network connectivity"
+        elif "ssl" in error_msg.lower():
+            tips = "\n\nTroubleshooting:\n" \
+                   "• SSL certificate issue (if self-signed)\n" \
+                   "• May need certificate bypass\n" \
+                   "• Contact IT support if persistent"
+        
+        return f"Cannot connect to RTC:\n{error_msg}{tips}"
+
+    
+    def _update_progress(self, value, message):
+        """Update progress bar and label"""
+        self.progress_bar['value'] = value
+        self.progress_label.config(text=message)
+        self.root.update_idletasks()
+    
+    def _display_snapshot_results(self, comparison_results):
+        """Display snapshot comparison results"""
+        # Create popup window for results
+        result_window = tk.Toplevel(self.root)
+        result_window.title("📊 Snapshot Comparison Results")
+        result_window.geometry("900x600")
+        
+        # Header
+        header = tk.Frame(result_window, bg='#003366')
+        header.pack(fill=tk.X)
+        tk.Label(
+            header,
+            text="📊 Snapshot Comparison Results",
+            font=('Segoe UI', 12, 'bold'),
+            bg='#003366',
+            fg='white'
+        ).pack(pady=10)
+        
+        # Statistics
+        modified = sum(1 for r in comparison_results if r['status'] == 'Modified')
+        added = sum(1 for r in comparison_results if 'Added' in r['status'])
+        removed = sum(1 for r in comparison_results if 'Removed' in r['status'])
+        unchanged = sum(1 for r in comparison_results if r['status'] == 'Unchanged')
+        
+        stats_frame = tk.Frame(result_window, bg='#EAF3FB')
+        stats_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        tk.Label(stats_frame, text=f"✏️ Modified: {modified}", bg='#EAF3FB', fg='#f39c12').pack(side=tk.LEFT, padx=10)
+        tk.Label(stats_frame, text=f"➕ Added: {added}", bg='#EAF3FB', fg='#27ae60').pack(side=tk.LEFT, padx=10)
+        tk.Label(stats_frame, text=f"➖ Removed: {removed}", bg='#EAF3FB', fg='#e74c3c').pack(side=tk.LEFT, padx=10)
+        tk.Label(stats_frame, text=f"✓ Unchanged: {unchanged}", bg='#EAF3FB', fg='#95a5a6').pack(side=tk.LEFT, padx=10)
+        
+        # Tree view
+        tree_frame = tk.Frame(result_window)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        tree = ttk.Treeview(tree_frame, columns=('status', 'snapshot1', 'snapshot2'), show='tree headings', height=20)
+        tree.pack(fill=tk.BOTH, expand=True)
+        
+        # Configure columns
+        tree.column('#0', width=400, heading='Component Name')
+        tree.column('status', width=150, heading='Status')
+        tree.column('snapshot1', width=150, heading='Snapshot 1')
+        tree.column('snapshot2', width=150, heading='Snapshot 2')
+        
+        # Configure tags for colors
+        tree.tag_configure('modified', foreground='#f39c12')
+        tree.tag_configure('added', foreground='#27ae60')
+        tree.tag_configure('removed', foreground='#e74c3c')
+        tree.tag_configure('unchanged', foreground='#95a5a6')
+        
+        # Populate tree
+        for result in sorted(comparison_results, key=lambda r: (r['status'], r['name'])):
+            comp_name = result['name']
+            status = result['status']
+            snap1 = result.get('snapshot1', {})
+            snap2 = result.get('snapshot2', {})
+            snap1_uuid = snap1.get('uuid', 'N/A')[:8] if snap1 else 'N/A'
+            snap2_uuid = snap2.get('uuid', 'N/A')[:8] if snap2 else 'N/A'
+            
+            tag = status.lower().replace(' ', '_')
+            tree.insert('', 'end', text=comp_name, values=(status, snap1_uuid, snap2_uuid), tags=(tag,))
+        
+        # Close button
+        button_frame = tk.Frame(result_window, bg='#EAF3FB')
+        button_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        tk.Button(
+            button_frame,
+            text="Close",
+            bg='#003366',
+            fg='white',
+            command=result_window.destroy
+        ).pack()
+
     
     def run_folder_comparison(self, folder1, folder2):
         """Run folder comparison in background thread"""
