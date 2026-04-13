@@ -62,9 +62,19 @@ def _scan_related_files(fname: str, target_files_dict: Dict[str, str], max_files
     return found
 
 
+def _add_proxy_auth(proxy_url: str, username: str, password: str) -> str:
+    """Add authentication credentials to proxy URL."""
+    if "://" in proxy_url:
+        scheme, rest = proxy_url.split("://", 1)
+        return f"{scheme}://{username}:{password}@{rest}"
+    return proxy_url
+
+
 def _get_aoai_client(subscription_key: Optional[str] = None):
-    """Create AzureOpenAI client using settings/env."""
-    api_key = (subscription_key or settings.AOAI_FARM_SUBSCRIPTION_KEY or "").strip()
+    """Create AzureOpenAI client using settings/env with proper proxy support."""
+    import httpx
+    
+    api_key = (subscription_key or settings.AOAI_FARM_SUBSCRIPTION_KEY or "").strip("'\"").strip()
     if not api_key or api_key.lower() == "none":
         raise ValueError(
             "Azure OpenAI subscription key not configured.\n\n"
@@ -78,11 +88,38 @@ def _get_aoai_client(subscription_key: Optional[str] = None):
             "openai package not available. Ensure requirements are installed (openai>=1.0.0)."
         ) from e
 
+    # Configure proxy if present
+    proxy_url = settings.PROXY_URL or None
+    http_client_kwargs = {
+        "verify": False,  # SSL verification disabled (Bosch internal AOAI setup)
+        "timeout": 60.0,
+    }
+    
+    if proxy_url:
+        # Configure proxy with authentication if credentials are provided
+        if settings.PROXY_USER and settings.PROXY_PASS:
+            proxy_url = _add_proxy_auth(proxy_url, settings.PROXY_USER, settings.PROXY_PASS)
+        
+        http_client_kwargs["proxy"] = proxy_url
+    
+    try:
+        http_client = httpx.Client(**http_client_kwargs)
+    except Exception as e:
+        # If httpx.Client creation fails, fall back to default Azure client
+        # (though this might still fail if proxy auth is needed)
+        return AzureOpenAI(
+            api_key=api_key,
+            azure_endpoint=settings.AOAI_FARM_ENDPOINT,
+            azure_deployment=settings.AOAI_FARM_DEPLOYMENT,
+            api_version=settings.AOAI_FARM_API_VERSION,
+        )
+
     return AzureOpenAI(
         api_key=api_key,
         azure_endpoint=settings.AOAI_FARM_ENDPOINT,
         azure_deployment=settings.AOAI_FARM_DEPLOYMENT,
         api_version=settings.AOAI_FARM_API_VERSION,
+        http_client=http_client,
     )
 
 
