@@ -795,27 +795,37 @@ class MigrationAnalysisGUI:
         """
         Transform snapshot comparison results into results_viewer format
         
-        Results viewer expects list of tuples:
-        (file_path, folder1_value, folder2_value, full_path_combined, status_type)
+        Match offline results format:
+        [comp_name, metric1, metric2, line_status, status, html_link, purpose, changeset]
         
-        For snapshots, we map:
-        - file_path → component name
-        - folder1_value → Snapshot 1 UUID
-        - folder2_value → Snapshot 2 UUID
-        - full_path → component name (for display)
-        - status_type → Modified|Added|Removed|Identical
+        For snapshots:
+        - index[0] = component name
+        - index[1] = snapshot1_uuid length (as numeric reference)
+        - index[2] = snapshot2_uuid length (as numeric reference)
+        - index[3] = line_status (baseline + UUID info)
+        - index[4] = status (Modified|Different|Identical|Only in Snapshot 1|Only in Snapshot 2)
+        - index[5] = html_link (N/A for snapshot components)
+        - index[6] = purpose
+        - index[7] = changeset_info
         """
         viewer_results = []
         
         for result in comparison_results:
             comp_name = result['name']
             status = result['status']
-            snap1 = result.get('snapshot1')
-            snap2 = result.get('snapshot2')
+            snap1 = result.get('snapshot1', {})
+            snap2 = result.get('snapshot2', {})
             
-            # Extract UUIDs for reference
-            snap1_uuid = snap1.get('uuid', 'N/A') if snap1 else 'N/A'
-            snap2_uuid = snap2.get('uuid', 'N/A') if snap2 else 'N/A'
+            # Extract baseline UUIDs
+            baseline1_uuid = snap1.get('baseline_uuid', 'N/A') if snap1 else 'N/A'
+            baseline2_uuid = snap2.get('baseline_uuid', 'N/A') if snap2 else 'N/A'
+            
+            # Create numeric metrics (UUID string length for reference)
+            metric1 = len(baseline1_uuid) if baseline1_uuid != 'N/A' else 0
+            metric2 = len(baseline2_uuid) if baseline2_uuid != 'N/A' else 0
+            
+            # Create line status with baseline info
+            line_status = f"Baseline: {baseline1_uuid[:8]}... → {baseline2_uuid[:8]}..."
             
             # Map status to results_viewer format
             if status == 'Unchanged':
@@ -829,18 +839,21 @@ class MigrationAnalysisGUI:
             else:
                 status_type = status
             
-            # Create result tuple for viewer
-            result_tuple = (
-                comp_name,           # file_path (component name)
-                snap1_uuid[:12],     # folder1_value (Snapshot 1 UUID shortened)
-                snap2_uuid[:12],     # folder2_value (Snapshot 2 UUID shortened)
-                comp_name,           # full_path (component name for display)
-                status_type          # status_type
-            )
+            # Create result list matching offline format
+            result_list = [
+                comp_name,                              # index[0]: component name
+                metric1,                                # index[1]: metric1 (baseline1 uuid length)
+                metric2,                                # index[2]: metric2 (baseline2 uuid length)
+                line_status,                            # index[3]: line_status
+                status_type,                            # index[4]: status
+                "N/A",                                  # index[5]: html_link (N/A for components)
+                f"Component comparison",                # index[6]: purpose
+                ""                                      # index[7]: changeset_info (empty for snapshots)
+            ]
             
-            viewer_results.append(result_tuple)
+            viewer_results.append(result_list)
         
-        logger.info(f"Transformed {len(viewer_results)} results for viewer")
+        logger.info(f"Transformed {len(viewer_results)} results for viewer (format: 8-element list)")
         return viewer_results
     
     def _display_snapshot_results_with_viewer(self, viewer_results, comparison_metadata):
@@ -848,7 +861,7 @@ class MigrationAnalysisGUI:
         Display snapshot comparison results using enhanced results_viewer
         
         Args:
-            viewer_results: List of results in viewer format
+            viewer_results: List of results in viewer format (8-element lists)
             comparison_metadata: Dict with snapshot URLs and component data
         """
         try:
@@ -880,6 +893,15 @@ class MigrationAnalysisGUI:
                 'output_dir': 'Snapshot Comparison Results',
                 'excel': 'snapshot_comparison.xlsx'
             }
+            
+            # Log transformation details
+            logger.info(f"Displaying {len(viewer_results)} snapshots results in viewer")
+            if viewer_results:
+                logger.info(f"Sample result: {viewer_results[0]} (type: {type(viewer_results[0])})")
+                logger.info(f"Result length: {len(viewer_results[0]) if viewer_results else 'N/A'}")
+            
+            logger.info(f"Files1 count: {len(files1)}, Files2 count: {len(files2)}")
+            logger.info(f"snap1_name: {snap1_name}, snap2_name: {snap2_name}")
             
             # Show results using enhanced viewer
             show_results_dialog(
