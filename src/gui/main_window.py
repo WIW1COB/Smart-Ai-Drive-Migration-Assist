@@ -716,8 +716,25 @@ class MigrationAnalysisGUI:
             logger.info(f"  Unchanged: {unchanged}")
             logger.info(f"  Total: {len(comparison_results)}")
             
-            # Display results
-            self.root.after(0, lambda: self._display_snapshot_results(comparison_results))
+            # Prepare results for viewer
+            self.root.after(0, lambda: self._update_progress(85, "📊 Preparing results viewer..."))
+            
+            # Transform snapshot results into results_viewer format
+            viewer_results = self._transform_snapshot_results_for_viewer(comparison_results)
+            
+            # Store comparison metadata for viewer
+            comparison_metadata = {
+                'snap1_url': url1,
+                'snap2_url': url2,
+                'snap1_components': snap1_components,
+                'snap2_components': snap2_components,
+                'comparison_results': comparison_results
+            }
+            
+            # Display results using enhanced viewer
+            self.root.after(0, lambda: self._display_snapshot_results_with_viewer(
+                viewer_results, comparison_metadata
+            ))
             
             self.root.after(0, lambda: self._update_progress(
                 100,
@@ -773,6 +790,119 @@ class MigrationAnalysisGUI:
         self.progress_bar['value'] = value
         self.progress_label.config(text=message)
         self.root.update_idletasks()
+    
+    def _transform_snapshot_results_for_viewer(self, comparison_results):
+        """
+        Transform snapshot comparison results into results_viewer format
+        
+        Results viewer expects list of tuples:
+        (file_path, folder1_value, folder2_value, full_path_combined, status_type)
+        
+        For snapshots, we map:
+        - file_path → component name
+        - folder1_value → Snapshot 1 UUID
+        - folder2_value → Snapshot 2 UUID
+        - full_path → component name (for display)
+        - status_type → Modified|Added|Removed|Identical
+        """
+        viewer_results = []
+        
+        for result in comparison_results:
+            comp_name = result['name']
+            status = result['status']
+            snap1 = result.get('snapshot1')
+            snap2 = result.get('snapshot2')
+            
+            # Extract UUIDs for reference
+            snap1_uuid = snap1.get('uuid', 'N/A') if snap1 else 'N/A'
+            snap2_uuid = snap2.get('uuid', 'N/A') if snap2 else 'N/A'
+            
+            # Map status to results_viewer format
+            if status == 'Unchanged':
+                status_type = 'Identical'
+            elif status == 'Modified':
+                status_type = 'Different'
+            elif status == 'Added in Snapshot 2':
+                status_type = 'Only in Snapshot 2'
+            elif status == 'Removed in Snapshot 2':
+                status_type = 'Only in Snapshot 1'
+            else:
+                status_type = status
+            
+            # Create result tuple for viewer
+            result_tuple = (
+                comp_name,           # file_path (component name)
+                snap1_uuid[:12],     # folder1_value (Snapshot 1 UUID shortened)
+                snap2_uuid[:12],     # folder2_value (Snapshot 2 UUID shortened)
+                comp_name,           # full_path (component name for display)
+                status_type          # status_type
+            )
+            
+            viewer_results.append(result_tuple)
+        
+        logger.info(f"Transformed {len(viewer_results)} results for viewer")
+        return viewer_results
+    
+    def _display_snapshot_results_with_viewer(self, viewer_results, comparison_metadata):
+        """
+        Display snapshot comparison results using enhanced results_viewer
+        
+        Args:
+            viewer_results: List of results in viewer format
+            comparison_metadata: Dict with snapshot URLs and component data
+        """
+        try:
+            # Extract metadata
+            snap1_url = comparison_metadata['snap1_url']
+            snap2_url = comparison_metadata['snap2_url']
+            snap1_components = comparison_metadata['snap1_components']
+            snap2_components = comparison_metadata['snap2_components']
+            
+            # Create display names for snapshots
+            snap1_name = f"Snapshot 1: {snap1_url[:16]}..."
+            snap2_name = f"Snapshot 2: {snap2_url[:16]}..."
+            
+            # Create component name mappings (like file dictionaries for offline mode)
+            files1 = {}  # {component_name: component_uuid}
+            files2 = {}  # {component_name: component_uuid}
+            
+            for comp in snap1_components:
+                comp_name = comp.get('name', 'Unknown')
+                files1[comp_name] = comp.get('uuid', '')
+            
+            for comp in snap2_components:
+                comp_name = comp.get('name', 'Unknown')
+                files2[comp_name] = comp.get('uuid', '')
+            
+            # Create report paths (metadata only, snapshots don't have files)
+            report_paths = {
+                'csv': 'snapshot_comparison.csv',
+                'output_dir': 'Snapshot Comparison Results',
+                'excel': 'snapshot_comparison.xlsx'
+            }
+            
+            # Show results using enhanced viewer
+            show_results_dialog(
+                self.root,
+                viewer_results,
+                snap1_name,
+                snap2_name,
+                snap1_url,
+                snap2_url,
+                files1,
+                files2,
+                report_paths
+            )
+            
+            logger.info("✓ Snapshot comparison results displayed in enhanced viewer")
+            
+        except Exception as e:
+            logger.error(f"Error displaying snapshot results in viewer: {e}", exc_info=True)
+            # Fallback to simple display
+            messagebox.showerror(
+                "Error",
+                f"Error displaying results in enhanced viewer:\n\n{str(e)[:200]}"
+            )
     
     def _display_snapshot_results(self, comparison_results):
         """Display snapshot comparison results"""
