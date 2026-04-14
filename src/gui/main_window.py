@@ -697,11 +697,41 @@ class MigrationAnalysisGUI:
             
             logger.info(f"✓ Snapshot 2: Found {len(snap2_components)} components")
             
-            # Compare snapshots
-            self.root.after(0, lambda: self._update_progress(70, "🔍 Comparing components..."))
-            logger.info(f"Comparing {len(snap1_components)} vs {len(snap2_components)} components...")
+            # ===== COMPONENT SELECTION (Online Mode Specific) =====
+            # Show component selection dialog to user
+            self.root.after(0, lambda: self._update_progress(60, "📋 Opening component selection dialog..."))
+            logger.info("Showing component selection dialog for online mode...")
             
-            comparison_results = rtc_conn.compare_snapshots(snap1_components, snap2_components)
+            from src.gui.dialogs import show_component_selection_dialog
+            
+            selection_result = show_component_selection_dialog(snap1_components, snap2_components)
+            
+            if selection_result['canceled']:
+                logger.info("⚠️ User canceled component selection")
+                self.root.after(0, lambda: messagebox.showinfo('Cancelled', 'Component selection cancelled. Comparison aborted.'))
+                self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+                self.root.after(0, lambda: self._update_progress(0, "Ready"))
+                return
+            
+            selected_comp_names = set(selection_result['selected'])
+            logger.info(f"✓ User selected {len(selected_comp_names)}/{len(selection_result['common'])} common components")
+            
+            # Filter components to only selected ones
+            if selected_comp_names:
+                snap1_filtered = [c for c in snap1_components if c.get('name', str(c)) in selected_comp_names]
+                snap2_filtered = [c for c in snap2_components if c.get('name', str(c)) in selected_comp_names]
+                logger.info(f"Filtered: {len(snap1_filtered)} from Snapshot 1, {len(snap2_filtered)} from Snapshot 2")
+                logger.info(f"Excluded: {len(selection_result['only_in_snap1'])} only in Snap1, {len(selection_result['only_in_snap2'])} only in Snap2")
+            else:
+                logger.warning("No components selected - using all components")
+                snap1_filtered = snap1_components
+                snap2_filtered = snap2_components
+            
+            # Compare snapshots (only selected components)
+            self.root.after(0, lambda: self._update_progress(70, f"🔍 Comparing {len(snap1_filtered)} selected components..."))
+            logger.info(f"Comparing {len(snap1_filtered)} vs {len(snap2_filtered)} selected components...")
+            
+            comparison_results = rtc_conn.compare_snapshots(snap1_filtered, snap2_filtered)
             
             # Calculate statistics
             modified = sum(1 for r in comparison_results if r['status'] == 'Modified')
