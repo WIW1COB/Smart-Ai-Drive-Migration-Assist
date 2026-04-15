@@ -3,6 +3,7 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import os
+import sys
 import threading
 import json
 import logging
@@ -15,7 +16,17 @@ from src.config import settings
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
+try:
+    # Add src folder to sys.path if not present
+    _SRC_PATH = os.path.normpath(
+        os.path.join(os.path.dirname(__file__), "..", "..")
+    )
+    if _SRC_PATH not in sys.path:
+        sys.path.insert(0, _SRC_PATH)
+    from chatbot.chatbot import ChatConfig, build_chatbot, TkinterChatPanel  # type: ignore
+    _CHATBOT_AVAILABLE = True
+except Exception:
+    _CHATBOT_AVAILABLE = False
 
 class MigrationAnalysisGUI:
     """Main GUI window for Migration Analysis Tool"""
@@ -70,6 +81,7 @@ class MigrationAnalysisGUI:
         title_frame = tk.Frame(header_frame, bg="#003366")
         title_frame.pack(fill="x")
         
+        # Title (left-aligned so the chatbot button can sit on the right)
         title_label = tk.Label(
             title_frame,
             text="Migration Analysis Report Generator",
@@ -77,7 +89,25 @@ class MigrationAnalysisGUI:
             bg="#003366",
             fg="white"
         )
-        title_label.pack(padx=10, pady=10)
+        title_label.pack(side="left", padx=10, pady=10)
+
+        # ── Chatbot button (top-right corner of header) ──────────────────────
+        chatbot_btn = tk.Button(
+            title_frame,
+            text="\U0001f916  Code Assistant",
+            command=self._open_chatbot_window,
+            bg="#005C99" if _CHATBOT_AVAILABLE else "#555555",
+            fg="white",
+            font=("Segoe UI", 9, "bold"),
+            relief="flat",
+            cursor="hand2" if _CHATBOT_AVAILABLE else "arrow",
+            padx=10, pady=4,
+            state="normal" if _CHATBOT_AVAILABLE else "disabled",
+        )
+        chatbot_btn.pack(side="right", padx=12, pady=8)
+
+        if not _CHATBOT_AVAILABLE:
+            chatbot_btn.config(text="\U0001f916  Assistant (unavailable)")
     
     def create_mode_selection(self):
         """Create comparison mode selection"""
@@ -1264,6 +1294,85 @@ class MigrationAnalysisGUI:
         self.progress_label.config(text=f"❌ Error occurred")
         messagebox.showerror("Error", error_msg)
     
+    # -----------------------------------------------------------------------
+    # Chatbot window
+    # -----------------------------------------------------------------------
+
+    def _open_chatbot_window(self):
+        """Open (or raise) the floating Code Assistant chat window."""
+        if not _CHATBOT_AVAILABLE:
+            _expected = os.path.normpath(
+                os.path.join(os.path.dirname(__file__), "..", "chatbot", "chatbot.py")
+            )
+            messagebox.showwarning(
+                "Code Assistant Unavailable",
+                "chatbot.py could not be loaded.\n\n"
+                f"Expected location: {_expected}\n\n"
+                "Make sure chatbot.py exists in src/chatbot/."
+            )
+            return
+
+        # Re-use an already-open window instead of opening duplicates
+        if hasattr(self, "_chat_win") and self._chat_win.winfo_exists():
+            self._chat_win.lift()
+            self._chat_win.focus_force()
+            return
+
+        # ── Build chatbot (lazy — only once) ────────────────────────────────
+        if not hasattr(self, "_chatbot"):
+            # Use Migration_V2 5.py as KB (lives in src/chatbot/), otherwise fallback to main.py
+            _src_root = os.path.normpath(
+                os.path.join(os.path.dirname(__file__), "..", "..")
+            )
+            kb_candidates = [
+                os.path.join(_src_root, "src", "chatbot", "Migration_V2 5.py"),
+                os.path.join(_src_root, "main.py"),
+            ]
+            kb_path = next((p for p in kb_candidates if os.path.isfile(p)), None)
+
+            cfg = ChatConfig()
+            if kb_path:
+                cfg.kb_path = kb_path
+
+            try:
+                self._chatbot = build_chatbot(cfg)
+            except Exception as exc:
+                messagebox.showerror(
+                    "Code Assistant Error",
+                    f"Failed to initialise the chatbot:\n{exc}"
+                )
+                return
+
+        # ── Create Toplevel window ────────────────────────────────────────────
+        win = tk.Toplevel(self.root)
+        win.title("\U0001f916  Code Assistant")
+        win.geometry("920x680")
+        win.configure(bg="#EAF3FB")
+        win.resizable(True, True)
+
+        # Keep a reference so we can re-raise it
+        self._chat_win = win
+
+        # Center relative to the main window
+        self.root.update_idletasks()
+        x = self.root.winfo_x() + self.root.winfo_width() + 10
+        y = self.root.winfo_y()
+        win.geometry(f"+{x}+{y}")
+
+        # ── Embed TkinterChatPanel ───────────────────────────────────────────
+        panel = TkinterChatPanel(win, self._chatbot, height=680)
+        panel.pack(fill="both", expand=True)
+
+        # Footer
+        kb_name = os.path.basename(self._chatbot.kb.file_path)
+        tk.Label(
+            win,
+            text=f"KB: {kb_name}  \u2022  {self._chatbot.kb.total_sections} sections  "
+                 f"\u2022  Bosch Azure OpenAI GPT-4o-mini",
+            bg="#003366", fg="white",
+            font=("Segoe UI", 8)
+        ).pack(fill="x", side="bottom")
+
     def run(self):
         """Run the GUI application"""
         self.root.mainloop()
