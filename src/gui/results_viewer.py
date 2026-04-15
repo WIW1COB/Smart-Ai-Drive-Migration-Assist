@@ -353,6 +353,30 @@ class ComparisonResultsDialog:
         row1 = tk.Frame(action_frame, bg="#f8f9fa")
         row1.pack(fill="x", padx=5, pady=5)
         
+        self.btn_open_f1 = tk.Button(
+            row1,
+            text="📂 Open File 1",
+            command=self.open_file_1,
+            bg="#1565C0",
+            fg="white",
+            font=("Segoe UI", 9, "bold"),
+            width=15,
+            state="disabled"
+        )
+        self.btn_open_f1.pack(side="left", padx=3)
+        
+        self.btn_open_f2 = tk.Button(
+            row1,
+            text="📂 Open File 2",
+            command=self.open_file_2,
+            bg="#1565C0",
+            fg="white",
+            font=("Segoe UI", 9, "bold"),
+            width=15,
+            state="disabled"
+        )
+        self.btn_open_f2.pack(side="left", padx=3)
+        
         self.btn_copy_1_to_2 = tk.Button(
             row1,
             text="📋 Copy F1 → F2",
@@ -650,6 +674,8 @@ class ComparisonResultsDialog:
         )
         
         # Enable/disable buttons based on status
+        self.btn_open_f1.config(state="normal" if self.current_path1 else "disabled")
+        self.btn_open_f2.config(state="normal" if self.current_path2 else "disabled")
         self.btn_copy_1_to_2.config(state="normal" if self.current_path1 else "disabled")
         self.btn_copy_2_to_1.config(state="normal" if self.current_path2 else "disabled")
         self.btn_view_diff.config(state="normal" if status in ("Different", "Modified", "Comments update only") else "disabled")
@@ -731,6 +757,60 @@ class ComparisonResultsDialog:
                 
         except Exception as e:
             messagebox.showerror("Copy Failed", f"Error copying file:\n\n{str(e)}")
+    
+    def open_file_1(self):
+        """Open file 1 in external editor"""
+        if not self.current_file:
+            messagebox.showwarning("No Selection", "Please select a file first")
+            return
+        
+        if not self.current_path1 or not os.path.exists(self.current_path1):
+            messagebox.showwarning("File Not Found", f"File 1 not found:\n{self.current_path1}")
+            return
+        
+        try:
+            # Open file in default system editor
+            import subprocess
+            import platform
+            
+            if platform.system() == "Windows":
+                subprocess.run(["notepad.exe", self.current_path1], check=False)
+            elif platform.system() == "Darwin":  # macOS
+                subprocess.run(["open", self.current_path1], check=False)
+            else:  # Linux
+                subprocess.run(["xdg-open", self.current_path1], check=False)
+                
+            messagebox.showinfo("File Opened", f"File 1 opened in external editor:\n{self.current_file}")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to open file:\n\n{str(e)}")
+    
+    def open_file_2(self):
+        """Open file 2 in external editor"""
+        if not self.current_file:
+            messagebox.showwarning("No Selection", "Please select a file first")
+            return
+        
+        if not self.current_path2 or not os.path.exists(self.current_path2):
+            messagebox.showwarning("File Not Found", f"File 2 not found:\n{self.current_path2}")
+            return
+        
+        try:
+            # Open file in default system editor
+            import subprocess
+            import platform
+            
+            if platform.system() == "Windows":
+                subprocess.run(["notepad.exe", self.current_path2], check=False)
+            elif platform.system() == "Darwin":  # macOS
+                subprocess.run(["open", self.current_path2], check=False)
+            else:  # Linux
+                subprocess.run(["xdg-open", self.current_path2], check=False)
+                
+            messagebox.showinfo("File Opened", f"File 2 opened in external editor:\n{self.current_file}")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to open file:\n\n{str(e)}")
     
     def open_diff(self):
         """Open HTML diff in browser"""
