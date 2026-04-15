@@ -23,3 +23,8 @@ python-dateutil>=2.8.2
 
 # Load .env files when running from terminal
 python-dotenv>=1.0.0
+
+# Credential management and security (Optional but recommended)
+keyring>=24.0.0  # Secure credential storage using system keyring
+cryptography>=41.0.0  # Encryption support for credentials (fallback if keyring unavailable)
+

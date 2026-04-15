@@ -12,6 +12,7 @@ from src.utils.comparison_engine import compare_folders, cleanup_temp_dirs
 from src.gui.results_viewer import show_results_dialog
 from src.rtc.connection import RTCConnection, get_rtc_connection
 from src.config import settings
+from src.utils.credential_manager import CredentialManager
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -42,8 +43,27 @@ class MigrationAnalysisGUI:
         self.rtc_password = tk.StringVar()
         self.rtc_server_url = tk.StringVar(value=settings.RTC_SERVER_URL)
         self.rtc_connection = None
+        self.keep_signed_in = tk.BooleanVar(value=False)
+        
+        # Try to load cached credentials
+        self._load_cached_credentials()
         
         self.setup_ui()
+    
+    def _load_cached_credentials(self):
+        """Load cached credentials from secure storage if available"""
+        try:
+            server_url = self.rtc_server_url.get()
+            credentials = CredentialManager.load_credentials(server_url)
+            
+            if credentials:
+                username, password = credentials
+                self.rtc_username.set(username)
+                self.rtc_password.set(password)
+                self.keep_signed_in.set(True)
+                logger.info("✓ Cached credentials loaded successfully")
+        except Exception as e:
+            logger.warning(f"Failed to load cached credentials: {e}")
     
     def setup_ui(self):
         """Setup the main UI components"""
@@ -90,6 +110,32 @@ class MigrationAnalysisGUI:
             fg="white"
         )
         title_label.pack(side="left", padx=10, pady=10)
+
+        # ── Logout button (top-right corner of header) ──────────────────────
+        def on_logout():
+            """Clear cached credentials and logout"""
+            server_url = self.rtc_server_url.get()
+            success = CredentialManager.clear_credentials(server_url)
+            if success:
+                self.rtc_username.set('')
+                self.rtc_password.set('')
+                self.keep_signed_in.set(False)
+                messagebox.showinfo('Success', '✓ Logged out and credentials cleared.')
+            else:
+                messagebox.showerror('Error', 'Failed to clear credentials.')
+        
+        logout_btn = tk.Button(
+            title_frame,
+            text="🚪 Logout",
+            command=on_logout,
+            bg="#C23C3C",
+            fg="white",
+            font=("Segoe UI", 9, "bold"),
+            relief="flat",
+            cursor="hand2",
+            padx=10, pady=4
+        )
+        logout_btn.pack(side="right", padx=5, pady=8)
 
         # ── Chatbot button (top-right corner of header) ──────────────────────
         chatbot_btn = tk.Button(
@@ -484,7 +530,7 @@ class MigrationAnalysisGUI:
         """Show dialog to input RTC credentials"""
         dialog = tk.Toplevel(self.root)
         dialog.title("RTC Login")
-        dialog.geometry("450x300")
+        dialog.geometry("480x420")
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.resizable(False, False)
@@ -529,6 +575,26 @@ class MigrationAnalysisGUI:
         password_entry = ttk.Entry(main_frame, textvariable=self.rtc_password, show='●', width=40)
         password_entry.pack(fill=tk.X, pady=(0, 15))
         
+        # Keep signed in checkbox
+        keep_signed_frame = tk.Frame(main_frame, bg='white')
+        keep_signed_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        ttk.Checkbutton(
+            keep_signed_frame,
+            text="Keep me signed in (secure credential caching)",
+            variable=self.keep_signed_in,
+            bootstyle="primary"
+        ).pack(anchor=tk.W)
+        
+        # Cache status label
+        cache_status_label = tk.Label(main_frame, text="", font=('Segoe UI', 8), bg='white', fg='#666666')
+        cache_status_label.pack(anchor=tk.W, pady=(0, 10))
+        
+        # Show cache status
+        server_url = self.rtc_server_url.get()
+        if CredentialManager.has_cached_credentials(server_url):
+            cache_status_label.config(text="💾 Cached credentials available", fg='#007B3E')
+        
         def on_ok():
             username = self.rtc_username.get().strip()
             password = self.rtc_password.get().strip()
@@ -536,6 +602,17 @@ class MigrationAnalysisGUI:
             if not username or not password:
                 messagebox.showerror('Error', 'Please enter both username and password.')
                 return
+            
+            # Save credentials if "Keep me signed in" is checked
+            if self.keep_signed_in.get():
+                success = CredentialManager.save_credentials(username, password, server_url)
+                if success:
+                    messagebox.showinfo('Success', '✓ Credentials will be saved securely.')
+                else:
+                    messagebox.showwarning('Warning', '⚠ Failed to save credentials, but continuing anyway.')
+            else:
+                # Clear cached credentials if checkbox is unchecked
+                CredentialManager.clear_credentials(server_url)
             
             dialog.destroy()
             
@@ -545,6 +622,18 @@ class MigrationAnalysisGUI:
             
             # Start comparison
             self.start_snapshot_comparison(url1, url2)
+        
+        def on_clear_cache():
+            """Clear cached credentials"""
+            success = CredentialManager.clear_credentials(server_url)
+            if success:
+                messagebox.showinfo('Success', '✓ Cached credentials cleared.')
+                self.rtc_username.set('')
+                self.rtc_password.set('')
+                self.keep_signed_in.set(False)
+                cache_status_label.config(text="", fg='#666666')
+            else:
+                messagebox.showerror('Error', 'Failed to clear cached credentials.')
         
         def on_cancel():
             dialog.destroy()
@@ -560,8 +649,19 @@ class MigrationAnalysisGUI:
             font=('Segoe UI', 10, 'bold'),
             bg='#007B3E',
             fg='white',
-            padx=20,
+            padx=15,
             pady=8
+        ).pack(side=tk.LEFT, padx=5)
+        
+        tk.Button(
+            button_frame,
+            text="Clear Cache",
+            command=on_clear_cache,
+            font=('Segoe UI', 9),
+            bg='#FF6B6B',
+            fg='white',
+            padx=10,
+            pady=6
         ).pack(side=tk.LEFT, padx=5)
         
         tk.Button(
@@ -571,7 +671,7 @@ class MigrationAnalysisGUI:
             font=('Segoe UI', 10, 'bold'),
             bg='#666666',
             fg='white',
-            padx=20,
+            padx=15,
             pady=8
         ).pack(side=tk.LEFT, padx=5)
         
@@ -931,7 +1031,7 @@ class MigrationAnalysisGUI:
                 metric2,                                # index[2]: metric2 (baseline2 uuid length)
                 line_status,                            # index[3]: line_status
                 status_type,                            # index[4]: status
-                "N/A",                                  # index[5]: html_link (N/A for components)
+                f"{comp_name}_diff.html",               # index[5]: html_link (will be generated later)
                 f"Component comparison",                # index[6]: purpose
                 ""                                      # index[7]: changeset_info (empty for snapshots)
             ]
@@ -941,9 +1041,9 @@ class MigrationAnalysisGUI:
         logger.info(f"Transformed {len(viewer_results)} results for viewer (format: 8-element list)")
         return viewer_results
     
-    def _export_snapshot_results_to_reports(self, viewer_results, csv_path, excel_path, snap1_name, snap2_name):
+    def _export_snapshot_results_to_reports(self, viewer_results, csv_path, excel_path, snap1_name, snap2_name, comparison_metadata=None, output_dir=None):
         """
-        Export snapshot comparison results to CSV and Excel files
+        Export snapshot comparison results to CSV, Excel, and HTML diff files
         
         Args:
             viewer_results: List of 8-element result lists from viewer format
@@ -951,6 +1051,8 @@ class MigrationAnalysisGUI:
             excel_path: Path to save Excel file
             snap1_name: Display name for snapshot 1
             snap2_name: Display name for snapshot 2
+            comparison_metadata: Dict with comparison result data for HTML generation
+            output_dir: Directory to save HTML diff files
         """
         try:
             import csv
@@ -1026,9 +1128,95 @@ class MigrationAnalysisGUI:
                 logger.warning("openpyxl not installed - skipping Excel export")
             except Exception as excel_err:
                 logger.error(f"Error generating Excel report: {excel_err}")
+            
+            # Generate HTML diff files for modified components
+            if comparison_metadata and output_dir:
+                self._generate_snapshot_html_diffs(
+                    comparison_metadata.get('comparison_results', []),
+                    snap1_name,
+                    snap2_name,
+                    output_dir
+                )
         
         except Exception as e:
             logger.error(f"Error exporting snapshot results: {e}", exc_info=True)
+    
+    def _generate_snapshot_html_diffs(self, comparison_results, snap1_name, snap2_name, output_dir):
+        """
+        Generate HTML diff reports for snapshot comparison results (like offline mode)
+        
+        Args:
+            comparison_results: List of comparison result dicts
+            snap1_name: Display name for snapshot 1
+            snap2_name: Display name for snapshot 2
+            output_dir: Directory to save HTML files
+        """
+        try:
+            import difflib
+            
+            logger.info(f"Generating HTML diffs for {len(comparison_results)} component comparisons...")
+            
+            for result in comparison_results:
+                try:
+                    comp_name = result.get('name', 'Unknown')
+                    status = result.get('status', '')
+                    
+                    # Only generate detailed HTML for modified components
+                    if status != 'Modified':
+                        continue
+                    
+                    snap1_metadata = result.get('snapshot1', {})
+                    snap2_metadata = result.get('snapshot2', {})
+                    
+                    # Create detailed comparison text
+                    snap1_uuid = snap1_metadata.get('uuid', 'N/A')
+                    snap1_type = snap1_metadata.get('type', 'N/A')
+                    snap1_baseline = snap1_metadata.get('baseline', 'N/A')
+                    
+                    snap2_uuid = snap2_metadata.get('uuid', 'N/A')
+                    snap2_type = snap2_metadata.get('type', 'N/A')
+                    snap2_baseline = snap2_metadata.get('baseline', 'N/A')
+                    
+                    # Generate comparison text
+                    snap1_text = f"""Component: {comp_name}
+Type: {snap1_type}
+UUID: {snap1_uuid}
+Baseline: {snap1_baseline}
+Snapshot: {snap1_name}
+"""
+                    
+                    snap2_text = f"""Component: {comp_name}
+Type: {snap2_type}
+UUID: {snap2_uuid}
+Baseline: {snap2_baseline}
+Snapshot: {snap2_name}
+"""
+                    
+                    # Generate HTML diff using difflib (like offline mode)
+                    differ = difflib.HtmlDiff(wrapcolumn=120)
+                    html_diff = differ.make_file(
+                        snap1_text.splitlines(keepends=True),
+                        snap2_text.splitlines(keepends=True),
+                        fromdesc=f"{comp_name} in {snap1_name}",
+                        todesc=f"{comp_name} in {snap2_name}"
+                    )
+                    
+                    # Save HTML file
+                    html_filename = f"{comp_name.replace(os.sep, '_').replace(' ', '_')}_diff.html"
+                    html_path = os.path.join(output_dir, html_filename)
+                    
+                    with open(html_path, 'w', encoding='utf-8') as f:
+                        f.write(html_diff)
+                    
+                    logger.info(f"✓ Generated HTML diff: {html_filename}")
+                
+                except Exception as comp_err:
+                    logger.warning(f"Error generating HTML diff for {result.get('name', 'Unknown')}: {comp_err}")
+            
+            logger.info(f"✓ HTML diff files generated successfully")
+        
+        except Exception as e:
+            logger.error(f"Error generating HTML diffs: {e}", exc_info=True)
     
     def _display_snapshot_results_with_viewer(self, viewer_results, comparison_metadata):
         """
@@ -1077,13 +1265,15 @@ class MigrationAnalysisGUI:
             
             logger.info(f"✓ Created output directory: {output_dir}")
             
-            # Export snapshot comparison results to CSV and Excel
+            # Export snapshot comparison results to CSV, Excel, and HTML diffs
             self._export_snapshot_results_to_reports(
                 viewer_results, 
                 csv_report, 
                 excel_report,
                 snap1_name,
-                snap2_name
+                snap2_name,
+                comparison_metadata,
+                output_dir
             )
             
             # Log transformation details
