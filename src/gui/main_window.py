@@ -698,13 +698,38 @@ class MigrationAnalysisGUI:
             logger.info(f"✓ Snapshot 2: Found {len(snap2_components)} components")
             
             # ===== COMPONENT SELECTION (Online Mode Specific) =====
-            # Show component selection dialog to user
+            # Show component selection dialog to user (from main thread!)
             self.root.after(0, lambda: self._update_progress(60, "📋 Opening component selection dialog..."))
             logger.info("Showing component selection dialog for online mode...")
             
             from src.gui.dialogs import show_component_selection_dialog
+            import threading
             
-            selection_result = show_component_selection_dialog(snap1_components, snap2_components)
+            # Use a threading event to coordinate dialog display
+            dialog_event = threading.Event()
+            selection_result = {'canceled': True, 'selected': []}
+            
+            def show_dialog_in_main_thread():
+                nonlocal selection_result
+                try:
+                    selection_result = show_component_selection_dialog(snap1_components, snap2_components)
+                    logger.info(f"Component selection result: {len(selection_result.get('selected', []))} components selected")
+                except Exception as e:
+                    logger.error(f"Error showing component selection dialog: {e}", exc_info=True)
+                    selection_result = {'canceled': True, 'selected': []}
+                finally:
+                    dialog_event.set()  # Signal that dialog is done
+            
+            # Schedule dialog from main thread to ensure proper display
+            self.root.after(0, show_dialog_in_main_thread)
+            
+            # Wait for dialog to complete (with timeout)
+            if not dialog_event.wait(timeout=300):  # 5 minute timeout
+                logger.warning("Component selection dialog timed out")
+                self.root.after(0, lambda: messagebox.showwarning('Timeout', 'Component selection timed out.'))
+                self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+                self.root.after(0, lambda: self._update_progress(0, "Ready"))
+                return
             
             if selection_result['canceled']:
                 logger.info("⚠️ User canceled component selection")
@@ -886,6 +911,95 @@ class MigrationAnalysisGUI:
         logger.info(f"Transformed {len(viewer_results)} results for viewer (format: 8-element list)")
         return viewer_results
     
+    def _export_snapshot_results_to_reports(self, viewer_results, csv_path, excel_path, snap1_name, snap2_name):
+        """
+        Export snapshot comparison results to CSV and Excel files
+        
+        Args:
+            viewer_results: List of 8-element result lists from viewer format
+            csv_path: Path to save CSV file
+            excel_path: Path to save Excel file
+            snap1_name: Display name for snapshot 1
+            snap2_name: Display name for snapshot 2
+        """
+        try:
+            import csv
+            
+            # Write CSV report
+            logger.info(f"Exporting snapshot comparison to CSV: {csv_path}")
+            with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.writer(csvfile)
+                # Write headers
+                writer.writerow([
+                    "Component Name",
+                    f"Snapshot 1 Metric ({snap1_name})",
+                    f"Snapshot 2 Metric ({snap2_name})",
+                    "Baseline Comparison",
+                    "Status",
+                    "Details",
+                    "Type",
+                    "Notes"
+                ])
+                # Write data rows
+                for row in viewer_results:
+                    try:
+                        writer.writerow([str(cell) if cell else '' for cell in row])
+                    except Exception as row_err:
+                        logger.warning(f"Error writing row: {row_err}")
+            
+            logger.info(f"✓ CSV report exported: {csv_path}")
+            
+            # Write Excel report
+            logger.info(f"Exporting snapshot comparison to Excel: {excel_path}")
+            try:
+                from openpyxl import Workbook
+                from openpyxl.styles import PatternFill, Font, Alignment
+                
+                wb = Workbook()
+                ws = wb.active
+                ws.title = "Snapshot Comparison"
+                
+                # Write headers with formatting
+                headers = [
+                    "Component Name",
+                    f"Snapshot 1 Metric ({snap1_name})",
+                    f"Snapshot 2 Metric ({snap2_name})",
+                    "Baseline Comparison",
+                    "Status",
+                    "Details",
+                    "Type",
+                    "Notes"
+                ]
+                
+                header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+                header_font = Font(bold=True, color="FFFFFF")
+                
+                for col_idx, header in enumerate(headers, 1):
+                    cell = ws.cell(row=1, column=col_idx, value=header)
+                    cell.fill = header_fill
+                    cell.font = header_font
+                
+                # Write data rows
+                for row_idx, row in enumerate(viewer_results, 2):
+                    for col_idx, cell_value in enumerate(row, 1):
+                        cell = ws.cell(row=row_idx, column=col_idx, value=str(cell_value) if cell_value else '')
+                        cell.alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
+                
+                # Auto-adjust column widths
+                for col_idx in range(1, len(headers) + 1):
+                    ws.column_dimensions[chr(64 + col_idx)].width = 25
+                
+                wb.save(excel_path)
+                logger.info(f"✓ Excel report exported: {excel_path}")
+            
+            except ImportError:
+                logger.warning("openpyxl not installed - skipping Excel export")
+            except Exception as excel_err:
+                logger.error(f"Error generating Excel report: {excel_err}")
+        
+        except Exception as e:
+            logger.error(f"Error exporting snapshot results: {e}", exc_info=True)
+    
     def _display_snapshot_results_with_viewer(self, viewer_results, comparison_metadata):
         """
         Display snapshot comparison results using enhanced results_viewer
@@ -917,12 +1031,30 @@ class MigrationAnalysisGUI:
                 comp_name = comp.get('name', 'Unknown')
                 files2[comp_name] = comp.get('uuid', '')
             
-            # Create report paths (metadata only, snapshots don't have files)
+            # Create output directory for snapshot comparison results (like offline mode)
+            output_dir = os.path.join(os.getcwd(), "Snapshot_Comparison_Results")
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Create report paths with absolute paths (consistent with offline mode)
+            csv_report = os.path.join(output_dir, "snapshot_comparison.csv")
+            excel_report = os.path.join(output_dir, "snapshot_comparison.xlsx")
+            
             report_paths = {
-                'csv': 'snapshot_comparison.csv',
-                'output_dir': 'Snapshot Comparison Results',
-                'excel': 'snapshot_comparison.xlsx'
+                'csv': csv_report,
+                'output_dir': output_dir,
+                'excel': excel_report
             }
+            
+            logger.info(f"✓ Created output directory: {output_dir}")
+            
+            # Export snapshot comparison results to CSV and Excel
+            self._export_snapshot_results_to_reports(
+                viewer_results, 
+                csv_report, 
+                excel_report,
+                snap1_name,
+                snap2_name
+            )
             
             # Log transformation details
             logger.info(f"Displaying {len(viewer_results)} snapshots results in viewer")
