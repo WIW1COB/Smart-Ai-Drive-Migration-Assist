@@ -129,235 +129,300 @@ class RTCConnection:
         
         return None
     
-    def fetch_snapshot_components(self, snapshot_url, snapshot_name='Snapshot'):
+    def fetch_snapshot_components(self, snapshot_url, username=None, password=None, snapshot_name='Snapshot'):
         """
-        Fetch all components from a snapshot via REST API
+        Fetch all components from a snapshot URL
         
-        Matches test2.py's working approach:
-        1. Fetch baseline references from BaselineSet
-        2. For each baseline, fetch component details
-        3. Extract component name from baseline's component reference
-        
-        Args:
-            snapshot_url: Snapshot UUID or URL
-            snapshot_name: Display name for logging
-            
-        Returns: List of components [{name, uuid, baseline_uuid}, ...]
+        Based on test2.py implementation with SCM CLI and REST API fallback
         """
+        import time
         try:
-            # Extract UUID
-            snapshot_id = self.extract_snapshot_uuid(snapshot_url)
-            if not snapshot_id:
-                logger.error(f"{snapshot_name}: Invalid snapshot URL format")
-                return []
+            # Use provided credentials or instance credentials
+            if username is None:
+                username = self.username
+            if password is None:
+                password = self.password
+            # Extract server URL from the snapshot URL
+            server_url = None
+            if snapshot_url.startswith('http'):
+                url_match = re.match(r'(https?://[^/]+/ccm)', snapshot_url)
+                if url_match:
+                    server_url = url_match.group(1)
             
-            logger.info(f"{snapshot_name}: Extracted ID: {snapshot_id}")
+            # If server URL not found in snapshot URL, use instance variable
+            if not server_url:
+                server_url = self.server_url
             
-            # Remove leading underscore for URL construction if present
-            id_with_prefix = snapshot_id if snapshot_id.startswith('_') else ('_' + snapshot_id)
-            id_without_prefix = snapshot_id.lstrip('_')
+            # Extract snapshot UUID from URL - handle both direct ID and web UI URL
+            snapshot_id = snapshot_url.strip()
             
-            # Build API URLs to try (multiple formats with and without prefix)
-            api_urls = [
-                f'{self.server_url}/resource/itemOid/com.ibm.team.scm.BaselineSet/{id_with_prefix}',
-                f'{self.server_url}/resource/itemName/com.ibm.team.scm.BaselineSet/{id_with_prefix}',
-                f'{self.server_url}/resource/itemOid/com.ibm.team.scm.BaselineSet/{id_without_prefix}',
-                f'{self.server_url}/resource/itemName/com.ibm.team.scm.BaselineSet/{id_without_prefix}',
-            ]
+            # If it's a web UI URL, extract the ID parameter
+            if 'id=' in snapshot_id:
+                snapshot_id = snapshot_id.split('id=')[-1]
+                if '&' in snapshot_id:
+                    snapshot_id = snapshot_id.split('&')[0]
+            elif '/' in snapshot_id:
+                snapshot_id = snapshot_id.split('/')[-1]
             
+            logger.info(f'{snapshot_name}: Extracted ID: {snapshot_id}')
+
+            # Detect whether the ID looks like a standard UUID (hex + dashes)
+            uuid_pattern = re.compile(
+                r'^[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}$'
+            )
+            is_uuid = bool(uuid_pattern.match(snapshot_id))
+
+            # RTC base64-style item IDs (e.g. "FhzYKfR3EfCYz4XyfURacA") MUST be
+            # prefixed with "_" when used in REST API / SCM CLI calls.
+            if snapshot_id.startswith('_'):
+                id_with_prefix    = snapshot_id          # already prefixed
+                id_without_prefix = snapshot_id[1:]
+            else:
+                id_with_prefix    = '_' + snapshot_id   # add the required "_" prefix
+                id_without_prefix = snapshot_id
+
+            logger.info(f'{snapshot_name}: ID with _ prefix: {id_with_prefix}')
+
+            if is_uuid:
+                # Standard UUID - try both itemOid and itemName without prefix changes
+                api_url_candidates = [
+                    f'{server_url}/resource/itemOid/com.ibm.team.scm.BaselineSet/{snapshot_id}',
+                    f'{server_url}/resource/itemName/com.ibm.team.scm.BaselineSet/{snapshot_id}',
+                ]
+            else:
+                # RTC base64 item name - the "_"-prefixed form is what the REST API uses
+                api_url_candidates = [
+                    f'{server_url}/resource/itemOid/com.ibm.team.scm.BaselineSet/{id_with_prefix}',
+                    f'{server_url}/resource/itemName/com.ibm.team.scm.BaselineSet/{id_with_prefix}',
+                    f'{server_url}/resource/itemOid/com.ibm.team.scm.BaselineSet/{id_without_prefix}',
+                    f'{server_url}/resource/itemName/com.ibm.team.scm.BaselineSet/{id_without_prefix}',
+                ]
+
+            def _build_curl(url):
+                return [
+                    'curl.exe',
+                    '-k',  # Skip SSL certificate verification
+                    '-L',
+                    '--noproxy', '*',
+                    '-u', f'{username}:{password}',
+                    '-X', 'GET',
+                    url,
+                    '-H', 'Accept: application/json',
+                    '-H', 'Connection: keep-alive',
+                    '-H', 'OSLC-Core-Version: 2.0',
+                ]
+
             result = None
-            api_url_used = None
+            api_url = None
             
-            for api_url in api_urls:
-                logger.info(f"{snapshot_name}: Trying: {api_url}")
-                
+            for candidate_url in api_url_candidates:
+                logger.info(f'{snapshot_name}: Trying API URL: {candidate_url}')
+                curl_command = _build_curl(candidate_url)
                 try:
-                    cmd = [
-                        'curl.exe',
-                        '-k',
-                        '-L',
-                        '--noproxy', '*',
-                        '-u', f'{self.username}:{self.password}',
+                    request_start = time.time()
+                    candidate_result = subprocess.run(
+                        curl_command, capture_output=True, text=True, timeout=15,
+                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                    )
+                    request_elapsed = time.time() - request_start
+                    logger.info(f'{snapshot_name}: Response time: {request_elapsed:.2f}s')
+                except subprocess.TimeoutExpired:
+                    logger.warning(f'{snapshot_name}: Request timed out for {candidate_url}')
+                    continue
+
+                if candidate_result.returncode != 0:
+                    logger.warning(f'{snapshot_name}: Curl error for {candidate_url}: {candidate_result.stderr[:200]}')
+                    continue
+
+                if not candidate_result.stdout.strip():
+                    logger.warning(f'{snapshot_name}: Empty response from {candidate_url}')
+                    continue
+
+                # Check for JSON error response
+                raw = candidate_result.stdout.strip()
+                if raw.startswith('{'):
+                    try:
+                        probe = json.loads(raw)
+                        err_code = probe.get('errorCode', 0)
+                        if err_code and int(err_code) >= 400:
+                            logger.warning(
+                                f'{snapshot_name}: API error {err_code} from {candidate_url}: '
+                                f'{probe.get("errorMessage", "")[:200]}'
+                            )
+                            continue
+                    except Exception:
+                        pass  # not parseable yet, let main parsing handle it
+
+                # This candidate succeeded
+                result = candidate_result
+                api_url = candidate_url
+                logger.info(f'{snapshot_name}: ✓ Got valid response from: {candidate_url}')
+                break
+
+            if result is None:
+                logger.error(f'{snapshot_name}: All API URL candidates failed')
+                return []
+
+            if result.returncode != 0:
+                logger.error(f'{snapshot_name}: Failed to fetch components (exit code {result.returncode})')
+                logger.error(f'{snapshot_name}: Error: {result.stderr}')
+                return []
+
+            if not result.stdout.strip():
+                logger.error(f'{snapshot_name}: No data returned (empty response)')
+                return []
+
+            logger.info(f'{snapshot_name}: Got response ({len(result.stdout)} bytes)')
+
+            # Check if response is HTML (error page)
+            if result.stdout.strip().startswith("<"):
+                logger.error(f'{snapshot_name}: Received HTML response instead of JSON')
+                return []
+
+            try:
+                data = json.loads(result.stdout)
+                logger.info(f'{snapshot_name}: Successfully parsed JSON response')
+            except json.JSONDecodeError as e:
+                logger.error(f'{snapshot_name}: Failed to parse JSON: {e}')
+                logger.error(f'{snapshot_name}: Response: {result.stdout[:500]}')
+                return []
+
+            # Check for authentication errors in JSON response
+            if isinstance(data, dict):
+                if 'error_code' in data or 'error_message' in data:
+                    error_code = data.get('error_code', 'unknown')
+                    error_msg = data.get('error_message', 'Unknown error')
+                    logger.error(f'{snapshot_name}: API ERROR: {error_code} - {error_msg}')
+                    return []
+
+            components = []
+
+            # Parse components - RTC BaselineSet format
+            baseline_list = None
+            
+            if isinstance(data, dict):
+                # Check for 'baselines' key
+                if "baselines" in data:
+                    baseline_list = data["baselines"]
+                    logger.info(f'{snapshot_name}: Found "baselines" key with {len(baseline_list) if isinstance(baseline_list, list) else "non-list"} items')
+                # Check for 'com.ibm.team.scm.Baseline' key
+                elif "com.ibm.team.scm.Baseline" in data:
+                    baseline_list = data["com.ibm.team.scm.Baseline"]
+                    logger.info(f'{snapshot_name}: Found "com.ibm.team.scm.Baseline" key with {len(baseline_list) if isinstance(baseline_list, list) else "non-list"} items')
+                else:
+                    logger.warning(f'{snapshot_name}: No baseline key found. Available keys: {list(data.keys())}')
+
+            if baseline_list and isinstance(baseline_list, list):
+                logger.info(f'{snapshot_name}: Processing {len(baseline_list)} baselines...')
+
+                # Shared cache for component names
+                component_name_cache = {}
+                cache_lock = threading.Lock()
+
+                def get_component_name(comp_item_id):
+                    """Fetch component name with caching"""
+                    with cache_lock:
+                        if comp_item_id in component_name_cache:
+                            return component_name_cache[comp_item_id]
+
+                    comp_url = f'{server_url}/resource/itemOid/com.ibm.team.scm.Component/{comp_item_id}'
+                    curl_comp = [
+                        'curl.exe', '-k', '-L', '--noproxy', '*',
+                        '-u', f'{username}:{password}',
                         '-X', 'GET',
-                        api_url,
+                        comp_url,
                         '-H', 'Accept: application/json',
                         '-H', 'Connection: keep-alive',
                         '-H', 'OSLC-Core-Version: 2.0'
                     ]
-                    
-                    result = subprocess.run(
-                        cmd,
-                        capture_output=True,
-                        text=True,
-                        timeout=30,
-                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-                    )
-                    
-                    if result.returncode == 0 and result.stdout.strip():
-                        logger.info(f"{snapshot_name}: ✓ Got response from {api_url}")
-                        api_url_used = api_url
-                        break
-                    
-                except subprocess.TimeoutExpired:
-                    logger.warning(f"{snapshot_name}: Request timeout for {api_url}")
-                    continue
-            
-            if not result or result.returncode != 0:
-                logger.error(f"{snapshot_name}: Failed to fetch - all URLs failed")
-                if result and result.stderr:
-                    logger.error(f"{snapshot_name}: Error: {result.stderr[:200]}")
-                return []
-            
-            if not result.stdout.strip():
-                logger.error(f"{snapshot_name}: Empty response from server")
-                return []
-            
-            # Parse JSON response
-            try:
-                data = json.loads(result.stdout)
-                logger.info(f"{snapshot_name}: Successfully parsed JSON response")
-            except json.JSONDecodeError as e:
-                logger.error(f"{snapshot_name}: Failed to parse response: {e}")
-                logger.error(f"Response: {result.stdout[:500]}")
-                return []
-            
-            if not isinstance(data, dict):
-                logger.error(f"{snapshot_name}: Invalid response structure (expected dict)")
-                return []
-            
-            # Check for API errors in response
-            if data.get('errorCode') and int(data.get('errorCode', 0)) >= 400:
-                error_msg = data.get('errorMessage', 'Unknown error')
-                logger.error(f"{snapshot_name}: API error {data.get('errorCode')}: {error_msg}")
-                if 'unauthorized' in error_msg.lower() or '401' in error_msg:
-                    logger.error(f"{snapshot_name}: Authentication failed - check username/password")
-                return []
-            
-            # Extract baseline references - test2.py looks for both keys
-            baseline_list = data.get('baselines') or data.get('com.ibm.team.scm.Baseline')
-            
-            if not baseline_list:
-                logger.warning(f"{snapshot_name}: No baselines found in response")
-                logger.warning(f"{snapshot_name}: Available keys: {list(data.keys())}")
-                return []
-            
-            if not isinstance(baseline_list, list):
-                logger.error(f"{snapshot_name}: Baseline list is not a list: {type(baseline_list)}")
-                return []
-            
-            logger.info(f"{snapshot_name}: Found {len(baseline_list)} baseline references")
-            
-            # Now fetch component details for each baseline (parallelize like test2.py)
-            components = []
-            component_cache = {}
-            cache_lock = threading.Lock()
-            
-            def get_component_name(comp_item_id):
-                """Fetch component name with caching"""
-                with cache_lock:
-                    if comp_item_id in component_cache:
-                        return component_cache[comp_item_id]
-                
-                comp_url = f'{self.server_url}/resource/itemOid/com.ibm.team.scm.Component/{comp_item_id}'
-                
-                try:
-                    cmd = [
-                        'curl.exe', '-k', '-L', '--noproxy', '*',
-                        '-u', f'{self.username}:{self.password}',
-                        '-X', 'GET',
-                        comp_url,
-                        '-H', 'Accept: application/json',
-                        '-H', 'Connection: keep-alive'
-                    ]
-                    
-                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30,
-                                          creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
-                    if result.returncode == 0 and result.stdout.strip():
-                        comp_data = json.loads(result.stdout)
-                        comp_name = comp_data.get('name') or comp_data.get('dcterms:title')
-                        if comp_name:
-                            with cache_lock:
-                                component_cache[comp_item_id] = comp_name
-                            return comp_name
-                except Exception as e:
-                    logger.debug(f"Failed to fetch component name for {comp_item_id}: {e}")
-                
-                return None
-            
-            def fetch_baseline_component(baseline_ref):
-                """Fetch component info from a baseline"""
-                if not isinstance(baseline_ref, dict):
+
+                    try:
+                        comp_result = subprocess.run(curl_comp, capture_output=True, text=True, timeout=30,
+                                                   creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+                        if comp_result.returncode == 0 and comp_result.stdout.strip():
+                            comp_data = json.loads(comp_result.stdout)
+                            comp_name = comp_data.get("name", None)
+                            if comp_name:
+                                with cache_lock:
+                                    component_name_cache[comp_item_id] = comp_name
+                                return comp_name
+                    except:
+                        pass
                     return None
-                
-                item_id = baseline_ref.get('itemId', '')
-                state_id = baseline_ref.get('stateId', '')
-                
-                if not item_id:
-                    return None
-                
-                # Fetch baseline details
-                baseline_url = f'{self.server_url}/resource/itemOid/com.ibm.team.scm.Baseline/{item_id}'
-                
-                try:
-                    cmd = [
+
+                def fetch_baseline_component(baseline_ref, idx):
+                    """Fetch component info for a single baseline"""
+                    if not isinstance(baseline_ref, dict):
+                        return None
+
+                    item_id = baseline_ref.get("itemId", "")
+                    state_id = baseline_ref.get("stateId", "")
+
+                    # Fetch the baseline details to get component information
+                    baseline_url = f'{server_url}/resource/itemOid/com.ibm.team.scm.Baseline/{item_id}'
+                    curl_baseline = [
                         'curl.exe', '-k', '-L', '--noproxy', '*',
-                        '-u', f'{self.username}:{self.password}',
+                        '-u', f'{username}:{password}',
                         '-X', 'GET',
                         baseline_url,
                         '-H', 'Accept: application/json',
-                        '-H', 'Connection: keep-alive'
+                        '-H', 'Connection: keep-alive',
+                        '-H', 'OSLC-Core-Version: 2.0'
                     ]
-                    
-                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30,
-                                          creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
-                    
-                    if result.returncode == 0 and result.stdout.strip():
-                        baseline_data = json.loads(result.stdout)
-                        
-                        # Extract component info
-                        comp_ref = baseline_data.get('component') or baseline_data.get('com.ibm.team.scm.Component')
-                        
-                        if isinstance(comp_ref, dict) and comp_ref.get('itemId'):
-                            comp_item_id = comp_ref['itemId']
-                            
-                            # Get component name
-                            comp_name = get_component_name(comp_item_id)
-                            
-                            if comp_name:
-                                return {
-                                    'name': comp_name,
-                                    'uuid': comp_item_id,
-                                    'baseline_uuid': item_id,
-                                    'state_id': state_id,
-                                }
-                
-                except Exception as e:
-                    logger.debug(f"Failed to fetch baseline {item_id}: {e}")
-                
-                return None
-            
-            # Fetch in parallel using ThreadPoolExecutor
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                futures = [executor.submit(fetch_baseline_component, b) for b in baseline_list]
-                
-                for future in as_completed(futures):
+
                     try:
-                        component = future.result()
-                        if component:
-                            components.append(component)
+                        baseline_result = subprocess.run(curl_baseline, capture_output=True, text=True, timeout=30,
+                                                       creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+
+                        if baseline_result.returncode == 0 and baseline_result.stdout.strip():
+                            baseline_data = json.loads(baseline_result.stdout)
+
+                            # Extract component info from baseline
+                            comp_ref = baseline_data.get("component", baseline_data.get("com.ibm.team.scm.Component", {}))
+                            comp_item_id = ""
+                            comp_name = None
+
+                            if isinstance(comp_ref, dict) and comp_ref.get("itemId"):
+                                comp_item_id = comp_ref.get("itemId", "")
+
+                                # Get component name (required)
+                                comp_name = get_component_name(comp_item_id)
+
+                                if not comp_name:
+                                    logger.debug(f'{snapshot_name}: Skipping baseline {item_id[:8]} - failed to get component name')
+                                    return None
+                            else:
+                                logger.debug(f'{snapshot_name}: Skipping baseline {item_id[:8]} - no component reference')
+                                return None
+
+                            return {
+                                "name": comp_name,
+                                "uuid": comp_item_id,
+                                "baseline_uuid": item_id,
+                                "state_id": state_id,
+                            }
+
                     except Exception as e:
-                        logger.debug(f"Error fetching component: {e}")
-            
-            logger.info(f"{snapshot_name}: ✓ Successfully extracted {len(components)} components from baselines")
-            
+                        logger.debug(f'Failed to fetch baseline {item_id}: {e}')
+
+                    return None
+
+                # Process baselines (not parallel for simplicity)
+                for idx, baseline_ref in enumerate(baseline_list):
+                    component = fetch_baseline_component(baseline_ref, idx)
+                    if component:
+                        components.append(component)
+                        logger.debug(f'{snapshot_name}: Added component: {component["name"]}')
+
+                logger.info(f'{snapshot_name}: ✓ Successfully extracted {len(components)} components')
+
             if len(components) == 0:
-                logger.warning(f"{snapshot_name}: No components could be extracted")
-                logger.warning(f"{snapshot_name}: Baseline list sample: {baseline_list[:2] if baseline_list else 'empty'}")
-            
+                logger.warning(f'{snapshot_name}: No components could be extracted from {len(baseline_list) if baseline_list else 0} baselines')
+
             return components
-            
+
         except Exception as e:
-            logger.error(f"{snapshot_name}: Error fetching components: {e}")
+            logger.error(f'{snapshot_name}: Error fetching components: {e}')
             import traceback
             logger.debug(traceback.format_exc())
             return []

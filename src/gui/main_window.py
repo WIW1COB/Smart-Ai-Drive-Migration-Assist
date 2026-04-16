@@ -779,8 +779,26 @@ class MigrationAnalysisGUI:
             if not uuid1 or not uuid2:
                 raise ValueError("Could not extract snapshot UUIDs. Verify URLs/UUIDs are correct.")
             
-            if uuid1 == uuid2:
-                raise ValueError("⚠️ Both snapshot UUIDs are identical! Select different snapshots.")
+            # Validate snapshot URLs look correct
+            if 'workspace' in url1.lower() or 'stream' in url1.lower():
+                error_msg = (
+                    f"⚠️ Snapshot 1 URL appears to be a workspace/stream URL, not a snapshot URL:\n{url1}\n\n"
+                    f"Please use a snapshot URL from RTC web interface:\n"
+                    f"1. Go to RTC web → Select snapshot\n"
+                    f"2. Copy URL from browser (should contain 'id=_xxxxx')\n"
+                    f"3. Or copy just the snapshot UUID starting with '_'"
+                )
+                raise ValueError(error_msg)
+            
+            if 'workspace' in url2.lower() or 'stream' in url2.lower():
+                error_msg = (
+                    f"⚠️ Snapshot 2 URL appears to be a workspace/stream URL, not a snapshot URL:\n{url2}\n\n"
+                    f"Please use a snapshot URL from RTC web interface:\n"
+                    f"1. Go to RTC web → Select snapshot\n"
+                    f"2. Copy URL from browser (should contain 'id=_xxxxx')\n"
+                    f"3. Or copy just the snapshot UUID starting with '_'"
+                )
+                raise ValueError(error_msg)
             
             # ===== STEP 3: EXTRACT SNAPSHOTS TO LOCAL TEMP DIRECTORIES =====
             # This is the KEY change - instead of component comparison, extract files!
@@ -792,9 +810,22 @@ class MigrationAnalysisGUI:
             temp_dirs.append(temp_snap1)
             
             # Get components first to show progress
-            snap1_components = rtc_conn.fetch_snapshot_components(uuid1, 'Snapshot 1')
+            snap1_components = rtc_conn.fetch_snapshot_components(url1, username, password, 'Snapshot 1')
             if not snap1_components:
-                raise RuntimeError("❌ No components found in Snapshot 1")
+                error_msg = (
+                    f"❌ No components found in Snapshot 1 (URL: {url1})\n\n"
+                    f"Possible causes:\n"
+                    f"• Invalid snapshot URL/UUID: {url1}\n"
+                    f"• Snapshot may be empty or corrupted\n"
+                    f"• You may have passed a workspace URL instead of snapshot URL\n"
+                    f"• RTC server may not be accessible\n\n"
+                    f"Please verify:\n"
+                    f"1. Use a valid snapshot URL from RTC web interface\n"
+                    f"2. Copy the full snapshot URL with 'id=_xxxxx' parameter\n"
+                    f"3. Ensure the snapshot exists and has components\n"
+                    f"4. Check network connectivity to RTC server"
+                )
+                raise RuntimeError(error_msg)
             logger.info(f"✓ Snapshot 1: Found {len(snap1_components)} components")
             
             # Extract files from Snapshot 1
@@ -808,9 +839,22 @@ class MigrationAnalysisGUI:
             temp_snap2 = tempfile.mkdtemp(prefix="snap2_")
             temp_dirs.append(temp_snap2)
             
-            snap2_components = rtc_conn.fetch_snapshot_components(uuid2, 'Snapshot 2')
+            snap2_components = rtc_conn.fetch_snapshot_components(url2, username, password, 'Snapshot 2')
             if not snap2_components:
-                raise RuntimeError("❌ No components found in Snapshot 2")
+                error_msg = (
+                    f"❌ No components found in Snapshot 2 (URL: {url2})\n\n"
+                    f"Possible causes:\n"
+                    f"• Invalid snapshot URL/UUID: {url2}\n"
+                    f"• Snapshot may be empty or corrupted\n"
+                    f"• You may have passed a workspace URL instead of snapshot URL\n"
+                    f"• RTC server may not be accessible\n\n"
+                    f"Please verify:\n"
+                    f"1. Use a valid snapshot URL from RTC web interface\n"
+                    f"2. Copy the full snapshot URL with 'id=_xxxxx' parameter\n"
+                    f"3. Ensure the snapshot exists and has components\n"
+                    f"4. Check network connectivity to RTC server"
+                )
+                raise RuntimeError(error_msg)
             logger.info(f"✓ Snapshot 2: Found {len(snap2_components)} components")
             
             self._extract_snapshot_files_to_dir(uuid2, snap2_components, temp_snap2, username, password, server_url)
@@ -912,11 +956,12 @@ class MigrationAnalysisGUI:
             for idx, component in enumerate(components_list):
                 comp_name = component.get('name', f'component_{idx}')
                 comp_uuid = component.get('uuid', '')
+                baseline_uuid = component.get('baseline_uuid', comp_uuid)  # Use baseline UUID for file operations
                 
-                logger.info(f"  [{idx+1}/{len(components_list)}] Processing component: {comp_name}")
+                logger.info(f"  [{idx+1}/{len(components_list)}] Processing component: {comp_name} (baseline: {baseline_uuid[:12]}...)")
                 
-                # Get list of files in this component using SCM CLI
-                file_list = self._get_files_from_baseline(comp_uuid, username, password, server_url)
+                # Get list of files in this baseline using SCM CLI
+                file_list = self._get_files_from_baseline(baseline_uuid, username, password, server_url)
                 
                 if not file_list:
                     logger.warning(f"    No files found in component {comp_name}")
@@ -929,7 +974,7 @@ class MigrationAnalysisGUI:
                     try:
                         # Download file content
                         file_content = self._download_file_from_rtc(
-                            comp_uuid, file_path, username, password, server_url
+                            baseline_uuid, file_path, username, password, server_url
                         )
                         
                         if file_content is not None:
