@@ -810,7 +810,12 @@ class MigrationAnalysisGUI:
             temp_dirs.append(temp_snap1)
             
             # Get components first to show progress
-            snap1_components = rtc_conn.fetch_snapshot_components(url1, username, password, 'Snapshot 1')
+            snap1_components = rtc_conn.fetch_snapshot_components(
+                snapshot_url=url1,
+                username=username,
+                password=password,
+                snapshot_name='Snapshot 1'
+            )
             if not snap1_components:
                 error_msg = (
                     f"❌ No components found in Snapshot 1 (URL: {url1})\n\n"
@@ -839,7 +844,12 @@ class MigrationAnalysisGUI:
             temp_snap2 = tempfile.mkdtemp(prefix="snap2_")
             temp_dirs.append(temp_snap2)
             
-            snap2_components = rtc_conn.fetch_snapshot_components(url2, username, password, 'Snapshot 2')
+            snap2_components = rtc_conn.fetch_snapshot_components(
+                snapshot_url=url2,
+                username=username,
+                password=password,
+                snapshot_name='Snapshot 2'
+            )
             if not snap2_components:
                 error_msg = (
                     f"❌ No components found in Snapshot 2 (URL: {url2})\n\n"
@@ -859,6 +869,35 @@ class MigrationAnalysisGUI:
             
             self._extract_snapshot_files_to_dir(uuid2, snap2_components, temp_snap2, username, password, server_url)
             logger.info(f"✓ Extracted Snapshot 2 to: {temp_snap2}")
+
+            # If file extraction produced no files (SCM CLI missing / access issue),
+            # fall back to component-level comparison so the user still gets results.
+            def _count_files(root_dir):
+                count = 0
+                for _, _, files in os.walk(root_dir):
+                    count += len(files)
+                return count
+
+            extracted_files_1 = _count_files(temp_snap1)
+            extracted_files_2 = _count_files(temp_snap2)
+            if extracted_files_1 == 0 and extracted_files_2 == 0:
+                logger.warning("No files were extracted from either snapshot; falling back to component-level comparison.")
+                self.root.after(0, lambda: self._update_progress(60, "🔍 Comparing components (fallback)..."))
+
+                comparison_results = rtc_conn.compare_snapshots(snap1_components, snap2_components)
+                viewer_results = self._transform_snapshot_results_for_viewer(comparison_results)
+                comparison_metadata = {
+                    'snap1_url': url1,
+                    'snap2_url': url2,
+                    'snap1_components': snap1_components,
+                    'snap2_components': snap2_components,
+                    'comparison_results': comparison_results,
+                }
+
+                self.root.after(0, lambda: self._display_snapshot_results_with_viewer(viewer_results, comparison_metadata))
+                self.root.after(0, lambda: self._update_progress(100, "✅ Component-level comparison complete (file extraction unavailable)"))
+                self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+                return
             
             # ===== STEP 4: RUN FILE-LEVEL COMPARISON (SAME AS OFFLINE!) =====
             self.root.after(0, lambda: self._update_progress(60, "🔍 Comparing files (file-level)..."))

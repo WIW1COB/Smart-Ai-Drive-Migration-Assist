@@ -313,7 +313,9 @@ class RTCConnection:
                     logger.warning(f'{snapshot_name}: No baseline key found. Available keys: {list(data.keys())}')
 
             if baseline_list and isinstance(baseline_list, list):
-                logger.info(f'{snapshot_name}: Processing {len(baseline_list)} baselines...')
+                total_baselines = len(baseline_list)
+                max_workers = getattr(settings, "MAX_WORKERS", 10)
+                logger.info(f'{snapshot_name}: Fetching component details for {total_baselines} baselines (workers={max_workers})...')
 
                 # Shared cache for component names
                 component_name_cache = {}
@@ -322,8 +324,9 @@ class RTCConnection:
                 def get_component_name(comp_item_id):
                     """Fetch component name with caching"""
                     with cache_lock:
-                        if comp_item_id in component_name_cache:
-                            return component_name_cache[comp_item_id]
+                        cached = component_name_cache.get(comp_item_id)
+                    if cached:
+                        return cached
 
                     comp_url = f'{server_url}/resource/itemOid/com.ibm.team.scm.Component/{comp_item_id}'
                     curl_comp = [
@@ -337,28 +340,40 @@ class RTCConnection:
                     ]
 
                     try:
-                        comp_result = subprocess.run(curl_comp, capture_output=True, text=True, timeout=30,
-                                                   creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+                        comp_result = subprocess.run(
+                            curl_comp,
+                            capture_output=True,
+                            text=True,
+                            timeout=30,
+                            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
+                        )
                         if comp_result.returncode == 0 and comp_result.stdout.strip():
                             comp_data = json.loads(comp_result.stdout)
-                            comp_name = comp_data.get("name", None)
+                            comp_name = (
+                                comp_data.get("name")
+                                or comp_data.get("dcterms:title")
+                                or comp_data.get("dc:title")
+                                or comp_data.get("title")
+                            )
                             if comp_name:
                                 with cache_lock:
                                     component_name_cache[comp_item_id] = comp_name
                                 return comp_name
-                    except:
-                        pass
+                    except Exception as e:
+                        logger.debug(f'{snapshot_name}: Failed to fetch component name {comp_item_id[:12]}...: {e}')
+
                     return None
 
-                def fetch_baseline_component(baseline_ref, idx):
+                def fetch_baseline_component(baseline_ref):
                     """Fetch component info for a single baseline"""
                     if not isinstance(baseline_ref, dict):
                         return None
 
                     item_id = baseline_ref.get("itemId", "")
                     state_id = baseline_ref.get("stateId", "")
+                    if not item_id:
+                        return None
 
-                    # Fetch the baseline details to get component information
                     baseline_url = f'{server_url}/resource/itemOid/com.ibm.team.scm.Baseline/{item_id}'
                     curl_baseline = [
                         'curl.exe', '-k', '-L', '--noproxy', '*',
@@ -371,48 +386,61 @@ class RTCConnection:
                     ]
 
                     try:
-                        baseline_result = subprocess.run(curl_baseline, capture_output=True, text=True, timeout=30,
-                                                       creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+                        baseline_result = subprocess.run(
+                            curl_baseline,
+                            capture_output=True,
+                            text=True,
+                            timeout=30,
+                            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
+                        )
 
                         if baseline_result.returncode == 0 and baseline_result.stdout.strip():
                             baseline_data = json.loads(baseline_result.stdout)
 
-                            # Extract component info from baseline
-                            comp_ref = baseline_data.get("component", baseline_data.get("com.ibm.team.scm.Component", {}))
-                            comp_item_id = ""
-                            comp_name = None
-
+                            comp_ref = baseline_data.get("component") or baseline_data.get("com.ibm.team.scm.Component")
                             if isinstance(comp_ref, dict) and comp_ref.get("itemId"):
                                 comp_item_id = comp_ref.get("itemId", "")
-
-                                # Get component name (required)
                                 comp_name = get_component_name(comp_item_id)
-
                                 if not comp_name:
                                     logger.debug(f'{snapshot_name}: Skipping baseline {item_id[:8]} - failed to get component name')
                                     return None
-                            else:
-                                logger.debug(f'{snapshot_name}: Skipping baseline {item_id[:8]} - no component reference')
-                                return None
 
-                            return {
-                                "name": comp_name,
-                                "uuid": comp_item_id,
-                                "baseline_uuid": item_id,
-                                "state_id": state_id,
-                            }
+                                return {
+                                    "name": comp_name,
+                                    "uuid": comp_item_id,
+                                    "baseline_uuid": item_id,
+                                    "state_id": state_id,
+                                }
+
+                            logger.debug(f'{snapshot_name}: Skipping baseline {item_id[:8]} - no component reference')
+                            return None
 
                     except Exception as e:
-                        logger.debug(f'Failed to fetch baseline {item_id}: {e}')
+                        logger.debug(f'{snapshot_name}: Failed to fetch baseline {item_id[:12]}...: {e}')
 
                     return None
 
-                # Process baselines (not parallel for simplicity)
-                for idx, baseline_ref in enumerate(baseline_list):
-                    component = fetch_baseline_component(baseline_ref, idx)
-                    if component:
-                        components.append(component)
-                        logger.debug(f'{snapshot_name}: Added component: {component["name"]}')
+                start_time = time.time()
+                processed = 0
+
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = [executor.submit(fetch_baseline_component, b) for b in baseline_list]
+
+                    for future in as_completed(futures):
+                        processed += 1
+                        try:
+                            component = future.result()
+                            if component:
+                                components.append(component)
+                        except Exception as e:
+                            logger.debug(f'{snapshot_name}: Baseline processing error: {e}')
+
+                        if processed % 20 == 0 or processed == total_baselines:
+                            elapsed = time.time() - start_time
+                            logger.info(
+                                f'{snapshot_name}: Progress: {processed}/{total_baselines} baselines processed '
+                                f'({len(components)} components found) - {elapsed:.1f}s'
+                            )
 
                 logger.info(f'{snapshot_name}: ✓ Successfully extracted {len(components)} components')
 
