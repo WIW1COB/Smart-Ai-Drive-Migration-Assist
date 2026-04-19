@@ -89,8 +89,8 @@ class ChatConfig:
         "askbosch-prod-farm-openai-gpt-4o-mini-2024-07-18/chat/completions"
         "?api-version=2024-08-01-preview"
     )
-    temperature: float = 0.3
-    max_tokens: int = 1_500
+    temperature: Optional[float] = 0.3
+    max_tokens: Optional[int] = 1_500
     timeout_sec: int = 90
 
     # --- Proxy ---
@@ -313,11 +313,13 @@ class ChatEngine:
         POST a messages list to the model, return the assistant text.
         Raises RuntimeError on any HTTP / network failure.
         """
-        payload = json.dumps({
-            "messages":    messages,
-            "temperature": self._cfg.temperature,
-            "max_tokens":  self._cfg.max_tokens,
-        }).encode("utf-8")
+        payload_dict = {"messages": messages}
+        if self._cfg.temperature is not None:
+            payload_dict["temperature"] = self._cfg.temperature
+        if self._cfg.max_tokens is not None:
+            payload_dict["max_tokens"] = self._cfg.max_tokens
+        
+        payload = json.dumps(payload_dict).encode("utf-8")
 
         headers = {
             "Content-Type": "application/json",
@@ -332,7 +334,9 @@ class ChatEngine:
                 timeout=self._cfg.timeout_sec,
                 verify=True,
             )
-            resp.raise_for_status()
+            if not resp.ok:
+                detail = resp.text[:1000] if resp.text else resp.reason
+                raise RuntimeError(f"HTTP {resp.status_code}: {detail}")
             return resp.json()["choices"][0]["message"]["content"].strip()
         except Exception as exc:
             raise RuntimeError(f"Azure OpenAI request failed: {exc}") from exc

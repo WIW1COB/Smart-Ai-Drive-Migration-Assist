@@ -5,7 +5,7 @@ import os
 import re
 import threading
 import tkinter as tk
-from tkinter import scrolledtext
+from tkinter import filedialog, messagebox, scrolledtext
 
 
 class ComparisonAssistantWindow:
@@ -16,11 +16,15 @@ class ComparisonAssistantWindow:
         self.viewer = viewer
         self.busy = False
         self.engine = self._build_chat_engine()
+        self.last_question = ""
+        self.last_context = ""
+        self.last_reply = ""
 
         self.window = tk.Toplevel(parent)
         self.window.title("Migration Assistant")
-        self.window.geometry("980x720")
-        self.window.configure(bg="#EEF4F8")
+        self.window.geometry("1100x760")
+        self.window.minsize(880, 620)
+        self.window.configure(bg="#ECF2F6")
         self.window.transient(parent)
 
         self._build_ui()
@@ -36,39 +40,41 @@ class ComparisonAssistantWindow:
         )
 
     def _build_ui(self):
-        header = tk.Frame(self.window, bg="#003366", height=72)
+        header = tk.Frame(self.window, bg="#003366", height=78)
         header.pack(fill="x")
         header.pack_propagate(False)
 
-        tk.Label(
-            header,
-            text="Migration Assistant",
-            font=("Segoe UI", 18, "bold"),
-            bg="#003366",
-            fg="white"
-        ).pack(side="left", padx=18, pady=18)
+        title_group = tk.Frame(header, bg="#003366")
+        title_group.pack(side="left", padx=18, pady=12)
+
+        tk.Label(title_group, text="Migration Assistant", font=("Segoe UI", 18, "bold"),
+                 bg="#003366", fg="white").pack(anchor="w")
+        tk.Label(title_group, text="Grounded in this comparison result", font=("Segoe UI", 9),
+                 bg="#003366", fg="#B8D8FF").pack(anchor="w", pady=(2, 0))
 
         mode = "Online-Online" if self.viewer.online_context else "Offline"
-        tk.Label(
-            header,
-            text=f"{mode} context | {len(self.viewer.results)} rows",
-            font=("Segoe UI", 10),
-            bg="#003366",
-            fg="#DDEBFF"
-        ).pack(side="right", padx=18)
+        ai_state = "AI polish on" if self.engine else "Local agent mode"
+        badge = tk.Label(header, text=f"{mode} | {ai_state}", font=("Segoe UI", 10, "bold"),
+                         bg="#0F5C8C", fg="white", padx=12, pady=7)
+        badge.pack(side="right", padx=18)
 
-        body = tk.Frame(self.window, bg="#EEF4F8")
+        body = tk.Frame(self.window, bg="#ECF2F6")
         body.pack(fill="both", expand=True, padx=12, pady=12)
         body.grid_columnconfigure(1, weight=1)
         body.grid_rowconfigure(0, weight=1)
 
-        sidebar = tk.Frame(body, bg="#DDEAF3", width=220)
+        sidebar = tk.Frame(body, bg="#DDEAF3", width=250)
         sidebar.grid(row=0, column=0, sticky="ns", padx=(0, 10))
         sidebar.grid_propagate(False)
 
+        context_text = self._context_card_text(mode)
+        tk.Label(sidebar, text=context_text, font=("Segoe UI", 9), bg="#CFE0EC",
+                 fg="#17364A", justify="left", anchor="nw", wraplength=215,
+                 padx=10, pady=10).pack(fill="x", padx=10, pady=(12, 8))
+
         tk.Label(
             sidebar,
-            text="Quick asks",
+            text="Agent Actions",
             font=("Segoe UI", 11, "bold"),
             bg="#DDEAF3",
             fg="#003366"
@@ -79,6 +85,7 @@ class ComparisonAssistantWindow:
             "Tell differences for selected file",
             "List modified files",
             "List files only in project",
+            "What should I inspect next?",
             "Run interface analysis",
             "Open reports folder",
         ]
@@ -94,10 +101,22 @@ class ComparisonAssistantWindow:
                 anchor="w",
                 padx=10,
                 pady=7,
-                wraplength=180
+                wraplength=205,
+                cursor="hand2"
             ).pack(fill="x", padx=10, pady=4)
 
-        chat_frame = tk.Frame(body, bg="white")
+        tk.Label(sidebar, text="Useful wording", font=("Segoe UI", 10, "bold"),
+                 bg="#DDEAF3", fg="#003366").pack(anchor="w", padx=12, pady=(16, 6))
+        for hint in [
+            "Explain why selected changed",
+            "Show a short diff",
+            "Which files are risky?",
+            "Save this answer",
+        ]:
+            tk.Label(sidebar, text=f"- {hint}", font=("Segoe UI", 9),
+                     bg="#DDEAF3", fg="#425466").pack(anchor="w", padx=16, pady=1)
+
+        chat_frame = tk.Frame(body, bg="white", highlightthickness=1, highlightbackground="#D0D7DE")
         chat_frame.grid(row=0, column=1, sticky="nsew")
         chat_frame.grid_rowconfigure(0, weight=1)
         chat_frame.grid_columnconfigure(0, weight=1)
@@ -110,17 +129,26 @@ class ComparisonAssistantWindow:
             fg="#17212B",
             font=("Segoe UI", 10),
             relief="flat",
-            padx=14,
-            pady=12
+            padx=18,
+            pady=14
         )
         self.chat.grid(row=0, column=0, sticky="nsew")
-        self.chat.tag_config("user_label", foreground="#007B3E", font=("Segoe UI", 9, "bold"))
-        self.chat.tag_config("bot_label", foreground="#003366", font=("Segoe UI", 9, "bold"))
-        self.chat.tag_config("user", background="#E8F5E9", lmargin1=18, lmargin2=18, rmargin=80)
-        self.chat.tag_config("bot", background="#F4F7FB", lmargin1=18, lmargin2=18, rmargin=60)
-        self.chat.tag_config("system", foreground="#666666", font=("Segoe UI", 9, "italic"))
+        self.chat.tag_config("user_label", foreground="#007B3E", font=("Segoe UI", 9, "bold"), spacing1=8)
+        self.chat.tag_config("bot_label", foreground="#003366", font=("Segoe UI", 9, "bold"), spacing1=8)
+        self.chat.tag_config("user", background="#E8F5E9", lmargin1=24, lmargin2=24, rmargin=110, spacing1=4, spacing3=10)
+        self.chat.tag_config("bot", background="#F4F7FB", lmargin1=24, lmargin2=24, rmargin=70, spacing1=4, spacing3=10)
+        self.chat.tag_config("system", foreground="#666666", font=("Segoe UI", 9, "italic"), spacing1=6, spacing3=6)
+        self.chat.tag_config("code", font=("Consolas", 9), background="#F6F8FA", lmargin1=28, lmargin2=28)
 
-        input_frame = tk.Frame(self.window, bg="#EEF4F8")
+        self.suggestion_frame = tk.Frame(self.window, bg="#ECF2F6")
+        self.suggestion_frame.pack(fill="x", padx=12, pady=(0, 8))
+        self._render_suggestions([
+            "Summarize this comparison",
+            "Tell differences for selected file",
+            "List modified files",
+        ])
+
+        input_frame = tk.Frame(self.window, bg="#ECF2F6")
         input_frame.pack(fill="x", padx=12, pady=(0, 12))
 
         self.input_var = tk.StringVar()
@@ -141,6 +169,10 @@ class ComparisonAssistantWindow:
         )
         self.send_btn.pack(side="left", padx=(8, 0))
 
+        self.status_var = tk.StringVar(value="Ready")
+        tk.Label(self.window, textvariable=self.status_var, font=("Segoe UI", 8),
+                 bg="#ECF2F6", fg="#5C6B73", anchor="w").pack(fill="x", padx=14, pady=(0, 8))
+
     def _ask(self, prompt=None):
         if self.busy:
             return
@@ -148,16 +180,20 @@ class ComparisonAssistantWindow:
         if not question:
             return
         self.input_var.set("")
+        self.last_question = question
         self._append_user(question)
 
         action_reply = self._maybe_run_action(question)
         if action_reply:
             self._append_bot(action_reply)
+            self._after_reply(action_reply, question)
             return
 
         local_context = self._build_context(question)
+        self.last_context = local_context
         if not self.engine:
             self._append_bot(local_context)
+            self._after_reply(local_context, question)
             return
 
         self._set_busy(True)
@@ -176,12 +212,16 @@ class ComparisonAssistantWindow:
         if "open" in q and "report" in q:
             self.viewer.open_reports_folder()
             return "Opened the reports folder."
+        if "save" in q and ("answer" in q or "chat" in q):
+            return self._save_last_answer()
         if ("run" in q or "open" in q or "start" in q) and "interface" in q:
             self.window.after(100, self.viewer.open_interface_analysis_tool)
             return "Starting interface analysis. For online results, I will extract the selected RTC components first."
         if "open" in q and "diff" in q:
             self.viewer.open_diff()
             return "Opened the selected row's HTML diff if one is available."
+        if "select" in q and ("changed" in q or "modified" in q or "different" in q):
+            return self._select_first_changed_row()
         return None
 
     def _build_context(self, question):
@@ -193,6 +233,9 @@ class ComparisonAssistantWindow:
 
         if any(word in lowered for word in ["summary", "summarize", "overview", "status"]):
             return self._comparison_summary()
+
+        if any(phrase in lowered for phrase in ["inspect next", "next", "risk", "risky", "priority"]):
+            return self._recommend_next_steps()
 
         if any(word in lowered for word in ["modified", "different", "changed"]):
             return self._list_by_status(("Different", "Modified", "Comments update only"), "changed")
@@ -225,6 +268,19 @@ class ComparisonAssistantWindow:
             "Mention the file/component name, or select a row and ask about the selected file."
         )
 
+    def _context_card_text(self, mode):
+        counts = {}
+        for row in self.viewer.results:
+            counts[str(row[4])] = counts.get(str(row[4]), 0) + 1
+        changed = counts.get("Different", 0) + counts.get("Modified", 0) + counts.get("Comments update only", 0)
+        return (
+            f"{mode} comparison\n"
+            f"Rows: {len(self.viewer.results)}\n"
+            f"Changed: {changed}\n"
+            f"Only source 1: {counts.get('Only in Platform', 0) + counts.get('Only in Snapshot 1', 0)}\n"
+            f"Only source 2: {counts.get('Only in Project', 0) + counts.get('Only in Snapshot 2', 0)}"
+        )
+
     def _comparison_summary(self):
         counts = {}
         for row in self.viewer.results:
@@ -245,6 +301,25 @@ class ComparisonAssistantWindow:
             lines.append("\nTop changed rows:")
             for row in changed[:10]:
                 lines.append(f"- {row[0]} ({row[4]})")
+        return "\n".join(lines)
+
+    def _recommend_next_steps(self):
+        changed = [r for r in self.viewer.results if str(r[4]) in ("Different", "Modified")]
+        only2 = [r for r in self.viewer.results if str(r[4]) in ("Only in Project", "Only in Snapshot 2")]
+        comments = [r for r in self.viewer.results if str(r[4]) == "Comments update only"]
+        lines = ["Recommended next steps"]
+        if changed:
+            lines.append(f"- Inspect changed rows first: {len(changed)} row(s).")
+            for row in changed[:5]:
+                lines.append(f"  - {row[0]}")
+        if only2:
+            lines.append(f"- Review additions in source 2/project: {len(only2)} row(s).")
+        if comments:
+            lines.append(f"- Comments-only updates are lower risk but useful for documentation: {len(comments)} row(s).")
+        if self.viewer.online_context:
+            lines.append("- For file-level online analysis, run Interface Analysis so selected RTC components are extracted locally.")
+        else:
+            lines.append("- For API/header risk, run Interface Diff on the compared folders.")
         return "\n".join(lines)
 
     def _list_by_status(self, statuses, label):
@@ -367,14 +442,17 @@ class ComparisonAssistantWindow:
                 return None
             from src.chatbot.chatbot import ChatConfig, ChatEngine
             endpoint_base = getattr(settings, "AOAI_FARM_ENDPOINT", "").rstrip("/")
-            deployment = getattr(settings, "AOAI_FARM_DEPLOYMENT", "")
-            api_version = getattr(settings, "AOAI_FARM_API_VERSION", "")
+            deployment = getattr(settings, "AOAI_CHAT_DEPLOYMENT", None) or getattr(settings, "AOAI_FARM_DEPLOYMENT", "")
+            api_version = getattr(settings, "AOAI_CHAT_API_VERSION", None) or getattr(settings, "AOAI_FARM_API_VERSION", "")
             endpoint = f"{endpoint_base}/openai/deployments/{deployment}/chat/completions?api-version={api_version}"
             cfg = ChatConfig(
                 api_key=key,
                 endpoint=endpoint,
-                temperature=0.2,
-                max_tokens=1200,
+                # Bosch AOAI GPT-5 chat-completions deployments accept the
+                # same minimal body that works in Postman: {"messages": ...}.
+                # Legacy params like temperature/max_tokens can produce 400s.
+                temperature=None,
+                max_tokens=None,
                 timeout_sec=90
             )
             return ChatEngine(cfg)
@@ -399,12 +477,83 @@ class ComparisonAssistantWindow:
     def _set_busy(self, busy):
         self.busy = busy
         self.send_btn.config(state="disabled" if busy else "normal")
+        self.status_var.set("Thinking..." if busy else "Ready")
         if busy:
             self._append_system("Assistant is thinking...")
 
     def _finish_reply(self, reply):
         self._set_busy(False)
         self._append_bot(reply)
+        self._after_reply(reply, self.last_question)
+
+    def _after_reply(self, reply, question):
+        self.last_reply = reply
+        self._render_suggestions(self._suggest_followups(question, reply))
+        self.status_var.set("Ready")
+
+    def _suggest_followups(self, question, reply):
+        q = question.lower()
+        suggestions = []
+        if "summary" in q or "overview" in q:
+            suggestions.extend(["What should I inspect next?", "List modified files", "Run interface analysis"])
+        elif "selected" in q or self._find_best_result(question):
+            suggestions.extend(["Open selected diff", "Save this answer", "What is the risk?"])
+        elif "modified" in q or "changed" in q:
+            suggestions.extend(["Tell differences for selected file", "Which files are risky?", "Open reports folder"])
+        elif self.viewer.online_context:
+            suggestions.extend(["Run interface analysis", "Explain selected component", "List selected components"])
+        else:
+            suggestions.extend(["Summarize this comparison", "List files only in project", "What should I inspect next?"])
+        return suggestions[:4]
+
+    def _render_suggestions(self, suggestions):
+        for child in self.suggestion_frame.winfo_children():
+            child.destroy()
+        tk.Label(self.suggestion_frame, text="Suggested next:", font=("Segoe UI", 9, "bold"),
+                 bg="#ECF2F6", fg="#425466").pack(side="left", padx=(0, 8))
+        for suggestion in suggestions:
+            tk.Button(
+                self.suggestion_frame,
+                text=suggestion,
+                command=lambda s=suggestion: self._ask(s),
+                bg="#FFFFFF",
+                fg="#003366",
+                font=("Segoe UI", 8),
+                relief="solid",
+                bd=1,
+                padx=10,
+                pady=4,
+                cursor="hand2"
+            ).pack(side="left", padx=4)
+
+    def _select_first_changed_row(self):
+        for item in self.viewer.tree.get_children():
+            values = self.viewer.tree.item(item, 'values')
+            if values and str(values[1]) in ("Different", "Modified", "Comments update only"):
+                self.viewer.tree.selection_set(item)
+                self.viewer.tree.see(item)
+                self.viewer.on_file_select()
+                return f"Selected first changed row: {values[0]}"
+        return "No changed row was found to select."
+
+    def _save_last_answer(self):
+        if not self.last_reply:
+            return "There is no assistant answer to save yet."
+        path = filedialog.asksaveasfilename(
+            parent=self.window,
+            title="Save Assistant Answer",
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("Markdown files", "*.md"), ("All files", "*.*")]
+        )
+        if not path:
+            return "Save cancelled."
+        try:
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(f"Question:\n{self.last_question}\n\nAnswer:\n{self.last_reply}\n")
+            return f"Saved the last answer to:\n{path}"
+        except Exception as exc:
+            messagebox.showerror("Save Failed", str(exc), parent=self.window)
+            return f"Could not save the answer: {exc}"
 
     def _append_user(self, text):
         self._write("\nYou\n", "user_label")

@@ -52,6 +52,12 @@ AOAI_FARM_API_VERSION = os.environ.get("AOAI_FARM_API_VERSION", "2025-04-14-prev
 # the merge code will try this first, then fall back to AOAI_FARM_DEPLOYMENT.
 AOAI_FARM_MODEL = os.environ.get("AOAI_FARM_MODEL", "gpt-5-2025-08-07")
 
+# Chat assistant endpoint settings. Kept separate from AI merge so the chatbot
+# can use the lightweight GPT-5-nano chat-completions deployment that works with
+# the minimal {"messages": ...} request body.
+AOAI_CHAT_DEPLOYMENT = os.environ.get("AOAI_CHAT_DEPLOYMENT", "gpt-5-nano-2025-08-07")
+AOAI_CHAT_API_VERSION = os.environ.get("AOAI_CHAT_API_VERSION", "2025-04-01-preview")
+
 # OpenAI API key — used to enhance AI Suggest (optional; heuristics work without it)
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
