@@ -10,6 +10,9 @@ import webbrowser
 import shutil
 import tempfile
 import logging
+import subprocess
+import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +78,7 @@ class ComparisonResultsDialog:
         self.files1 = files1
         self.files2 = files2
         self.report_paths = report_paths
+        self.online_context = report_paths.get('online_context', {}) if isinstance(report_paths, dict) else {}
         
         # Current selection state
         self.current_file = None
@@ -1196,6 +1200,10 @@ class ComparisonResultsDialog:
             from src.utils.interface_diff import InterfaceDiffEngine, Severity, ChangeType
             import threading
             
+            if self._is_online_snapshot_result():
+                self._extract_and_analyze_snapshots()
+                return
+            
             # Show progress
             progress_win = tk.Toplevel(self.dialog)
             progress_win.title("Interface Analysis")
@@ -1556,18 +1564,22 @@ class ComparisonResultsDialog:
                 return
             
             # For snapshots (non-local paths), trigger file extraction and then analyze
-            if not (folder1_is_local and folder2_is_local):
+            if self._is_online_snapshot_result():
                 # This is snapshot comparison mode
                 messagebox.showinfo(
                     "Interface Analysis - Snapshot Mode",
-                    "🌐 Interface Analysis for snapshots requires extracting component files.\n\n"
-                    "Files will be extracted to temporary local folders and analyzed.\n\n"
-                    "This may take a moment depending on number and size of components..."
+                    "Interface analysis will extract the selected online components to temporary local folders, then run the same analyzer used for offline comparisons.\n\n"
+                    "Only selected components and C/C++ source/header files are pulled."
                 )
                 
                 # Extract and analyze snapshot files
                 self._extract_and_analyze_snapshots()
                 return
+            
+            messagebox.showwarning(
+                "Interface Analysis",
+                "Interface analysis needs either two local folders or an online-online result with selected component metadata."
+            )
             
         except ImportError as e:
             messagebox.showerror(
@@ -1580,261 +1592,320 @@ class ComparisonResultsDialog:
                 f"Error opening interface analysis tool:\n\n{str(e)}"
             )
     
+    def _is_online_snapshot_result(self):
+        """Return True when this result viewer came from online-online snapshot comparison."""
+        return self.online_context.get('mode') == 'online_online'
+    
     def _extract_and_analyze_snapshots(self):
-        """Extract files from RTC snapshots and run interface analysis."""
+        """Extract selected RTC snapshot component files and run interface analysis."""
         try:
-            import tempfile
-            import shutil
-            from src.rtc.connection import RTCConnection
+            from src.config import settings
             
-            # Create temporary directories for extraction
+            username = self.online_context.get('username', '')
+            password = self.online_context.get('password', '')
+            server_url = self.online_context.get('server_url', '')
+            scm_path = getattr(settings, 'LSCM_PATH', '')
+            
+            if not username or not password:
+                messagebox.showerror(
+                    "RTC Credentials Required",
+                    "Online interface analysis needs the current RTC login session. Please run the online-online comparison again and log in."
+                )
+                return
+            
+            if not scm_path or not os.path.exists(scm_path):
+                messagebox.showerror(
+                    "RTC SCM CLI Not Found",
+                    f"Cannot extract online snapshot files because RTC SCM CLI was not found:\n\n{scm_path}\n\n"
+                    "Update LSCM_PATH in src/config/settings.py."
+                )
+                return
+            
+            snap1_components = self.online_context.get('snapshot1_components', [])
+            snap2_components = self.online_context.get('snapshot2_components', [])
+            selected_components = self.online_context.get('selected_components', [])
+            
+            snap1_by_name = {c.get('name'): c for c in snap1_components if c.get('name')}
+            snap2_by_name = {c.get('name'): c for c in snap2_components if c.get('name')}
+            if not selected_components:
+                selected_components = sorted(set(snap1_by_name) & set(snap2_by_name))
+            
+            if not selected_components:
+                messagebox.showwarning(
+                    "No Components",
+                    "No selected online components are available for interface analysis."
+                )
+                return
+            
             temp_dir = tempfile.mkdtemp(prefix="rtc_snapshot_analysis_")
             baseline_temp = os.path.join(temp_dir, "snapshot1_files")
             target_temp = os.path.join(temp_dir, "snapshot2_files")
-            
             os.makedirs(baseline_temp, exist_ok=True)
             os.makedirs(target_temp, exist_ok=True)
             
-            logger.info(f"Extracting snapshot files to: {temp_dir}")
-            
-            # Get credentials from parent window if available
-            username = ""
-            password = ""
-            server_url = ""
-            
-            try:
-                # Try to get from main window if available
-                from src.config import settings
-                server_url = settings.RTC_SERVER_URL
-            except:
-                pass
-            
-            # Show progress dialog while extracting
             progress_window = tk.Toplevel(self.dialog)
-            progress_window.title("Extracting Snapshot Files")
-            progress_window.geometry("400x150")
+            progress_window.title("Extracting Online Components")
+            progress_window.geometry("560x170")
             progress_window.transient(self.dialog)
             progress_window.grab_set()
             
-            progress_label = tk.Label(progress_window, text="Extracting files from snapshots...", font=("Segoe UI", 10))
-            progress_label.pack(pady=20)
+            progress_label = tk.Label(
+                progress_window,
+                text="Extracting selected RTC components for interface analysis...",
+                font=("Segoe UI", 10, "bold")
+            )
+            progress_label.pack(pady=(18, 8))
             
-            progress_bar = ttk.Progressbar(progress_window, length=350, mode='indeterminate')
-            progress_bar.pack(pady=10)
-            progress_bar.start()
+            progress_bar = ttk.Progressbar(
+                progress_window,
+                length=500,
+                mode='determinate',
+                maximum=max(1, len(selected_components) * 2)
+            )
+            progress_bar.pack(pady=8)
             
-            status_label = tk.Label(progress_window, text="", font=("Segoe UI", 9), fg="blue")
-            status_label.pack()
-            
+            status_label = tk.Label(progress_window, text="", font=("Segoe UI", 9), fg="blue", wraplength=520)
+            status_label.pack(pady=5)
             progress_window.update()
             
+            extracted_total = 0
+            completed_units = 0
+            
             try:
-                # Extract baseline snapshot files
-                status_label.config(text="Extracting Snapshot 1 (baseline)...")
-                progress_window.update()
-                
-                self._extract_snapshot_files(
-                    self.folder1_actual,  # This should be snapshot UUID or URL
-                    baseline_temp,
-                    username,
-                    password,
-                    server_url
-                )
-                
-                # Extract target snapshot files
-                status_label.config(text="Extracting Snapshot 2 (target)...")
-                progress_window.update()
-                
-                self._extract_snapshot_files(
-                    self.folder2_actual,  # This should be snapshot UUID or URL
-                    target_temp,
-                    username,
-                    password,
-                    server_url
-                )
+                for component_name in selected_components:
+                    safe_name = self._safe_path_part(component_name)
+                    component1 = snap1_by_name.get(component_name)
+                    component2 = snap2_by_name.get(component_name)
+                    
+                    if component1:
+                        status_label.config(text=f"Snapshot 1: extracting {component_name}...")
+                        progress_window.update()
+                        extracted_total += self._extract_component_baseline_files(
+                            component1,
+                            os.path.join(baseline_temp, safe_name),
+                            username,
+                            password,
+                            server_url,
+                            scm_path
+                        )
+                    completed_units += 1
+                    progress_bar['value'] = completed_units
+                    progress_window.update()
+                    
+                    if component2:
+                        status_label.config(text=f"Snapshot 2: extracting {component_name}...")
+                        progress_window.update()
+                        extracted_total += self._extract_component_baseline_files(
+                            component2,
+                            os.path.join(target_temp, safe_name),
+                            username,
+                            password,
+                            server_url,
+                            scm_path
+                        )
+                    completed_units += 1
+                    progress_bar['value'] = completed_units
+                    progress_window.update()
                 
                 progress_window.destroy()
                 
-                # Now run interface analysis on extracted files
-                logger.info(f"Running interface analysis on extracted files")
+                if extracted_total == 0:
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                    messagebox.showwarning(
+                        "No Interface Files Extracted",
+                        "RTC extraction completed, but no C/C++ interface source files were pulled from the selected components.\n\n"
+                        "Check that the selected components contain .h/.hpp/.c/.cpp files and that SCM CLI can access the baselines."
+                    )
+                    return
+                
+                logger.info(f"Running interface analysis on {extracted_total} extracted online files")
                 from .interface_diff_viewer_enhanced import show_interface_diff_viewer
                 
-                viewer = show_interface_diff_viewer(
+                show_interface_diff_viewer(
                     self.dialog,
                     baseline_path=baseline_temp,
                     target_path=target_temp
                 )
                 
-                # Schedule cleanup when analysis window closes
-                def cleanup_on_close():
+                def cleanup_on_exit(path=temp_dir):
                     try:
-                        if os.path.exists(temp_dir):
-                            shutil.rmtree(temp_dir)
-                            logger.info(f"Cleaned up temporary snapshot files: {temp_dir}")
-                    except Exception as e:
-                        logger.warning(f"Failed to cleanup temp files: {e}")
+                        if os.path.exists(path):
+                            shutil.rmtree(path)
+                    except Exception as cleanup_err:
+                        logger.warning(f"Failed to cleanup snapshot extraction folder {path}: {cleanup_err}")
                 
-                # Register cleanup (best effort)
                 import atexit
-                atexit.register(cleanup_on_close)
+                atexit.register(cleanup_on_exit)
                 
-            except Exception as extract_err:
+            except Exception:
                 progress_window.destroy()
-                raise extract_err
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                raise
         
         except Exception as e:
-            logger.error(f"Error extracting and analyzing snapshots: {e}", exc_info=True)
+            logger.error(f"Error extracting and analyzing online snapshots: {e}", exc_info=True)
             messagebox.showerror(
                 "Snapshot Analysis Error",
-                f"Error during snapshot file extraction:\n\n{str(e)[:300]}"
+                f"Error during online snapshot extraction:\n\n{str(e)[:500]}"
             )
     
-    def _extract_snapshot_files(self, snapshot_id_or_url, output_dir, username="", password="", server_url=""):
-        """
-        Extract files from an RTC snapshot to a local directory.
+    def _extract_component_baseline_files(self, component, output_dir, username, password, server_url, scm_path):
+        """Extract supported C/C++ files from one RTC baseline into output_dir."""
+        component_name = component.get('name', 'Unknown')
+        baseline_uuid = component.get('baseline_uuid') or component.get('uuid')
+        if not baseline_uuid:
+            logger.warning(f"Skipping {component_name}: no baseline UUID")
+            return 0
         
-        For now, creates realistic placeholder structure with sample interfaces.
-        In production, would:
-        1. Connect to RTC
-        2. Fetch component details
-        3. Download each component file
-        4. Save to output directory
-        """
+        os.makedirs(output_dir, exist_ok=True)
+        files = self._list_baseline_files(baseline_uuid, username, password, server_url, scm_path)
+        supported_exts = {'.h', '.hpp', '.c', '.cpp', '.cc', '.cxx', '.hxx'}
+        interface_files = [
+            path for path in files
+            if os.path.splitext(path)[1].lower() in supported_exts
+        ]
+        
+        if not interface_files:
+            logger.info(f"{component_name}: no supported C/C++ files found in baseline {baseline_uuid[:12]}")
+            return 0
+        
+        max_workers = min(6, max(1, os.cpu_count() or 4))
+        extracted = 0
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [
+                executor.submit(
+                    self._get_baseline_file,
+                    baseline_uuid,
+                    file_path,
+                    output_dir,
+                    username,
+                    password,
+                    server_url,
+                    scm_path,
+                    component_name
+                )
+                for file_path in interface_files
+            ]
+            
+            for future in as_completed(futures):
+                try:
+                    if future.result():
+                        extracted += 1
+                except Exception as e:
+                    logger.debug(f"{component_name}: file extraction failed: {e}")
+        
+        logger.info(f"{component_name}: extracted {extracted}/{len(interface_files)} interface files")
+        return extracted
+    
+    def _list_baseline_files(self, baseline_uuid, username, password, server_url, scm_path):
+        """List files in an RTC baseline using scm list files JSON output."""
+        cmd = [
+            scm_path,
+            'list', 'files',
+            '-b', baseline_uuid,
+            '-r', server_url,
+            '-u', username,
+            '-P', password,
+            '-D', 'all',
+            '-j'
+        ]
+        
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=90,
+            env=self._scm_env(),
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+        )
+        
+        if not result.stdout.strip():
+            logger.warning(f"SCM list files returned no output for baseline {baseline_uuid[:12]}: {result.stderr[:300]}")
+            return []
+        
         try:
-            logger.info(f"Extracting snapshot {snapshot_id_or_url} to {output_dir}")
-            
-            # Create realistic structure with sample C/C++ files for interface analysis
-            # These serve as placeholders for the interface analysis tool to parse
-            sample_files = {
-                "include/config.h": """#ifndef CONFIG_H
-#define CONFIG_H
-
-#define VERSION_MAJOR 1
-#define VERSION_MINOR 0
-#define CONFIG_TIMEOUT 5000
-
-typedef enum {
-    CONFIG_MODE_AUTO = 0,
-    CONFIG_MODE_MANUAL = 1
-} ConfigMode;
-
-typedef struct {
-    int major;
-    int minor;
-    ConfigMode mode;
-} Config;
-
-extern Config* config_instance;
-
-Config* config_init(void);
-void config_cleanup(Config* cfg);
-int config_set_mode(Config* cfg, ConfigMode mode);
-ConfigMode config_get_mode(const Config* cfg);
-
-#endif
-""",
-                "include/module.h": """#ifndef MODULE_H
-#define MODULE_H
-
-typedef struct Module_t Module;
-
-Module* module_create(const char* name);
-void module_destroy(Module* mod);
-int module_execute(Module* mod);
-const char* module_get_name(const Module* mod);
-
-#endif
-""",
-                "src/config.c": """#include "../include/config.h"
-#include <stdlib.h>
-
-Config* config_instance = NULL;
-
-Config* config_init(void) {
-    Config* cfg = (Config*)malloc(sizeof(Config));
-    if (cfg) {
-        cfg->major = VERSION_MAJOR;
-        cfg->minor = VERSION_MINOR;
-        cfg->mode = CONFIG_MODE_AUTO;
-    }
-    return cfg;
-}
-
-void config_cleanup(Config* cfg) {
-    if (cfg) {
-        free(cfg);
-    }
-}
-
-int config_set_mode(Config* cfg, ConfigMode mode) {
-    if (!cfg) return -1;
-    cfg->mode = mode;
-    return 0;
-}
-
-ConfigMode config_get_mode(const Config* cfg) {
-    if (!cfg) return CONFIG_MODE_AUTO;
-    return cfg->mode;
-}
-""",
-                "src/module.c": """#include "../include/module.h"
-#include "../include/config.h"
-#include <stdlib.h>
-#include <string.h>
-
-struct Module_t {
-    char* name;
-    int status;
-};
-
-Module* module_create(const char* name) {
-    Module* mod = (Module*)malloc(sizeof(Module));
-    if (mod) {
-        mod->name = (char*)malloc(strlen(name) + 1);
-        if (mod->name) {
-            strcpy(mod->name, name);
-        }
-        mod->status = 0;
-    }
-    return mod;
-}
-
-void module_destroy(Module* mod) {
-    if (mod) {
-        if (mod->name) free(mod->name);
-        free(mod);
-    }
-}
-
-int module_execute(Module* mod) {
-    if (!mod) return -1;
-    mod->status = 1;
-    return 0;
-}
-
-const char* module_get_name(const Module* mod) {
-    if (!mod) return NULL;
-    return mod->name;
-}
-"""
-            }
-            
-            # Create directories and files
-            created_files = 0
-            for filepath, content in sample_files.items():
-                full_path = os.path.join(output_dir, filepath)
-                os.makedirs(os.path.dirname(full_path), exist_ok=True)
-                
-                with open(full_path, 'w', encoding='utf-8') as f:
-                    f.write(content)
-                created_files += 1
-                logger.info(f"Created sample file: {full_path}")
-            
-            logger.info(f"✓ Snapshot extraction complete: {output_dir} ({created_files} files)")
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            logger.warning(f"SCM list files returned non-JSON output for baseline {baseline_uuid[:12]}")
+            return []
         
-        except Exception as e:
-            logger.error(f"Error extracting snapshot files: {e}", exc_info=True)
-            raise
+        baseline_data = data.get('baseline', {}) if isinstance(data, dict) else {}
+        remote_files = baseline_data.get('remote-files', [])
+        paths = []
+        for item in remote_files:
+            if not isinstance(item, dict):
+                continue
+            path = item.get('path', '').strip()
+            if not path or path.endswith('/'):
+                continue
+            paths.append(path.strip('/'))
+        
+        logger.info(f"Baseline {baseline_uuid[:12]}: listed {len(paths)} files")
+        return sorted(set(paths))
+    
+    def _get_baseline_file(self, baseline_uuid, file_path, output_dir, username, password, server_url, scm_path, component_name):
+        """Fetch one file from an RTC baseline using scm get file."""
+        clean_path = file_path.strip('/').replace('\\', '/')
+        relative_parts = [self._safe_path_part(part) for part in clean_path.split('/') if part]
+        if not relative_parts:
+            return False
+        
+        output_file = os.path.join(output_dir, *relative_parts)
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        
+        command_variants = [
+            [
+                scm_path, 'get', 'file', baseline_uuid, '-b',
+                '-f', clean_path, '-r', server_url, '-u', username, '-P', password,
+                '-o', output_file, '-C', component_name
+            ],
+            [
+                scm_path, 'get', 'file', baseline_uuid, '-c', component_name, '-b',
+                '-f', clean_path, '-r', server_url, '-u', username, '-P', password,
+                '-o', output_file
+            ],
+            [
+                scm_path, 'get', 'file', baseline_uuid, '-b',
+                '-f', clean_path, '-r', server_url, '-u', username, '-P', password,
+                '-o', output_file
+            ],
+        ]
+        
+        for cmd in command_variants:
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    env=self._scm_env(),
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                )
+                if result.returncode == 0 and os.path.exists(output_file):
+                    return True
+                logger.debug(
+                    f"SCM get file failed for {component_name}/{clean_path}: "
+                    f"rc={result.returncode}, stderr={result.stderr[:200]}"
+                )
+            except subprocess.TimeoutExpired:
+                logger.warning(f"Timeout extracting {component_name}/{clean_path}")
+        
+        return False
+    
+    def _safe_path_part(self, value):
+        """Sanitize a component or path segment for local extraction."""
+        value = str(value or "unknown").strip()
+        value = value.replace(':', '_').replace('*', '_').replace('?', '_')
+        value = value.replace('"', '_').replace('<', '_').replace('>', '_')
+        value = value.replace('|', '_').replace('/', '_').replace('\\', '_')
+        return value or "unknown"
+    
+    def _scm_env(self):
+        """Return environment for SCM CLI without proxy variables that can break RTC CLI calls."""
+        env = os.environ.copy()
+        for proxy_var in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'NO_PROXY', 'no_proxy']:
+            env.pop(proxy_var, None)
+        return env
     
     def show(self):
         """Show the dialog and wait for it to close"""

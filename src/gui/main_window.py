@@ -6,6 +6,8 @@ import os
 import threading
 import json
 import logging
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from src.utils.comparison_engine import compare_folders, cleanup_temp_dirs
 from src.utils.credential_manager import CredentialManager
@@ -795,12 +797,48 @@ class MigrationAnalysisGUI:
                 self.root.after(0, lambda: self._update_progress(0, "Ready"))
                 return
             
-            # Fetch snapshot 1 components
-            self.root.after(0, lambda: self._update_progress(20, "⬇️ Fetching Snapshot 1 components..."))
-            logger.info("Fetching components from Snapshot 1...")
-            
-            snap1_components = rtc_conn.fetch_snapshot_components(uuid1, snapshot_name='Snapshot 1')
-            
+            # Fetch both snapshots in parallel. Each fetch also parallelizes baseline
+            # detail requests internally, so keep the top-level fan-out to two tasks.
+            self.root.after(0, lambda: self._update_progress(20, "⬇️ Fetching both snapshots in parallel..."))
+            logger.info("Fetching Snapshot 1 and Snapshot 2 components in parallel...")
+
+            snapshot_fetches = {
+                "Snapshot 1": uuid1,
+                "Snapshot 2": uuid2,
+            }
+            fetched_components = {}
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                future_to_name = {
+                    executor.submit(
+                        rtc_conn.fetch_snapshot_components,
+                        snapshot_uuid,
+                        snapshot_name=snapshot_name
+                    ): snapshot_name
+                    for snapshot_name, snapshot_uuid in snapshot_fetches.items()
+                }
+
+                for future in as_completed(future_to_name):
+                    snapshot_name = future_to_name[future]
+                    try:
+                        components = future.result()
+                    except Exception as fetch_err:
+                        logger.error(f"{snapshot_name}: fetch failed: {fetch_err}", exc_info=True)
+                        components = []
+
+                    fetched_components[snapshot_name] = components
+                    completed = len(fetched_components)
+                    progress = 20 + (completed * 15)
+                    self.root.after(
+                        0,
+                        lambda name=snapshot_name, count=len(components), value=progress:
+                            self._update_progress(value, f"✓ {name}: fetched {count} components")
+                    )
+                    logger.info(f"✓ {snapshot_name}: Found {len(components)} components")
+
+            snap1_components = fetched_components.get("Snapshot 1", [])
+            snap2_components = fetched_components.get("Snapshot 2", [])
+
             if not snap1_components:
                 error_msg = "❌ No components found in Snapshot 1\n\nPossible reasons:\n" \
                            "• Invalid snapshot UUID\n" \
@@ -812,18 +850,7 @@ class MigrationAnalysisGUI:
                 self.root.after(0, lambda: self.compare_btn.config(state='normal'))
                 self.root.after(0, lambda: self._update_progress(0, "Ready"))
                 return
-            
-            logger.info(f"✓ Snapshot 1: Found {len(snap1_components)} components")
-            
-            # Fetch snapshot 2 components
-            self.root.after(
-                0,
-                lambda: self._update_progress(50,f"⬇️ Fetching Snapshot 2 components ({len(snap1_components)} in Snapshot 1)...")
-            )
-            logger.info("Fetching components from Snapshot 2...")
-            
-            snap2_components = rtc_conn.fetch_snapshot_components(uuid2, snapshot_name='Snapshot 2')
-            
+
             if not snap2_components:
                 error_msg = "❌ No components found in Snapshot 2\n\nPossible reasons:\n" \
                            "• Invalid snapshot UUID\n" \
@@ -835,8 +862,6 @@ class MigrationAnalysisGUI:
                 self.root.after(0, lambda: self.compare_btn.config(state='normal'))
                 self.root.after(0, lambda: self._update_progress(0, "Ready"))
                 return
-            
-            logger.info(f"✓ Snapshot 2: Found {len(snap2_components)} components")
             
             # ===== COMPONENT SELECTION (Online Mode Specific) =====
             # Show component selection dialog to user (from main thread!)
@@ -883,15 +908,20 @@ class MigrationAnalysisGUI:
             logger.info(f"✓ User selected {len(selected_comp_names)}/{len(selection_result['common'])} common components")
             
             # Filter components to only selected ones
-            if selected_comp_names:
-                snap1_filtered = [c for c in snap1_components if c.get('name', str(c)) in selected_comp_names]
-                snap2_filtered = [c for c in snap2_components if c.get('name', str(c)) in selected_comp_names]
-                logger.info(f"Filtered: {len(snap1_filtered)} from Snapshot 1, {len(snap2_filtered)} from Snapshot 2")
-                logger.info(f"Excluded: {len(selection_result['only_in_snap1'])} only in Snap1, {len(selection_result['only_in_snap2'])} only in Snap2")
-            else:
-                logger.warning("No components selected - using all components")
-                snap1_filtered = snap1_components
-                snap2_filtered = snap2_components
+            if not selected_comp_names:
+                logger.info("No components selected. Comparison aborted.")
+                self.root.after(0, lambda: messagebox.showwarning(
+                    'No Components Selected',
+                    'Please select at least one common component to compare.'
+                ))
+                self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+                self.root.after(0, lambda: self._update_progress(0, "Ready"))
+                return
+
+            snap1_filtered = [c for c in snap1_components if c.get('name', str(c)) in selected_comp_names]
+            snap2_filtered = [c for c in snap2_components if c.get('name', str(c)) in selected_comp_names]
+            logger.info(f"Filtered: {len(snap1_filtered)} from Snapshot 1, {len(snap2_filtered)} from Snapshot 2")
+            logger.info(f"Excluded: {len(selection_result['only_in_snap1'])} only in Snap1, {len(selection_result['only_in_snap2'])} only in Snap2")
             
             # Compare snapshots (only selected components)
             self.root.after(0, lambda: self._update_progress(70, f"🔍 Comparing {len(snap1_filtered)} selected components..."))
@@ -922,8 +952,10 @@ class MigrationAnalysisGUI:
             comparison_metadata = {
                 'snap1_url': url1,
                 'snap2_url': url2,
-                'snap1_components': snap1_components,
-                'snap2_components': snap2_components,
+                'snap1_components': snap1_filtered,
+                'snap2_components': snap2_filtered,
+                'selected_components': sorted(selected_comp_names),
+                'total_common_components': len(selection_result['common']),
                 'comparison_results': comparison_results
             }
             
@@ -934,7 +966,7 @@ class MigrationAnalysisGUI:
             
             self.root.after(0, lambda: self._update_progress(
                 100,
-                f"✅ Comparison complete: {len(comparison_results)} components" \
+                f"✅ Selected comparison complete: {len(comparison_results)} components" \
                 f" ({modified} modified, {added} added, {removed} removed)"
             ))
             
@@ -1155,6 +1187,8 @@ class MigrationAnalysisGUI:
             snap2_url = comparison_metadata['snap2_url']
             snap1_components = comparison_metadata['snap1_components']
             snap2_components = comparison_metadata['snap2_components']
+            selected_components = comparison_metadata.get('selected_components', [])
+            total_common_components = comparison_metadata.get('total_common_components', len(selected_components))
             
             # Create display names for snapshots
             snap1_name = f"Snapshot 1: {snap1_url[:16]}..."
@@ -1172,21 +1206,46 @@ class MigrationAnalysisGUI:
                 comp_name = comp.get('name', 'Unknown')
                 files2[comp_name] = comp.get('uuid', '')
             
-            # Create output directory for snapshot comparison results (like offline mode)
-            output_dir = os.path.join(os.getcwd(), "Snapshot_Comparison_Results")
+            # Create output directory for this selected snapshot comparison run.
+            # Keeping each run separate avoids overwriting previous selected reports.
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_dir = os.path.join(
+                os.getcwd(),
+                "Snapshot_Comparison_Results",
+                f"selected_components_{timestamp}"
+            )
             os.makedirs(output_dir, exist_ok=True)
             
             # Create report paths with absolute paths (consistent with offline mode)
-            csv_report = os.path.join(output_dir, "snapshot_comparison.csv")
-            excel_report = os.path.join(output_dir, "snapshot_comparison.xlsx")
+            csv_report = os.path.join(output_dir, "Selected_Snapshot_Comparison.csv")
+            excel_report = os.path.join(output_dir, "Selected_Snapshot_Comparison.xlsx")
             
             report_paths = {
                 'csv': csv_report,
                 'output_dir': output_dir,
-                'excel': excel_report
+                'excel': excel_report,
+                'online_context': {
+                    'mode': 'online_online',
+                    'server_url': self.rtc_server_url.get(),
+                    'username': self.rtc_username.get(),
+                    'password': self.rtc_password.get(),
+                    'snapshot1_components': snap1_components,
+                    'snapshot2_components': snap2_components,
+                    'selected_components': selected_components,
+                }
             }
             
             logger.info(f"✓ Created output directory: {output_dir}")
+
+            manifest_path = os.path.join(output_dir, "selected_components.txt")
+            with open(manifest_path, 'w', encoding='utf-8') as manifest:
+                manifest.write("Selected Online-Online Snapshot Components\n")
+                manifest.write(f"Snapshot 1: {snap1_url}\n")
+                manifest.write(f"Snapshot 2: {snap2_url}\n")
+                manifest.write(f"Selected: {len(selected_components)} of {total_common_components} common components\n\n")
+                for component_name in selected_components:
+                    manifest.write(f"{component_name}\n")
+            logger.info(f"✓ Selected component manifest exported: {manifest_path}")
             
             # Export snapshot comparison results to CSV and Excel
             self._export_snapshot_results_to_reports(
@@ -1205,6 +1264,7 @@ class MigrationAnalysisGUI:
             
             logger.info(f"Files1 count: {len(files1)}, Files2 count: {len(files2)}")
             logger.info(f"snap1_name: {snap1_name}, snap2_name: {snap2_name}")
+            logger.info(f"Selected components exported: {len(selected_components)}/{total_common_components}")
             
             # Show results using enhanced viewer
             show_results_dialog(
