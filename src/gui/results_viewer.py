@@ -566,6 +566,20 @@ class ComparisonResultsDialog:
         self.analysis_tool_btn.pack(side="left", padx=2)
         ToolTip(self.analysis_tool_btn, "Analyze interface differences (extracts snapshot files if needed)")
         
+        self.assistant_btn = tk.Button(
+            button_row,
+            text="💬 Assistant",
+            command=self.open_comparison_assistant,
+            bg="#00838F",
+            fg="white",
+            font=("Segoe UI", 8, "bold"),
+            padx=8,
+            pady=4,
+            state="normal"
+        )
+        self.assistant_btn.pack(side="left", padx=2)
+        ToolTip(self.assistant_btn, "Ask questions about this comparison, selected file, reports, or online components")
+        
         tk.Button(
             button_row,
             text="✕ Close",
@@ -579,6 +593,17 @@ class ComparisonResultsDialog:
         
         # ✅ IMPORTANT: Return the button frame so caller can pack it
         return button_frame
+    
+    def open_comparison_assistant(self):
+        """Open a comparison-aware chatbot assistant."""
+        try:
+            from src.gui.comparison_assistant import ComparisonAssistantWindow
+            ComparisonAssistantWindow(self.dialog, self)
+        except Exception as e:
+            messagebox.showerror(
+                "Assistant Error",
+                f"Could not open the comparison assistant:\n\n{str(e)}"
+            )
     
     def populate_results(self):
         """Populate the tree with results"""
