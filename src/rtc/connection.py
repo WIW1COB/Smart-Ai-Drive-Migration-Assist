@@ -6,7 +6,7 @@ import json
 import re
 import logging
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError, wait
 from src.config import settings
 
 # Configure logging
@@ -314,8 +314,18 @@ class RTCConnection:
 
             if baseline_list and isinstance(baseline_list, list):
                 total_baselines = len(baseline_list)
-                max_workers = getattr(settings, "MAX_WORKERS", 10)
-                logger.info(f'{snapshot_name}: Fetching component details for {total_baselines} baselines (workers={max_workers})...')
+                requested_workers = getattr(settings, "MAX_WORKERS", 10)
+                try:
+                    requested_workers = int(requested_workers)
+                except Exception:
+                    requested_workers = 10
+
+                # Too many parallel curl processes can trigger RTC throttling / long stalls.
+                max_workers = max(1, min(requested_workers, 12))
+                logger.info(
+                    f'{snapshot_name}: Fetching component details for {total_baselines} baselines '
+                    f'(workers={max_workers}, requested={requested_workers})...'
+                )
 
                 # Shared cache for component names
                 component_name_cache = {}
@@ -421,26 +431,41 @@ class RTCConnection:
                     return None
 
                 start_time = time.time()
+                last_heartbeat = start_time
                 processed = 0
 
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    futures = [executor.submit(fetch_baseline_component, b) for b in baseline_list]
+                    pending = {executor.submit(fetch_baseline_component, b) for b in baseline_list}
 
-                    for future in as_completed(futures):
-                        processed += 1
-                        try:
-                            component = future.result()
-                            if component:
-                                components.append(component)
-                        except Exception as e:
-                            logger.debug(f'{snapshot_name}: Baseline processing error: {e}')
+                    # Heartbeat loop: logs progress even when the server is slow and no futures
+                    # have completed yet (so it doesn't look stuck).
+                    while pending:
+                        done, pending = wait(pending, timeout=5)
 
-                        if processed % 20 == 0 or processed == total_baselines:
-                            elapsed = time.time() - start_time
+                        for future in done:
+                            processed += 1
+                            try:
+                                component = future.result()
+                                if component:
+                                    components.append(component)
+                            except Exception as e:
+                                logger.debug(f'{snapshot_name}: Baseline processing error: {e}')
+
+                        now = time.time()
+                        if (processed % 20 == 0 and processed > 0) or processed == total_baselines:
+                            elapsed = now - start_time
                             logger.info(
                                 f'{snapshot_name}: Progress: {processed}/{total_baselines} baselines processed '
                                 f'({len(components)} components found) - {elapsed:.1f}s'
                             )
+                            last_heartbeat = now
+                        elif now - last_heartbeat >= 10:
+                            elapsed = now - start_time
+                            logger.info(
+                                f'{snapshot_name}: Still working... {processed}/{total_baselines} processed, '
+                                f'{len(pending)} pending, {len(components)} components found - {elapsed:.1f}s'
+                            )
+                            last_heartbeat = now
 
                 logger.info(f'{snapshot_name}: ✓ Successfully extracted {len(components)} components')
 

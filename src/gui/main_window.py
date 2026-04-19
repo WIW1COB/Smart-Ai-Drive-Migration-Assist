@@ -3,34 +3,19 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import os
-import sys
 import threading
 import json
 import logging
-import tempfile
-import shutil
-import subprocess
 
 from src.utils.comparison_engine import compare_folders, cleanup_temp_dirs
 from src.gui.results_viewer import show_results_dialog
 from src.rtc.connection import RTCConnection, get_rtc_connection
 from src.config import settings
-from src.utils.credential_manager import CredentialManager
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-try:
-    # Add src folder to sys.path if not present
-    _SRC_PATH = os.path.normpath(
-        os.path.join(os.path.dirname(__file__), "..", "..")
-    )
-    if _SRC_PATH not in sys.path:
-        sys.path.insert(0, _SRC_PATH)
-    from chatbot.chatbot import ChatConfig, build_chatbot, TkinterChatPanel  # type: ignore
-    _CHATBOT_AVAILABLE = True
-except Exception:
-    _CHATBOT_AVAILABLE = False
+
 
 class MigrationAnalysisGUI:
     """Main GUI window for Migration Analysis Tool"""
@@ -46,35 +31,8 @@ class MigrationAnalysisGUI:
         self.rtc_password = tk.StringVar()
         self.rtc_server_url = tk.StringVar(value=settings.RTC_SERVER_URL)
         self.rtc_connection = None
-        self.keep_signed_in = tk.BooleanVar(value=False)
-        
-        # Try to load cached credentials
-        self._load_cached_credentials()
         
         self.setup_ui()
-    
-    def _load_cached_credentials(self):
-        """Load cached credentials from secure storage if available"""
-        try:
-            server_url = self.rtc_server_url.get()
-            credentials = CredentialManager.load_credentials(server_url)
-            
-            if credentials:
-                username, password = credentials
-                self.rtc_username.set(username)
-                self.rtc_password.set(password)
-                self.keep_signed_in.set(True)
-                logger.info(f"✓ Cached credentials loaded for {username}")
-            else:
-                logger.info("No cached credentials found")
-        except Exception as e:
-            logger.warning(f"Failed to load cached credentials: {e}")
-    
-    def has_valid_credentials(self):
-        """Check if credentials are available (cached or previously entered)"""
-        username = self.rtc_username.get().strip()
-        password = self.rtc_password.get().strip()
-        return bool(username and password)
     
     def setup_ui(self):
         """Setup the main UI components"""
@@ -112,7 +70,6 @@ class MigrationAnalysisGUI:
         title_frame = tk.Frame(header_frame, bg="#003366")
         title_frame.pack(fill="x")
         
-        # Title (left-aligned so the chatbot button can sit on the right)
         title_label = tk.Label(
             title_frame,
             text="Migration Analysis Report Generator",
@@ -120,56 +77,7 @@ class MigrationAnalysisGUI:
             bg="#003366",
             fg="white"
         )
-        title_label.pack(side="left", padx=10, pady=10)
-
-        # ── Logout button (top-right corner of header) ──────────────────────
-        def on_logout():
-            """Clear cached credentials and logout"""
-            if not self.has_valid_credentials():
-                messagebox.showinfo('Info', 'Already logged out. No active session.')
-                return
-            
-            server_url = self.rtc_server_url.get()
-            success = CredentialManager.clear_credentials(server_url)
-            if success:
-                self.rtc_username.set('')
-                self.rtc_password.set('')
-                self.keep_signed_in.set(False)
-                logger.info("✓ Credentials cleared successfully")
-                messagebox.showinfo('Success', '✓ Logged out and credentials cleared.')
-            else:
-                messagebox.showerror('Error', 'Failed to clear credentials.')
-        
-        logout_btn = tk.Button(
-            title_frame,
-            text="🚪 Logout",
-            command=on_logout,
-            bg="#C23C3C",
-            fg="white",
-            font=("Segoe UI", 9, "bold"),
-            relief="flat",
-            cursor="hand2",
-            padx=10, pady=4
-        )
-        logout_btn.pack(side="right", padx=5, pady=8)
-
-        # ── Chatbot button (top-right corner of header) ──────────────────────
-        chatbot_btn = tk.Button(
-            title_frame,
-            text="\U0001f916  Code Assistant",
-            command=self._open_chatbot_window,
-            bg="#005C99" if _CHATBOT_AVAILABLE else "#555555",
-            fg="white",
-            font=("Segoe UI", 9, "bold"),
-            relief="flat",
-            cursor="hand2" if _CHATBOT_AVAILABLE else "arrow",
-            padx=10, pady=4,
-            state="normal" if _CHATBOT_AVAILABLE else "disabled",
-        )
-        chatbot_btn.pack(side="right", padx=12, pady=8)
-
-        if not _CHATBOT_AVAILABLE:
-            chatbot_btn.config(text="\U0001f916  Assistant (unavailable)")
+        title_label.pack(padx=10, pady=10)
     
     def create_mode_selection(self):
         """Create comparison mode selection"""
@@ -510,15 +418,12 @@ class MigrationAnalysisGUI:
                 )
                 return
             
-            # Check if we have valid credentials (cached or previously entered)
-            if self.has_valid_credentials():
-                # Credentials available, start comparison directly
-                logger.info("✓ Using cached/existing credentials")
-                self.start_snapshot_comparison(url1, url2)
-            else:
-                # No credentials, show dialog to ask user
-                logger.info("No credentials found, showing login dialog")
+            # Request credentials if not already provided
+            if not self.rtc_username.get() or not self.rtc_password.get():
                 self.show_credential_dialog()
+            else:
+                # Start comparison with existing credentials
+                self.start_snapshot_comparison(url1, url2)
         
         elif mode == "online_offline":
             # Online → Offline: RTC URL + Local Folder
@@ -549,7 +454,7 @@ class MigrationAnalysisGUI:
         """Show dialog to input RTC credentials"""
         dialog = tk.Toplevel(self.root)
         dialog.title("RTC Login")
-        dialog.geometry("480x420")
+        dialog.geometry("450x300")
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.resizable(False, False)
@@ -594,30 +499,6 @@ class MigrationAnalysisGUI:
         password_entry = ttk.Entry(main_frame, textvariable=self.rtc_password, show='●', width=40)
         password_entry.pack(fill=tk.X, pady=(0, 15))
         
-        # Keep signed in checkbox
-        keep_signed_frame = tk.Frame(main_frame, bg='white')
-        keep_signed_frame.pack(fill=tk.X, pady=(0, 10))
-        
-        tk.Checkbutton(
-            keep_signed_frame,
-            text="Keep me signed in (secure credential caching)",
-            variable=self.keep_signed_in,
-            bg='white',
-            fg='#333333',
-            font=('Segoe UI', 9),
-            activebackground='white',
-            activeforeground='#333333'
-        ).pack(anchor=tk.W)
-        
-        # Cache status label
-        cache_status_label = tk.Label(main_frame, text="", font=('Segoe UI', 8), bg='white', fg='#666666')
-        cache_status_label.pack(anchor=tk.W, pady=(0, 10))
-        
-        # Show cache status
-        server_url = self.rtc_server_url.get()
-        if CredentialManager.has_cached_credentials(server_url):
-            cache_status_label.config(text="💾 Cached credentials available", fg='#007B3E')
-        
         def on_ok():
             username = self.rtc_username.get().strip()
             password = self.rtc_password.get().strip()
@@ -625,17 +506,6 @@ class MigrationAnalysisGUI:
             if not username or not password:
                 messagebox.showerror('Error', 'Please enter both username and password.')
                 return
-            
-            # Save credentials if "Keep me signed in" is checked
-            if self.keep_signed_in.get():
-                success = CredentialManager.save_credentials(username, password, server_url)
-                if success:
-                    messagebox.showinfo('Success', '✓ Credentials will be saved securely.')
-                else:
-                    messagebox.showwarning('Warning', '⚠ Failed to save credentials, but continuing anyway.')
-            else:
-                # Clear cached credentials if checkbox is unchecked
-                CredentialManager.clear_credentials(server_url)
             
             dialog.destroy()
             
@@ -645,18 +515,6 @@ class MigrationAnalysisGUI:
             
             # Start comparison
             self.start_snapshot_comparison(url1, url2)
-        
-        def on_clear_cache():
-            """Clear cached credentials"""
-            success = CredentialManager.clear_credentials(server_url)
-            if success:
-                messagebox.showinfo('Success', '✓ Cached credentials cleared.')
-                self.rtc_username.set('')
-                self.rtc_password.set('')
-                self.keep_signed_in.set(False)
-                cache_status_label.config(text="", fg='#666666')
-            else:
-                messagebox.showerror('Error', 'Failed to clear cached credentials.')
         
         def on_cancel():
             dialog.destroy()
@@ -672,19 +530,8 @@ class MigrationAnalysisGUI:
             font=('Segoe UI', 10, 'bold'),
             bg='#007B3E',
             fg='white',
-            padx=15,
+            padx=20,
             pady=8
-        ).pack(side=tk.LEFT, padx=5)
-        
-        tk.Button(
-            button_frame,
-            text="Clear Cache",
-            command=on_clear_cache,
-            font=('Segoe UI', 9),
-            bg='#FF6B6B',
-            fg='white',
-            padx=10,
-            pady=6
         ).pack(side=tk.LEFT, padx=5)
         
         tk.Button(
@@ -694,7 +541,7 @@ class MigrationAnalysisGUI:
             font=('Segoe UI', 10, 'bold'),
             bg='#666666',
             fg='white',
-            padx=15,
+            padx=20,
             pady=8
         ).pack(side=tk.LEFT, padx=5)
         
@@ -720,53 +567,67 @@ class MigrationAnalysisGUI:
     
     def _snapshot_comparison_thread(self, url1, url2):
         """
-        IMPROVED: Background thread for snapshot comparison using file-level comparison
+        Background thread for snapshot comparison with comprehensive error handling
         
-        Now uses SAME logic as offline mode:
-        1. Extract snapshots to temp directories
-        2. Run compare_folders (file-level comparison)
-        3. Show rich results with HTML diffs
-        4. Generate reports (CSV, Excel, HTML)
-        
-        This gives online-online ALL features of offline-offline!
+        Steps:
+        1. Validate inputs
+        2. Test RTC connection
+        3. Fetch snapshot 1 components
+        4. Fetch snapshot 2 components
+        5. Compare snapshots (component-level)
+        6. Optionally fetch file-level details
+        7. Display results
         """
-        temp_dirs = []
         try:
             logger.info("=" * 80)
-            logger.info("SNAPSHOT COMPARISON STARTED (FILE-LEVEL)")
+            logger.info("SNAPSHOT COMPARISON STARTED")
             logger.info("=" * 80)
             
-            # ===== STEP 1: VALIDATE & CONNECT =====
-            self.root.after(0, lambda: self._update_progress(5, "Validating credentials..."))
+            # Get credentials
             username = self.rtc_username.get()
             password = self.rtc_password.get()
             server_url = self.rtc_server_url.get()
             
+            # Validate credentials
+            self.root.after(0, lambda: self._update_progress(5, "Validating credentials..."))
             if not username or not password:
-                raise ValueError("Username and password are required")
+                error_msg = "Username and password are required"
+                logger.error(f"Validation failed: {error_msg}")
+                self.root.after(0, lambda: messagebox.showerror('Validation Error', error_msg))
+                self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+                self.root.after(0, lambda: self._update_progress(0, "Ready"))
+                return
             
-            logger.info(f"Server: {server_url} | User: {username}")
+            logger.info(f"Server: {server_url}")
+            logger.info(f"Username: {username}")
             
-            # Test RTC connection (with retries)
-            self.root.after(0, lambda: self._update_progress(8, "🔗 Testing RTC connection..."))
+            # Test connection (with retries)
+            self.root.after(0, lambda: self._update_progress(8, "🔗 Testing RTC connection (with retries)..."))
             rtc_conn = None
             error_msg = None
             
-            for attempt in range(1, 4):
+            for attempt in range(1, 4):  # 3 attempts
                 logger.info(f"Connection attempt {attempt}/3...")
                 rtc_conn, error_msg = get_rtc_connection(username, password, server_url)
+                
                 if rtc_conn:
                     logger.info("✓ RTC connection successful")
                     break
+                
                 if attempt < 3:
-                    logger.warning(f"Attempt {attempt} failed, retrying...")
+                    logger.warning(f"Attempt {attempt} failed: {error_msg}, retrying...")
                     import time
-                    time.sleep(2)
+                    time.sleep(2)  # Wait 2 seconds before retry
             
             if not rtc_conn:
-                raise ConnectionError(self._format_connection_error(error_msg))
+                detailed_error = self._format_connection_error(error_msg)
+                logger.error(f"Connection failed after 3 attempts: {error_msg}")
+                self.root.after(0, lambda: messagebox.showerror('Connection Error', detailed_error))
+                self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+                self.root.after(0, lambda: self._update_progress(0, "Ready"))
+                return
             
-            # ===== STEP 2: VALIDATE SNAPSHOTS =====
+            # Extract and validate UUIDs
             self.root.after(0, lambda: self._update_progress(10, "Validating snapshot URLs..."))
             logger.info("Extracting snapshot UUIDs...")
             
@@ -776,515 +637,179 @@ class MigrationAnalysisGUI:
             logger.info(f"Snapshot 1 UUID: {uuid1}")
             logger.info(f"Snapshot 2 UUID: {uuid2}")
             
+            # Validate UUIDs
             if not uuid1 or not uuid2:
-                raise ValueError("Could not extract snapshot UUIDs. Verify URLs/UUIDs are correct.")
-            
-            # Validate snapshot URLs look correct
-            if 'workspace' in url1.lower() or 'stream' in url1.lower():
-                error_msg = (
-                    f"⚠️ Snapshot 1 URL appears to be a workspace/stream URL, not a snapshot URL:\n{url1}\n\n"
-                    f"Please use a snapshot URL from RTC web interface:\n"
-                    f"1. Go to RTC web → Select snapshot\n"
-                    f"2. Copy URL from browser (should contain 'id=_xxxxx')\n"
-                    f"3. Or copy just the snapshot UUID starting with '_'"
-                )
-                raise ValueError(error_msg)
-            
-            if 'workspace' in url2.lower() or 'stream' in url2.lower():
-                error_msg = (
-                    f"⚠️ Snapshot 2 URL appears to be a workspace/stream URL, not a snapshot URL:\n{url2}\n\n"
-                    f"Please use a snapshot URL from RTC web interface:\n"
-                    f"1. Go to RTC web → Select snapshot\n"
-                    f"2. Copy URL from browser (should contain 'id=_xxxxx')\n"
-                    f"3. Or copy just the snapshot UUID starting with '_'"
-                )
-                raise ValueError(error_msg)
-            
-            # ===== STEP 3: EXTRACT SNAPSHOTS TO LOCAL TEMP DIRECTORIES =====
-            # This is the KEY change - instead of component comparison, extract files!
-            self.root.after(0, lambda: self._update_progress(20, "📥 Extracting Snapshot 1 files..."))
-            logger.info("Extracting files from Snapshot 1...")
-            
-            import tempfile
-            temp_snap1 = tempfile.mkdtemp(prefix="snap1_")
-            temp_dirs.append(temp_snap1)
-            
-            # Get components first to show progress
-            snap1_components = rtc_conn.fetch_snapshot_components(
-                snapshot_url=url1,
-                username=username,
-                password=password,
-                snapshot_name='Snapshot 1'
-            )
-            if not snap1_components:
-                error_msg = (
-                    f"❌ No components found in Snapshot 1 (URL: {url1})\n\n"
-                    f"Possible causes:\n"
-                    f"• Invalid snapshot URL/UUID: {url1}\n"
-                    f"• Snapshot may be empty or corrupted\n"
-                    f"• You may have passed a workspace URL instead of snapshot URL\n"
-                    f"• RTC server may not be accessible\n\n"
-                    f"Please verify:\n"
-                    f"1. Use a valid snapshot URL from RTC web interface\n"
-                    f"2. Copy the full snapshot URL with 'id=_xxxxx' parameter\n"
-                    f"3. Ensure the snapshot exists and has components\n"
-                    f"4. Check network connectivity to RTC server"
-                )
-                raise RuntimeError(error_msg)
-            logger.info(f"✓ Snapshot 1: Found {len(snap1_components)} components")
-            
-            # Extract files from Snapshot 1
-            self._extract_snapshot_files_to_dir(uuid1, snap1_components, temp_snap1, username, password, server_url)
-            logger.info(f"✓ Extracted Snapshot 1 to: {temp_snap1}")
-            
-            # Extract Snapshot 2
-            self.root.after(0, lambda: self._update_progress(45, "📥 Extracting Snapshot 2 files..."))
-            logger.info("Extracting files from Snapshot 2...")
-            
-            temp_snap2 = tempfile.mkdtemp(prefix="snap2_")
-            temp_dirs.append(temp_snap2)
-            
-            snap2_components = rtc_conn.fetch_snapshot_components(
-                snapshot_url=url2,
-                username=username,
-                password=password,
-                snapshot_name='Snapshot 2'
-            )
-            if not snap2_components:
-                error_msg = (
-                    f"❌ No components found in Snapshot 2 (URL: {url2})\n\n"
-                    f"Possible causes:\n"
-                    f"• Invalid snapshot URL/UUID: {url2}\n"
-                    f"• Snapshot may be empty or corrupted\n"
-                    f"• You may have passed a workspace URL instead of snapshot URL\n"
-                    f"• RTC server may not be accessible\n\n"
-                    f"Please verify:\n"
-                    f"1. Use a valid snapshot URL from RTC web interface\n"
-                    f"2. Copy the full snapshot URL with 'id=_xxxxx' parameter\n"
-                    f"3. Ensure the snapshot exists and has components\n"
-                    f"4. Check network connectivity to RTC server"
-                )
-                raise RuntimeError(error_msg)
-            logger.info(f"✓ Snapshot 2: Found {len(snap2_components)} components")
-            
-            self._extract_snapshot_files_to_dir(uuid2, snap2_components, temp_snap2, username, password, server_url)
-            logger.info(f"✓ Extracted Snapshot 2 to: {temp_snap2}")
-
-            # If file extraction produced no files (SCM CLI missing / access issue),
-            # fall back to component-level comparison so the user still gets results.
-            def _count_files(root_dir):
-                count = 0
-                for _, _, files in os.walk(root_dir):
-                    count += len(files)
-                return count
-
-            extracted_files_1 = _count_files(temp_snap1)
-            extracted_files_2 = _count_files(temp_snap2)
-            if extracted_files_1 == 0 and extracted_files_2 == 0:
-                logger.warning("No files were extracted from either snapshot; falling back to component-level comparison.")
-                self.root.after(0, lambda: self._update_progress(60, "🔍 Comparing components (fallback)..."))
-
-                comparison_results = rtc_conn.compare_snapshots(snap1_components, snap2_components)
-                viewer_results = self._transform_snapshot_results_for_viewer(comparison_results)
-                comparison_metadata = {
-                    'snap1_url': url1,
-                    'snap2_url': url2,
-                    'snap1_components': snap1_components,
-                    'snap2_components': snap2_components,
-                    'comparison_results': comparison_results,
-                }
-
-                self.root.after(0, lambda: self._display_snapshot_results_with_viewer(viewer_results, comparison_metadata))
-                self.root.after(0, lambda: self._update_progress(100, "✅ Component-level comparison complete (file extraction unavailable)"))
+                error_msg = "Could not extract snapshot UUIDs. Please verify the URLs/UUIDs are correct."
+                logger.error(error_msg)
+                self.root.after(0, lambda: messagebox.showerror('Invalid Input', error_msg))
                 self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+                self.root.after(0, lambda: self._update_progress(0, "Ready"))
                 return
             
-            # ===== STEP 4: RUN FILE-LEVEL COMPARISON (SAME AS OFFLINE!) =====
-            self.root.after(0, lambda: self._update_progress(60, "🔍 Comparing files (file-level)..."))
-            logger.info("Running file-level comparison...")
+            if uuid1 == uuid2:
+                error_msg = "⚠️ Both snapshot UUIDs are identical!\n\nPlease select two different snapshots."
+                logger.error(f"UUID validation error: {error_msg}")
+                self.root.after(0, lambda: messagebox.showerror('Duplicate Snapshot', error_msg))
+                self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+                self.root.after(0, lambda: self._update_progress(0, "Ready"))
+                return
             
-            # Progress callback for compare_folders
-            def progress_callback(current, total, message):
-                percentage = 60 + int(20 * (current / total)) if total > 0 else 60
-                self.root.after(0, lambda: self._update_progress(percentage, f"🔍 {message}"))
+            # Fetch snapshot 1 components
+            self.root.after(0, lambda: self._update_progress(20, "⬇️ Fetching Snapshot 1 components..."))
+            logger.info("Fetching components from Snapshot 1...")
             
-            # Use SAME compare_folders function as offline mode!
-            result = compare_folders(
-                temp_snap1,
-                temp_snap2,
-                progress_callback=progress_callback,
-                custom_mappings=None,
-                rtc_info=None
+            snap1_components = rtc_conn.fetch_snapshot_components(uuid1, 'Snapshot 1')
+            
+            if not snap1_components:
+                error_msg = "❌ No components found in Snapshot 1\n\nPossible reasons:\n" \
+                           "• Invalid snapshot UUID\n" \
+                           "• Snapshot does not exist\n" \
+                           "• Permission denied\n" \
+                           "• Network connectivity issue"
+                logger.error("Failed to fetch components from Snapshot 1")
+                self.root.after(0, lambda: messagebox.showerror('Snapshot 1 Error', error_msg))
+                self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+                self.root.after(0, lambda: self._update_progress(0, "Ready"))
+                return
+            
+            logger.info(f"✓ Snapshot 1: Found {len(snap1_components)} components")
+            
+            # Fetch snapshot 2 components
+            self.root.after(
+                0,
+                lambda: self._update_progress(50,f"⬇️ Fetching Snapshot 2 components ({len(snap1_components)} in Snapshot 1)...")
             )
+            logger.info("Fetching components from Snapshot 2...")
             
-            if not result.get('success'):
-                raise RuntimeError(f"Comparison failed: {result.get('error', 'Unknown error')}")
+            snap2_components = rtc_conn.fetch_snapshot_components(uuid2, 'Snapshot 2')
             
-            logger.info(f"✓ Comparison complete: {len(result['results'])} files compared")
+            if not snap2_components:
+                error_msg = "❌ No components found in Snapshot 2\n\nPossible reasons:\n" \
+                           "• Invalid snapshot UUID\n" \
+                           "• Snapshot does not exist\n" \
+                           "• Permission denied\n" \
+                           "• Network connectivity issue"
+                logger.error("Failed to fetch components from Snapshot 2")
+                self.root.after(0, lambda: messagebox.showerror('Snapshot 2 Error', error_msg))
+                self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+                self.root.after(0, lambda: self._update_progress(0, "Ready"))
+                return
             
-            # ===== STEP 5: DISPLAY RESULTS WITH SAME VIEWER (SAME AS OFFLINE!) =====
-            self.root.after(0, lambda: self._update_progress(85, "📊 Showing results viewer..."))
-            logger.info("Displaying results with rich viewer...")
+            logger.info(f"✓ Snapshot 2: Found {len(snap2_components)} components")
             
-            # Use SAME show_results_dialog as offline mode!
-            # This gives us HTML diffs, side-by-side comparison, etc. automatically!
-            self.root.after(0, lambda: show_results_dialog(
-                self.root,
-                result['results'],
-                result['folder1_display'],
-                result['folder2_display'],
-                temp_snap1,  # Pass actual extracted paths
-                temp_snap2,
-                result['files1'],
-                result['files2'],
-                result['report_paths']
+            # ===== COMPONENT SELECTION (Online Mode Specific) =====
+            # Show component selection dialog to user (from main thread!)
+            self.root.after(0, lambda: self._update_progress(60, "📋 Opening component selection dialog..."))
+            logger.info("Showing component selection dialog for online mode...")
+            
+            from src.gui.dialogs import show_component_selection_dialog
+            import threading
+            
+            # Use a threading event to coordinate dialog display
+            dialog_event = threading.Event()
+            selection_result = {'canceled': True, 'selected': []}
+            
+            def show_dialog_in_main_thread():
+                nonlocal selection_result
+                try:
+                    selection_result = show_component_selection_dialog(snap1_components, snap2_components)
+                    logger.info(f"Component selection result: {len(selection_result.get('selected', []))} components selected")
+                except Exception as e:
+                    logger.error(f"Error showing component selection dialog: {e}", exc_info=True)
+                    selection_result = {'canceled': True, 'selected': []}
+                finally:
+                    dialog_event.set()  # Signal that dialog is done
+            
+            # Schedule dialog from main thread to ensure proper display
+            self.root.after(0, show_dialog_in_main_thread)
+            
+            # Wait for dialog to complete (with timeout)
+            if not dialog_event.wait(timeout=300):  # 5 minute timeout
+                logger.warning("Component selection dialog timed out")
+                self.root.after(0, lambda: messagebox.showwarning('Timeout', 'Component selection timed out.'))
+                self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+                self.root.after(0, lambda: self._update_progress(0, "Ready"))
+                return
+            
+            if selection_result['canceled']:
+                logger.info("⚠️ User canceled component selection")
+                self.root.after(0, lambda: messagebox.showinfo('Cancelled', 'Component selection cancelled. Comparison aborted.'))
+                self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+                self.root.after(0, lambda: self._update_progress(0, "Ready"))
+                return
+            
+            selected_comp_names = set(selection_result['selected'])
+            logger.info(f"✓ User selected {len(selected_comp_names)}/{len(selection_result['common'])} common components")
+            
+            # Filter components to only selected ones
+            if selected_comp_names:
+                snap1_filtered = [c for c in snap1_components if c.get('name', str(c)) in selected_comp_names]
+                snap2_filtered = [c for c in snap2_components if c.get('name', str(c)) in selected_comp_names]
+                logger.info(f"Filtered: {len(snap1_filtered)} from Snapshot 1, {len(snap2_filtered)} from Snapshot 2")
+                logger.info(f"Excluded: {len(selection_result['only_in_snap1'])} only in Snap1, {len(selection_result['only_in_snap2'])} only in Snap2")
+            else:
+                logger.warning("No components selected - using all components")
+                snap1_filtered = snap1_components
+                snap2_filtered = snap2_components
+            
+            # Compare snapshots (only selected components)
+            self.root.after(0, lambda: self._update_progress(70, f"🔍 Comparing {len(snap1_filtered)} selected components..."))
+            logger.info(f"Comparing {len(snap1_filtered)} vs {len(snap2_filtered)} selected components...")
+            
+            comparison_results = rtc_conn.compare_snapshots(snap1_filtered, snap2_filtered)
+            
+            # Calculate statistics
+            modified = sum(1 for r in comparison_results if r['status'] == 'Modified')
+            added = sum(1 for r in comparison_results if 'Added' in r['status'])
+            removed = sum(1 for r in comparison_results if 'Removed' in r['status'])
+            unchanged = sum(1 for r in comparison_results if r['status'] == 'Unchanged')
+            
+            logger.info(f"Comparison results:")
+            logger.info(f"  Modified: {modified}")
+            logger.info(f"  Added: {added}")
+            logger.info(f"  Removed: {removed}")
+            logger.info(f"  Unchanged: {unchanged}")
+            logger.info(f"  Total: {len(comparison_results)}")
+            
+            # Prepare results for viewer
+            self.root.after(0, lambda: self._update_progress(85, "📊 Preparing results viewer..."))
+            
+            # Transform snapshot results into results_viewer format
+            viewer_results = self._transform_snapshot_results_for_viewer(comparison_results)
+            
+            # Store comparison metadata for viewer
+            comparison_metadata = {
+                'snap1_url': url1,
+                'snap2_url': url2,
+                'snap1_components': snap1_components,
+                'snap2_components': snap2_components,
+                'comparison_results': comparison_results
+            }
+            
+            # Display results using enhanced viewer
+            self.root.after(0, lambda: self._display_snapshot_results_with_viewer(
+                viewer_results, comparison_metadata
             ))
-            
-            logger.info(f"✓ Reports saved to: {result['report_paths']['output_dir']}")
             
             self.root.after(0, lambda: self._update_progress(
                 100,
-                f"✅ File-level comparison complete! " \
-                f"{len([r for r in result['results'] if 'Modified' in str(r[4])])} modified, " \
-                f"{len([r for r in result['results'] if 'Added' in str(r[4])])} added, " \
-                f"{len([r for r in result['results'] if 'Removed' in str(r[4])])} removed"
+                f"✅ Comparison complete: {len(comparison_results)} components" \
+                f" ({modified} modified, {added} added, {removed} removed)"
             ))
             
             logger.info("=" * 80)
-            logger.info("SNAPSHOT COMPARISON COMPLETED (FILE-LEVEL)")
+            logger.info("SNAPSHOT COMPARISON COMPLETED SUCCESSFULLY")
             logger.info("=" * 80)
-            logger.info("NOTE: Snapshots extracted files provide 100% feature parity with offline mode!")
-            logger.info("Features: HTML diffs, side-by-side comparison, Excel/CSV reports, changeset analysis")
             
             self.root.after(2000, lambda: self.compare_btn.config(state='normal'))
             
         except Exception as e:
             logger.error(f"Snapshot comparison error: {e}", exc_info=True)
-            error_msg = f"Snapshot comparison failed:\n\n{type(e).__name__}:\n{str(e)[:300]}"
+            error_msg = f"Snapshot comparison failed:\n\n{type(e).__name__}:\n{str(e)[:200]}"
             self.root.after(0, lambda: messagebox.showerror('Error', error_msg))
             self.root.after(0, lambda: self.compare_btn.config(state='normal'))
             self.root.after(0, lambda: self._update_progress(0, "Ready"))
-        
-        finally:
-            # ===== CLEANUP: Remove temporary directories =====
-            if temp_dirs:
-                logger.info(f"Cleaning up {len(temp_dirs)} temporary directories...")
-                try:
-                    cleanup_temp_dirs(temp_dirs)
-                    logger.info("✓ Temporary directories cleaned up")
-                except Exception as e:
-                    logger.warning(f"Failed to cleanup temp dirs: {e}")
     
-    def _extract_snapshot_files_to_dir(self, snapshot_uuid, components_list, output_dir, username, password, server_url):
-        """
-        Extract REAL files from RTC snapshot to local directory for file-level comparison.
-        Downloads actual file content from RTC using SCM CLI.
-        
-        Args:
-            snapshot_uuid: UUID of the snapshot
-            components_list: List of components in the snapshot
-            output_dir: Directory to extract files to
-            username: RTC username
-            password: RTC password
-            server_url: RTC server URL
-        """
-        try:
-            logger.info(f"Extracting REAL files from snapshot {snapshot_uuid[:12]}...")
-            
-            # For each component, get its files and download them
-            for idx, component in enumerate(components_list):
-                comp_name = component.get('name', f'component_{idx}')
-                comp_uuid = component.get('uuid', '')
-                baseline_uuid = component.get('baseline_uuid', comp_uuid)  # Use baseline UUID for file operations
-                
-                logger.info(f"  [{idx+1}/{len(components_list)}] Processing component: {comp_name} (baseline: {baseline_uuid[:12]}...)")
-                
-                # Get list of files in this baseline using SCM CLI
-                file_list = self._get_files_from_baseline(baseline_uuid, username, password, server_url)
-                
-                if not file_list:
-                    logger.warning(f"    No files found in component {comp_name}")
-                    continue
-                
-                logger.info(f"    Found {len(file_list)} files in {comp_name}")
-                
-                # Download each file
-                for file_path in file_list:
-                    try:
-                        # Download file content
-                        file_content = self._download_file_from_rtc(
-                            baseline_uuid, file_path, username, password, server_url
-                        )
-                        
-                        if file_content is not None:
-                            # Create local file path
-                            local_file_path = os.path.join(output_dir, file_path.lstrip('/'))
-                            local_dir = os.path.dirname(local_file_path)
-                            os.makedirs(local_dir, exist_ok=True)
-                            
-                            # Write file content
-                            with open(local_file_path, 'w', encoding='utf-8', errors='ignore') as f:
-                                f.write(file_content)
-                            
-                            logger.debug(f"      ✓ Downloaded: {file_path}")
-                        else:
-                            logger.warning(f"      ✗ Failed to download: {file_path}")
-                            
-                    except Exception as e:
-                        logger.warning(f"      ✗ Error downloading {file_path}: {e}")
-                
-                logger.info(f"    ✓ Completed component: {comp_name}")
-            
-            logger.info(f"✓ All REAL files extracted from snapshot to {output_dir}")
-            
-        except Exception as e:
-            logger.warning(f"Error extracting real files from snapshot: {e}")
-            # Fallback to dummy files if real extraction fails
-            logger.info("Falling back to dummy file creation...")
-            self._create_dummy_files_fallback(output_dir, components_list)
-    
-    def _get_files_from_baseline(self, baseline_uuid, username, password, server_url):
-        """
-        Get list of files in a baseline using SCM CLI.
-        Returns: List of file paths (e.g., ['/src/main.c', '/include/header.h'])
-        """
-        try:
-            # Find SCM CLI path
-            lscm_path = self._find_scm_cli_path()
-            if not lscm_path:
-                logger.error("SCM CLI not found")
-                return []
-            
-            # Use scm list files command
-            cmd = [
-                lscm_path,
-                'list', 'files',
-                '-b', baseline_uuid,
-                '-r', server_url,
-                '-u', username,
-                '-P', password,
-                '-D', 'all',  # Infinite depth
-                '-j'  # JSON output
-            ]
-            
-            # Remove proxy settings
-            env = os.environ.copy()
-            for proxy_var in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 
-                             'NO_PROXY', 'no_proxy']:
-                env.pop(proxy_var, None)
-            
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=60,
-                env=env,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-            )
-            
-            if result.returncode != 0 or not result.stdout.strip():
-                logger.warning(f"SCM list files failed: {result.stderr}")
-                return []
-            
-            # Parse JSON output
-            data = json.loads(result.stdout)
-            
-            # Extract file paths
-            file_paths = []
-            if 'baseline' in data and 'remote-files' in data['baseline']:
-                for file_info in data['baseline']['remote-files']:
-                    file_path = file_info.get('path', '')
-                    if file_path and not file_path.endswith('/'):  # Skip directories
-                        file_paths.append(file_path)
-            
-            return file_paths
-            
-        except Exception as e:
-            logger.error(f"Error getting files from baseline: {e}")
-            return []
-    
-    def _download_file_from_rtc(self, baseline_uuid, file_path, username, password, server_url):
-        """
-        Download file content from RTC baseline using SCM CLI.
-        Returns: File content as string, or None if failed
-        """
-        try:
-            lscm_path = self._find_scm_cli_path()
-            if not lscm_path:
-                return None
-            
-            # Clean up the file path
-            clean_path = file_path.strip('/')
-            
-            # Use scm get file command
-            with tempfile.TemporaryDirectory() as temp_dir:
-                filename = os.path.basename(clean_path)
-                output_file = os.path.join(temp_dir, filename)
-                
-                cmd = [
-                    lscm_path,
-                    'get', 'file',
-                    baseline_uuid,
-                    '-b',  # Baseline mode
-                    '-f', clean_path,
-                    '-r', server_url,
-                    '-u', username,
-                    '-P', password,
-                    '-o',  # Overwrite
-                    output_file
-                ]
-                
-                # Remove proxy settings
-                env = os.environ.copy()
-                for proxy_var in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 
-                                 'NO_PROXY', 'no_proxy']:
-                    env.pop(proxy_var, None)
-                
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                    env=env,
-                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-                )
-                
-                if result.returncode == 0 and os.path.exists(output_file):
-                    with open(output_file, 'r', encoding='utf-8', errors='ignore') as f:
-                        return f.read()
-                else:
-                    logger.debug(f"Failed to download {file_path}: {result.stderr}")
-                    return None
-                    
-        except Exception as e:
-            logger.error(f"Error downloading file {file_path}: {e}")
-            return None
-    
-    def _find_scm_cli_path(self):
-        """
-        Find the SCM CLI (lscm) executable path.
-        Returns: Path to lscm.exe or None
-        """
-        # Common locations for SCM CLI
-        possible_paths = [
-            r"C:\Program Files\IBM\RTC-Client-Win\scmtools\eclipse\lscm.bat",
-            r"C:\Program Files\IBM\TeamConcert-Client-Win\scmtools\eclipse\lscm.bat",
-            r"C:\Program Files\IBM\RationalTeamConcert-Client-Win\scmtools\eclipse\lscm.bat",
-            # Add more paths as needed
-        ]
-        
-        # Check if lscm is in PATH
-        try:
-            result = subprocess.run(['where', 'lscm'], capture_output=True, text=True)
-            if result.returncode == 0 and result.stdout.strip():
-                return result.stdout.strip().split('\n')[0]
-        except:
-            pass
-        
-        # Check common installation paths
-        for path in possible_paths:
-            if os.path.exists(path):
-                return path
-        
-        return None
-    
-    def _create_dummy_files_fallback(self, output_dir, components_list):
-        """
-        Fallback method to create dummy files when real extraction fails.
-        """
-        try:
-            for idx, component in enumerate(components_list):
-                comp_name = component.get('name', f'component_{idx}')
-                comp_dir = os.path.join(output_dir, comp_name)
-                os.makedirs(comp_dir, exist_ok=True)
-                
-                self._create_component_file_structure(comp_dir, comp_name)
-                
-        except Exception as e:
-            logger.error(f"Error creating dummy files: {e}")
-    
-    def _create_component_file_structure(self, comp_dir, comp_name):
-        """
-        Create realistic file structure for a component.
-        In production, would fetch actual files from RTC.
-        """
-        try:
-            # Create standard folders
-            os.makedirs(os.path.join(comp_dir, "include"), exist_ok=True)
-            os.makedirs(os.path.join(comp_dir, "src"), exist_ok=True)
-            
-            # Create sample header file
-            header_file = os.path.join(comp_dir, "include", f"{comp_name}.h")
-            header_content = f"""#ifndef {comp_name.upper()}_H
-#define {comp_name.upper()}_H
-
-// Component: {comp_name}
-// Generated from RTC snapshot for comparison
-
-typedef struct {{
-    int id;
-    char* name;
-    int version;
-}} {comp_name}Config;
-
-extern {comp_name}Config config;
-
-int {comp_name}_init(void);
-int {comp_name}_execute(void);
-void {comp_name}_cleanup(void);
-
-#endif
-"""
-            with open(header_file, 'w') as f:
-                f.write(header_content)
-            
-            # Create sample source file
-            src_file = os.path.join(comp_dir, "src", f"{comp_name}.c")
-            src_content = f"""#include "../include/{comp_name}.h"
-#include <stdlib.h>
-#include <string.h>
-
-{comp_name}Config config = {{0, NULL, 1}};
-
-int {comp_name}_init(void) {{
-    config.id = 1;
-    config.name = (char*)malloc(32);
-    strcpy(config.name, "{comp_name}");
-    config.version = 1;
-    return 0;
-}}
-
-int {comp_name}_execute(void) {{
-    return 0;
-}}
-
-void {comp_name}_cleanup(void) {{
-    if (config.name) {{
-        free(config.name);
-        config.name = NULL;
-    }}
-}}
-"""
-            with open(src_file, 'w') as f:
-                f.write(src_content)
-            
-            # Create README
-            readme_file = os.path.join(comp_dir, "README.md")
-            with open(readme_file, 'w') as f:
-                f.write(f"""# {comp_name}
-
-Component extracted from RTC snapshot for analysis.
-
-## Files
-- `include/{comp_name}.h` - Header file
-- `src/{comp_name}.c` - Implementation
-""")
-            
-            logger.debug(f"Created file structure for {comp_name}")
-            
-        except Exception as e:
-            logger.warning(f"Error creating component file structure: {e}")
-
     def _format_connection_error(self, error_msg):
         """Format connection error message with troubleshooting tips"""
         if not error_msg:
@@ -1376,7 +901,7 @@ Component extracted from RTC snapshot for analysis.
                 metric2,                                # index[2]: metric2 (baseline2 uuid length)
                 line_status,                            # index[3]: line_status
                 status_type,                            # index[4]: status
-                f"{comp_name}_diff.html",               # index[5]: html_link (will be generated later)
+                "N/A",                                  # index[5]: html_link (N/A for components)
                 f"Component comparison",                # index[6]: purpose
                 ""                                      # index[7]: changeset_info (empty for snapshots)
             ]
@@ -1386,9 +911,9 @@ Component extracted from RTC snapshot for analysis.
         logger.info(f"Transformed {len(viewer_results)} results for viewer (format: 8-element list)")
         return viewer_results
     
-    def _export_snapshot_results_to_reports(self, viewer_results, csv_path, excel_path, snap1_name, snap2_name, comparison_metadata=None, output_dir=None):
+    def _export_snapshot_results_to_reports(self, viewer_results, csv_path, excel_path, snap1_name, snap2_name):
         """
-        Export snapshot comparison results to CSV, Excel, and HTML diff files
+        Export snapshot comparison results to CSV and Excel files
         
         Args:
             viewer_results: List of 8-element result lists from viewer format
@@ -1396,8 +921,6 @@ Component extracted from RTC snapshot for analysis.
             excel_path: Path to save Excel file
             snap1_name: Display name for snapshot 1
             snap2_name: Display name for snapshot 2
-            comparison_metadata: Dict with comparison result data for HTML generation
-            output_dir: Directory to save HTML diff files
         """
         try:
             import csv
@@ -1473,95 +996,9 @@ Component extracted from RTC snapshot for analysis.
                 logger.warning("openpyxl not installed - skipping Excel export")
             except Exception as excel_err:
                 logger.error(f"Error generating Excel report: {excel_err}")
-            
-            # Generate HTML diff files for modified components
-            if comparison_metadata and output_dir:
-                self._generate_snapshot_html_diffs(
-                    comparison_metadata.get('comparison_results', []),
-                    snap1_name,
-                    snap2_name,
-                    output_dir
-                )
         
         except Exception as e:
             logger.error(f"Error exporting snapshot results: {e}", exc_info=True)
-    
-    def _generate_snapshot_html_diffs(self, comparison_results, snap1_name, snap2_name, output_dir):
-        """
-        Generate HTML diff reports for snapshot comparison results (like offline mode)
-        
-        Args:
-            comparison_results: List of comparison result dicts
-            snap1_name: Display name for snapshot 1
-            snap2_name: Display name for snapshot 2
-            output_dir: Directory to save HTML files
-        """
-        try:
-            import difflib
-            
-            logger.info(f"Generating HTML diffs for {len(comparison_results)} component comparisons...")
-            
-            for result in comparison_results:
-                try:
-                    comp_name = result.get('name', 'Unknown')
-                    status = result.get('status', '')
-                    
-                    # Only generate detailed HTML for modified components
-                    if status != 'Modified':
-                        continue
-                    
-                    snap1_metadata = result.get('snapshot1', {})
-                    snap2_metadata = result.get('snapshot2', {})
-                    
-                    # Create detailed comparison text
-                    snap1_uuid = snap1_metadata.get('uuid', 'N/A')
-                    snap1_type = snap1_metadata.get('type', 'N/A')
-                    snap1_baseline = snap1_metadata.get('baseline', 'N/A')
-                    
-                    snap2_uuid = snap2_metadata.get('uuid', 'N/A')
-                    snap2_type = snap2_metadata.get('type', 'N/A')
-                    snap2_baseline = snap2_metadata.get('baseline', 'N/A')
-                    
-                    # Generate comparison text
-                    snap1_text = f"""Component: {comp_name}
-Type: {snap1_type}
-UUID: {snap1_uuid}
-Baseline: {snap1_baseline}
-Snapshot: {snap1_name}
-"""
-                    
-                    snap2_text = f"""Component: {comp_name}
-Type: {snap2_type}
-UUID: {snap2_uuid}
-Baseline: {snap2_baseline}
-Snapshot: {snap2_name}
-"""
-                    
-                    # Generate HTML diff using difflib (like offline mode)
-                    differ = difflib.HtmlDiff(wrapcolumn=120)
-                    html_diff = differ.make_file(
-                        snap1_text.splitlines(keepends=True),
-                        snap2_text.splitlines(keepends=True),
-                        fromdesc=f"{comp_name} in {snap1_name}",
-                        todesc=f"{comp_name} in {snap2_name}"
-                    )
-                    
-                    # Save HTML file
-                    html_filename = f"{comp_name.replace(os.sep, '_').replace(' ', '_')}_diff.html"
-                    html_path = os.path.join(output_dir, html_filename)
-                    
-                    with open(html_path, 'w', encoding='utf-8') as f:
-                        f.write(html_diff)
-                    
-                    logger.info(f"✓ Generated HTML diff: {html_filename}")
-                
-                except Exception as comp_err:
-                    logger.warning(f"Error generating HTML diff for {result.get('name', 'Unknown')}: {comp_err}")
-            
-            logger.info(f"✓ HTML diff files generated successfully")
-        
-        except Exception as e:
-            logger.error(f"Error generating HTML diffs: {e}", exc_info=True)
     
     def _display_snapshot_results_with_viewer(self, viewer_results, comparison_metadata):
         """
@@ -1610,15 +1047,13 @@ Snapshot: {snap2_name}
             
             logger.info(f"✓ Created output directory: {output_dir}")
             
-            # Export snapshot comparison results to CSV, Excel, and HTML diffs
+            # Export snapshot comparison results to CSV and Excel
             self._export_snapshot_results_to_reports(
                 viewer_results, 
                 csv_report, 
                 excel_report,
                 snap1_name,
-                snap2_name,
-                comparison_metadata,
-                output_dir
+                snap2_name
             )
             
             # Log transformation details
@@ -1730,27 +1165,14 @@ Snapshot: {snap2_name}
 
     
     def run_folder_comparison(self, folder1, folder2):
-        """Run folder comparison in background thread with file mapping preview"""
+        """Run folder comparison in background thread"""
         # Reset progress
         self.progress_bar['value'] = 0
-        self.progress_label.config(text="Preparing file mapping preview...")
+        self.progress_label.config(text="Starting comparison...")
         self.root.update()
         
         # Disable compare button during processing
         self.compare_btn.config(state='disabled')
-        
-        # Show file mapping dialog first (like test3.py)
-        confirmed, custom_mappings = self.show_file_mapping_dialog(folder1, folder2)
-        
-        if not confirmed:
-            self.progress_label.config(text="Comparison cancelled by user.")
-            self.compare_btn.config(state='normal')
-            return
-        
-        # Reset progress for actual comparison
-        self.progress_bar['value'] = 0
-        self.progress_label.config(text="Starting comparison...")
-        self.root.update()
         
         # Progress callback
         def update_progress(current, total, message):
@@ -1778,7 +1200,7 @@ Snapshot: {snap2_name}
                     folder1,
                     folder2,
                     progress_callback=update_progress,
-                    custom_mappings=custom_mappings,  # Use confirmed mappings
+                    custom_mappings=None,  # TODO: Add file mapping dialog
                     rtc_info=rtc_info
                 )
                 
@@ -1791,517 +1213,6 @@ Snapshot: {snap2_name}
         
         thread = threading.Thread(target=comparison_thread, daemon=True)
         thread.start()
-    
-    def show_file_mapping_dialog(self, folder1, folder2):
-        """
-        Show a preview dialog of file mappings with ability to manually map files.
-        Returns: (confirmed, custom_mappings)
-            confirmed: True if user confirmed, False if cancelled
-            custom_mappings: dict of {file1_path: file2_path} for custom mappings
-        """
-        dialog = tk.Toplevel(self.root)
-        dialog.title("File Mapping Preview - Confirm Comparison")
-        dialog.geometry("1400x900")
-        dialog.configure(bg="#f0f4f7")
-        dialog.resizable(True, True)  # Allow resizing
-        dialog.grab_set()  # Modal dialog
-        
-        # Result variables
-        result = {'confirmed': False, 'mappings': {}}
-        
-        # Prepare folders (extract ZIP if needed)
-        temp_dirs_to_cleanup = []
-        folder1_actual, is_temp1, orig1 = self._prepare_folder_path(folder1)
-        folder2_actual, is_temp2, orig2 = self._prepare_folder_path(folder2)
-        
-        if is_temp1:
-            temp_dirs_to_cleanup.append(folder1_actual)
-        if is_temp2:
-            temp_dirs_to_cleanup.append(folder2_actual)
-        
-        if not folder1_actual or not folder2_actual:
-            messagebox.showerror("Error", "Could not prepare folders for mapping preview.")
-            for temp_dir in temp_dirs_to_cleanup:
-                try:
-                    shutil.rmtree(temp_dir)
-                except:
-                    pass
-            dialog.destroy()
-            return False, {}
-        
-        # Title
-        title_frame = tk.Frame(dialog, bg="#003366", height=60)
-        title_frame.pack(fill="x")
-        title_frame.pack_propagate(False)
-        
-        tk.Label(
-            title_frame,
-            text="File Mapping Preview - Review and Confirm",
-            font=("Segoe UI", 14, "bold"),
-            bg="#003366",
-            fg="white"
-        ).pack(pady=15)
-        
-        # Info frame
-        info_frame = tk.Frame(dialog, bg="#f0f4f7")
-        info_frame.pack(fill="x", padx=20, pady=10)
-        
-        # Show original paths (ZIP names if applicable)
-        folder1_display = f"{folder1}" + (" [ZIP - Extracted]" if is_temp1 else "")
-        folder2_display = f"{folder2}" + (" [ZIP - Extracted]" if is_temp2 else "")
-        
-        tk.Label(
-            info_frame,
-            text=f"Platform (Baseline): {folder1_display}",
-            font=("Segoe UI", 9, "bold"),
-            bg="#f0f4f7",
-            fg="#003366"
-        ).pack(anchor="w")
-        
-        tk.Label(
-            info_frame,
-            text=f"Project (Comparison): {folder2_display}",
-            font=("Segoe UI", 9, "bold"),
-            bg="#f0f4f7",
-            fg="#003366"
-        ).pack(anchor="w")
-        
-        tk.Label(
-            info_frame,
-            text="Review the file mappings below. You can manually map files by selecting rows and clicking 'Map Selected'.",
-            font=("Segoe UI", 9),
-            bg="#f0f4f7",
-            fg="#666666"
-        ).pack(anchor="w", pady=(5, 0))
-        
-        # Create frame for treeview
-        tree_frame = tk.Frame(dialog, bg="#ffffff")
-        tree_frame.pack(fill="both", expand=False, padx=20, pady=10)
-        
-        # Scrollbars
-        vsb = tk.Scrollbar(tree_frame, orient="vertical")
-        hsb = tk.Scrollbar(tree_frame, orient="horizontal")
-        
-        # Treeview with columns
-        columns = ("Platform File", "Project File", "Status", "Action")
-        tree = ttk.Treeview(tree_frame, columns=columns, show="headings", 
-                            yscrollcommand=vsb.set, xscrollcommand=hsb.set, height=20)
-        
-        vsb.config(command=tree.yview)
-        hsb.config(command=tree.xview)
-        
-        # Configure columns
-        tree.heading("Platform File", text="Platform File")
-        tree.heading("Project File", text="Project File")
-        tree.heading("Status", text="Status")
-        tree.heading("Action", text="Action")
-        
-        tree.column("Platform File", width=500, anchor="w")
-        tree.column("Project File", width=500, anchor="w")
-        tree.column("Status", width=200, anchor="center")
-        tree.column("Action", width=150, anchor="center")
-        
-        # Pack treeview and scrollbars
-        tree.grid(row=0, column=0, sticky="nsew")
-        vsb.grid(row=0, column=1, sticky="ns")
-        hsb.grid(row=1, column=0, sticky="ew")
-        
-        tree_frame.grid_rowconfigure(0, weight=1)
-        tree_frame.grid_columnconfigure(0, weight=1)
-        
-        # Collect file mappings from extracted/actual folders
-        files1 = {}
-        files2 = {}
-        
-        for root_dir, dirs, files in os.walk(folder1_actual):
-            for file in files:
-                full_path = os.path.join(root_dir, file)
-                rel_path = os.path.relpath(full_path, folder1_actual)
-                files1[rel_path] = full_path
-        
-        for root_dir, dirs, files in os.walk(folder2_actual):
-            for file in files:
-                full_path = os.path.join(root_dir, file)
-                rel_path = os.path.relpath(full_path, folder2_actual)
-                files2[rel_path] = full_path
-        
-        # Populate treeview with mappings
-        all_files = sorted(set(files1.keys()) | set(files2.keys()))
-        
-        for rel_path in all_files:
-            file1 = files1.get(rel_path, "")
-            file2 = files2.get(rel_path, "")
-            
-            if file1 and file2:
-                status = "Will Compare"
-                tag = "compare"
-            elif file1 and not file2:
-                status = "Only in Platform"
-                tag = "only1"
-            elif file2 and not file1:
-                status = "Only in Project"
-                tag = "only2"
-            else:
-                continue
-            
-            tree.insert("", "end", values=(
-                rel_path if file1 else "[Not in Platform]",
-                rel_path if file2 else "[Not in Project]",
-                status,
-                "Auto-mapped"
-            ), tags=(tag,))
-        
-        # Configure tags for colors
-        tree.tag_configure("compare", background="#E8F5E9")
-        tree.tag_configure("only1", background="#E3F2FD")
-        tree.tag_configure("only2", background="#FFF3E0")
-        tree.tag_configure("custom", background="#F3E5F5")
-        
-        # Bottom container for stats and buttons
-        bottom_frame = tk.Frame(dialog, bg="#f0f4f7")
-        bottom_frame.pack(fill="x", side="bottom")
-        
-        # Statistics label
-        stats_frame = tk.Frame(bottom_frame, bg="#f0f4f7")
-        stats_frame.pack(fill="x", padx=20, pady=5)
-        
-        stats_label = tk.Label(
-            stats_frame,
-            text=f"Total Files: {len(all_files)} | Will Compare: {len([f for f in all_files if f in files1 and f in files2])} | "
-                 f"Only in Platform: {len([f for f in all_files if f in files1 and f not in files2])} | "
-                 f"Only in Project: {len([f for f in all_files if f in files2 and f not in files1])}",
-            font=("Segoe UI", 9, "bold"),
-            bg="#f0f4f7",
-            fg="#003366"
-        )
-        stats_label.pack()
-        
-        # Button frame
-        button_frame = tk.Frame(bottom_frame, bg="#f0f4f7")
-        button_frame.pack(fill="x", padx=20, pady=5)
-        
-        # Manual mapping function
-        def manual_mapping():
-            """Allow user to manually map selected files"""
-            mapping_window = tk.Toplevel(dialog)
-            mapping_window.title("Manual File Mapping")
-            mapping_window.geometry("900x600")
-            mapping_window.configure(bg="#f0f4f7")
-            mapping_window.grab_set()
-            
-            tk.Label(
-                mapping_window,
-                text="Select files to map together",
-                font=("Segoe UI", 12, "bold"),
-                bg="#f0f4f7"
-            ).pack(pady=10)
-            
-            # Instructions
-            instruction_text = (
-                "📋 How to map files:\n"
-                "1. Click to select a file from Folder 1 (LEFT)\n"
-                "2. Click to select a file from Folder 2 (RIGHT)\n"
-                "3. Click 'Create Mapping' button to map them together\n"
-                "   OR double-click on Folder 2 file to auto-map with selected Folder 1 file"
-            )
-            tk.Label(
-                mapping_window,
-                text=instruction_text,
-                font=("Segoe UI", 9),
-                bg="#FFF9C4",
-                fg="#000",
-                justify="left",
-                relief="solid",
-                borderwidth=1,
-                padx=10,
-                pady=10
-            ).pack(padx=20, pady=(0, 10), fill="x")
-            
-            # Two listboxes side by side
-            list_frame = tk.Frame(mapping_window, bg="#f0f4f7")
-            list_frame.pack(fill="both", expand=True, padx=20, pady=10)
-            
-            # Selection indicator labels
-            selected_file1 = tk.StringVar(value="No file selected")
-            selected_file2 = tk.StringVar(value="No file selected")
-            
-            # Folder 1 section
-            folder1_frame = tk.Frame(list_frame, bg="#f0f4f7")
-            folder1_frame.grid(row=0, column=0, sticky="nsew", padx=5)
-            
-            tk.Label(folder1_frame, text="📁 Folder 1 Files:", font=("Segoe UI", 10, "bold"), bg="#f0f4f7").pack(anchor="w")
-            tk.Label(
-                folder1_frame,
-                textvariable=selected_file1,
-                font=("Segoe UI", 8, "italic"),
-                bg="#E3F2FD",
-                fg="#1565C0",
-                anchor="w",
-                wraplength=450,
-                relief="sunken",
-                padx=5,
-                pady=3
-            ).pack(fill="x", pady=(3, 5))
-            
-            list1_scroll = tk.Scrollbar(folder1_frame)
-            list1 = tk.Listbox(
-                folder1_frame,
-                width=55,
-                height=20,
-                yscrollcommand=list1_scroll.set,
-                selectmode=tk.SINGLE,
-                font=("Consolas", 9),
-                bg="#FAFAFA"
-            )
-            list1_scroll.config(command=list1.yview)
-            list1.pack(side="left", fill="both", expand=True)
-            list1_scroll.pack(side="right", fill="y")
-            
-            # Arrow indicator in middle
-            arrow_frame = tk.Frame(list_frame, bg="#f0f4f7", width=60)
-            arrow_frame.grid(row=0, column=1, padx=10)
-            tk.Label(
-                arrow_frame,
-                text="➜\nMAP\n➜",
-                font=("Segoe UI", 14, "bold"),
-                bg="#f0f4f7",
-                fg="#FF6F00"
-            ).pack(expand=True)
-            
-            # Folder 2 section
-            folder2_frame = tk.Frame(list_frame, bg="#f0f4f7")
-            folder2_frame.grid(row=0, column=2, sticky="nsew", padx=5)
-            
-            tk.Label(folder2_frame, text="📁 Folder 2 Files:", font=("Segoe UI", 10, "bold"), bg="#f0f4f7").pack(anchor="w")
-            tk.Label(
-                folder2_frame,
-                textvariable=selected_file2,
-                font=("Segoe UI", 8, "italic"),
-                bg="#E8F5E9",
-                fg="#2E7D32",
-                anchor="w",
-                wraplength=450,
-                relief="sunken",
-                padx=5,
-                pady=3
-            ).pack(fill="x", pady=(3, 5))
-            
-            list2_scroll = tk.Scrollbar(folder2_frame)
-            list2 = tk.Listbox(
-                folder2_frame,
-                width=55,
-                height=20,
-                yscrollcommand=list2_scroll.set,
-                selectmode=tk.SINGLE,
-                font=("Consolas", 9),
-                bg="#FAFAFA"
-            )
-            list2_scroll.config(command=list2.yview)
-            list2.pack(side="left", fill="both", expand=True)
-            list2_scroll.pack(side="right", fill="y")
-            
-            # Make columns expand
-            list_frame.grid_columnconfigure(0, weight=1)
-            list_frame.grid_columnconfigure(2, weight=1)
-            list_frame.grid_rowconfigure(0, weight=1)
-            
-            # Populate listboxes
-            for rel_path in sorted(files1.keys()):
-                list1.insert(tk.END, rel_path)
-            
-            for rel_path in sorted(files2.keys()):
-                list2.insert(tk.END, rel_path)
-            
-            # Store persistent selections
-            persistent_selection = {'list1_index': None, 'list2_index': None}
-            
-            # Selection handlers with persistent storage
-            def on_list1_select(event):
-                sel = list1.curselection()
-                if sel:
-                    persistent_selection['list1_index'] = sel[0]
-                    selected_file1.set(f"✓ Selected: {list1.get(sel[0])}")
-                    # Highlight selected item with color
-                    list1.itemconfig(sel[0], bg="#BBDEFB", fg="#000")
-                    # Remove highlight from previously selected items
-                    for i in range(list1.size()):
-                        if i != sel[0]:
-                            list1.itemconfig(i, bg="white", fg="black")
-            
-            def on_list2_select(event):
-                sel = list2.curselection()
-                if sel:
-                    persistent_selection['list2_index'] = sel[0]
-                    selected_file2.set(f"✓ Selected: {list2.get(sel[0])}")
-                    # Highlight selected item with color
-                    list2.itemconfig(sel[0], bg="#C8E6C9", fg="#000")
-                    # Remove highlight from previously selected items
-                    for i in range(list2.size()):
-                        if i != sel[0]:
-                            list2.itemconfig(i, bg="white", fg="black")
-            
-            def on_list2_double_click(event):
-                """Double-click on list2 to auto-map with selected list1 file"""
-                idx1 = persistent_selection['list1_index']
-                idx2 = persistent_selection['list2_index']
-                
-                if idx1 is not None and idx2 is not None:
-                    file1_rel = list1.get(idx1)
-                    file2_rel = list2.get(idx2)
-                    
-                    # Add to custom mappings
-                    result['mappings'][file1_rel] = file2_rel
-                    
-                    # Add to treeview
-                    tree.insert("", "end", values=(
-                        file1_rel,
-                        file2_rel,
-                        "Will Compare",
-                        "Custom Mapping"
-                    ), tags=("custom",))
-                    
-                    messagebox.showinfo("Mapping Created", f"✓ Successfully Mapped:\n\n{file1_rel}\n     ↓\n{file2_rel}")
-                    mapping_window.destroy()
-                elif idx1 is None:
-                    messagebox.showwarning("No Selection", "⚠ Please select a file from Platform first")
-            
-            # Bind events
-            list1.bind('<<ListboxSelect>>', on_list1_select)
-            list2.bind('<<ListboxSelect>>', on_list2_select)
-            list2.bind('<Double-Button-1>', on_list2_double_click)
-            
-            def create_mapping():
-                idx1 = persistent_selection['list1_index']
-                idx2 = persistent_selection['list2_index']
-                
-                if idx1 is None or idx2 is None:
-                    messagebox.showwarning("Selection Required", "⚠ Please select one file from EACH list")
-                    return
-                
-                file1_rel = list1.get(idx1)
-                file2_rel = list2.get(idx2)
-                
-                # Add to custom mappings
-                result['mappings'][file1_rel] = file2_rel
-                
-                # Add to treeview
-                tree.insert("", "end", values=(
-                    file1_rel,
-                    file2_rel,
-                    "Will Compare",
-                    "Custom Mapping"
-                ), tags=("custom",))
-                
-                messagebox.showinfo("Mapping Created", f"✓ Successfully Mapped:\n\n{file1_rel}\n     ↓\n{file2_rel}")
-                mapping_window.destroy()
-            
-            # Button frame
-            button_frame = tk.Frame(mapping_window, bg="#f0f4f7")
-            button_frame.pack(pady=15)
-            
-            tk.Button(
-                button_frame,
-                text="✓ Create Mapping",
-                command=create_mapping,
-                bg="#007B3E",
-                fg="white",
-                font=("Segoe UI", 11, "bold"),
-                width=20,
-                height=2
-            ).pack(side="left", padx=10)
-            
-            tk.Button(
-                button_frame,
-                text="✗ Cancel",
-                command=mapping_window.destroy,
-                bg="#C62828",
-                fg="white",
-                font=("Segoe UI", 11, "bold"),
-                width=15,
-                height=2
-            ).pack(side="left", padx=10)
-        
-        tk.Button(
-            button_frame,
-            text="Manual File Mapping",
-            command=manual_mapping,
-            bg="#FF8C00",
-            fg="white",
-            font=("Segoe UI", 10, "bold"),
-            width=20
-        ).pack(side="left", padx=5)
-        
-        def confirm_and_proceed():
-            result['confirmed'] = True
-            # Cleanup temp directories for mapping preview
-            for temp_dir in temp_dirs_to_cleanup:
-                try:
-                    shutil.rmtree(temp_dir)
-                except:
-                    pass
-            dialog.destroy()
-        
-        def cancel_comparison():
-            result['confirmed'] = False
-            # Cleanup temp directories for mapping preview
-            for temp_dir in temp_dirs_to_cleanup:
-                try:
-                    shutil.rmtree(temp_dir)
-                except:
-                    pass
-            dialog.destroy()
-        
-        tk.Button(
-            button_frame,
-            text="✓ Confirm & Generate Report",
-            command=confirm_and_proceed,
-            bg="#007B3E",
-            fg="white",
-            font=("Segoe UI", 11, "bold"),
-            width=25
-        ).pack(side="right", padx=5)
-        
-        tk.Button(
-            button_frame,
-            text="✗ Cancel",
-            command=cancel_comparison,
-            bg="#C62828",
-            fg="white",
-            font=("Segoe UI", 11, "bold"),
-            width=15
-        ).pack(side="right", padx=5)
-        
-        # Wait for dialog to close
-        dialog.wait_window()
-        
-        return result['confirmed'], result['mappings']
-    
-    def _prepare_folder_path(self, path):
-        """
-        Prepare folder path for comparison - extract ZIP if needed.
-        Returns: (actual_path, is_temp, original_path)
-        """
-        if not path:
-            return None, False, path
-        
-        if path.lower().endswith('.zip'):
-            try:
-                import zipfile
-                import tempfile
-                
-                # Create temp directory
-                temp_dir = tempfile.mkdtemp(prefix="zip_extract_")
-                
-                # Extract ZIP
-                with zipfile.ZipFile(path, 'r') as zip_ref:
-                    zip_ref.extractall(temp_dir)
-                
-                return temp_dir, True, path
-            except Exception as e:
-                logger.warning(f"Failed to extract ZIP {path}: {e}")
-                return None, False, path
-        else:
-            return path, False, path
     
     def on_comparison_complete(self, result):
         """Handle comparison completion"""
@@ -2353,85 +1264,6 @@ Snapshot: {snap2_name}
         self.progress_label.config(text=f"❌ Error occurred")
         messagebox.showerror("Error", error_msg)
     
-    # -----------------------------------------------------------------------
-    # Chatbot window
-    # -----------------------------------------------------------------------
-
-    def _open_chatbot_window(self):
-        """Open (or raise) the floating Code Assistant chat window."""
-        if not _CHATBOT_AVAILABLE:
-            _expected = os.path.normpath(
-                os.path.join(os.path.dirname(__file__), "..", "chatbot", "chatbot.py")
-            )
-            messagebox.showwarning(
-                "Code Assistant Unavailable",
-                "chatbot.py could not be loaded.\n\n"
-                f"Expected location: {_expected}\n\n"
-                "Make sure chatbot.py exists in src/chatbot/."
-            )
-            return
-
-        # Re-use an already-open window instead of opening duplicates
-        if hasattr(self, "_chat_win") and self._chat_win.winfo_exists():
-            self._chat_win.lift()
-            self._chat_win.focus_force()
-            return
-
-        # ── Build chatbot (lazy — only once) ────────────────────────────────
-        if not hasattr(self, "_chatbot"):
-            # Use Migration_V2 5.py as KB (lives in src/chatbot/), otherwise fallback to main.py
-            _src_root = os.path.normpath(
-                os.path.join(os.path.dirname(__file__), "..", "..")
-            )
-            kb_candidates = [
-                os.path.join(_src_root, "src", "chatbot", "Migration_V2 5.py"),
-                os.path.join(_src_root, "main.py"),
-            ]
-            kb_path = next((p for p in kb_candidates if os.path.isfile(p)), None)
-
-            cfg = ChatConfig()
-            if kb_path:
-                cfg.kb_path = kb_path
-
-            try:
-                self._chatbot = build_chatbot(cfg)
-            except Exception as exc:
-                messagebox.showerror(
-                    "Code Assistant Error",
-                    f"Failed to initialise the chatbot:\n{exc}"
-                )
-                return
-
-        # ── Create Toplevel window ────────────────────────────────────────────
-        win = tk.Toplevel(self.root)
-        win.title("\U0001f916  Code Assistant")
-        win.geometry("920x680")
-        win.configure(bg="#EAF3FB")
-        win.resizable(True, True)
-
-        # Keep a reference so we can re-raise it
-        self._chat_win = win
-
-        # Center relative to the main window
-        self.root.update_idletasks()
-        x = self.root.winfo_x() + self.root.winfo_width() + 10
-        y = self.root.winfo_y()
-        win.geometry(f"+{x}+{y}")
-
-        # ── Embed TkinterChatPanel ───────────────────────────────────────────
-        panel = TkinterChatPanel(win, self._chatbot, height=680)
-        panel.pack(fill="both", expand=True)
-
-        # Footer
-        kb_name = os.path.basename(self._chatbot.kb.file_path)
-        tk.Label(
-            win,
-            text=f"KB: {kb_name}  \u2022  {self._chatbot.kb.total_sections} sections  "
-                 f"\u2022  Bosch Azure OpenAI GPT-4o-mini",
-            bg="#003366", fg="white",
-            font=("Segoe UI", 8)
-        ).pack(fill="x", side="bottom")
-
     def run(self):
         """Run the GUI application"""
         self.root.mainloop()
