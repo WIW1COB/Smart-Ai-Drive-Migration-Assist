@@ -62,16 +62,16 @@ class CredentialManager:
                 return None
     
     @staticmethod
-    def _encrypt(data: str) -> str:
-        """Encrypt data using Fernet (if available)"""
+    def _encrypt(data: str) -> Optional[str]:
+        """Encrypt data using Fernet."""
         if not ENCRYPTION_AVAILABLE:
-            # No encryption available, return base64 encoded
-            return base64.b64encode(data.encode()).decode()
+            logger.warning("cryptography is not installed; encrypted file storage is unavailable")
+            return None
         
         key = CredentialManager._get_encryption_key()
         if not key:
-            # Fallback to base64
-            return base64.b64encode(data.encode()).decode()
+            logger.warning("Encryption key is unavailable; credentials will not be cached")
+            return None
         
         try:
             cipher = Fernet(key)
@@ -79,7 +79,7 @@ class CredentialManager:
             return encrypted.decode()
         except Exception as e:
             logger.warning(f"Encryption failed: {e}")
-            return base64.b64encode(data.encode()).decode()
+            return None
     
     @staticmethod
     def _decrypt(encrypted_data: str) -> Optional[str]:
@@ -118,8 +118,7 @@ class CredentialManager:
         
         Tries multiple methods in order:
         1. System keyring (most secure)
-        2. Encrypted file (decent security)
-        3. Base64 file (fallback, less secure)
+        2. Encrypted file (fallback)
         
         Returns:
             True if saved successfully, False otherwise
@@ -139,10 +138,17 @@ class CredentialManager:
                 except Exception as e:
                     logger.warning(f"Keyring save failed, falling back to file: {e}")
             
+            encrypted_username = CredentialManager._encrypt(username)
+            encrypted_password = CredentialManager._encrypt(password)
+            
+            if not encrypted_username or not encrypted_password:
+                logger.error("Encrypted credential storage is unavailable")
+                return False
+            
             # Method 2: Save to encrypted file
             credentials = {
-                'username': CredentialManager._encrypt(username),
-                'password': CredentialManager._encrypt(password),
+                'username': encrypted_username,
+                'password': encrypted_password,
                 'server_url': server_url,
                 'version': '1.0'
             }

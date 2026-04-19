@@ -8,6 +8,7 @@ import json
 import logging
 
 from src.utils.comparison_engine import compare_folders, cleanup_temp_dirs
+from src.utils.credential_manager import CredentialManager
 from src.gui.results_viewer import show_results_dialog
 from src.rtc.connection import RTCConnection, get_rtc_connection
 from src.config import settings
@@ -31,8 +32,12 @@ class MigrationAnalysisGUI:
         self.rtc_password = tk.StringVar()
         self.rtc_server_url = tk.StringVar(value=settings.RTC_SERVER_URL)
         self.rtc_connection = None
+        self.keep_signed_in_var = tk.BooleanVar(value=False)
+        self.cached_credentials_loaded = False
+        self.save_credentials_on_success = False
         
         self.setup_ui()
+        self._load_cached_credentials()
     
     def setup_ui(self):
         """Setup the main UI components"""
@@ -69,6 +74,9 @@ class MigrationAnalysisGUI:
         
         title_frame = tk.Frame(header_frame, bg="#003366")
         title_frame.pack(fill="x")
+        title_frame.grid_columnconfigure(0, weight=1)
+        title_frame.grid_columnconfigure(1, weight=2)
+        title_frame.grid_columnconfigure(2, weight=1)
         
         title_label = tk.Label(
             title_frame,
@@ -77,7 +85,32 @@ class MigrationAnalysisGUI:
             bg="#003366",
             fg="white"
         )
-        title_label.pack(padx=10, pady=10)
+        title_label.grid(row=0, column=1, padx=10, pady=10)
+        
+        auth_frame = tk.Frame(title_frame, bg="#003366")
+        auth_frame.grid(row=0, column=2, sticky="e", padx=10, pady=8)
+        
+        self.auth_status_label = tk.Label(
+            auth_frame,
+            text="RTC: signed out",
+            font=("Segoe UI", 8),
+            bg="#003366",
+            fg="#DDEBFF"
+        )
+        self.auth_status_label.pack(side=tk.LEFT, padx=(0, 8))
+        
+        self.logout_btn = tk.Button(
+            auth_frame,
+            text="Logout",
+            command=self.on_logout,
+            font=("Segoe UI", 9, "bold"),
+            bg="#666666",
+            fg="white",
+            padx=10,
+            pady=4,
+            state="disabled"
+        )
+        self.logout_btn.pack(side=tk.LEFT)
     
     def create_mode_selection(self):
         """Create comparison mode selection"""
@@ -454,7 +487,7 @@ class MigrationAnalysisGUI:
         """Show dialog to input RTC credentials"""
         dialog = tk.Toplevel(self.root)
         dialog.title("RTC Login")
-        dialog.geometry("450x300")
+        dialog.geometry("480x360")
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.resizable(False, False)
@@ -497,7 +530,28 @@ class MigrationAnalysisGUI:
         # Password
         tk.Label(main_frame, text="Password:", font=('Segoe UI', 10), bg='white').pack(anchor=tk.W)
         password_entry = ttk.Entry(main_frame, textvariable=self.rtc_password, show='●', width=40)
-        password_entry.pack(fill=tk.X, pady=(0, 15))
+        password_entry.pack(fill=tk.X, pady=(0, 10))
+        
+        keep_signed_in_check = tk.Checkbutton(
+            main_frame,
+            text="Keep me signed in",
+            variable=self.keep_signed_in_var,
+            font=('Segoe UI', 10),
+            bg='white',
+            activebackground='white'
+        )
+        keep_signed_in_check.pack(anchor=tk.W, pady=(0, 6))
+        
+        cache_note = "Credentials are stored in Windows Credential Manager or encrypted local storage."
+        tk.Label(
+            main_frame,
+            text=cache_note,
+            font=('Segoe UI', 8),
+            bg='white',
+            fg='#666666',
+            wraplength=420,
+            justify=tk.LEFT
+        ).pack(anchor=tk.W, pady=(0, 8))
         
         def on_ok():
             username = self.rtc_username.get().strip()
@@ -506,7 +560,7 @@ class MigrationAnalysisGUI:
             if not username or not password:
                 messagebox.showerror('Error', 'Please enter both username and password.')
                 return
-            
+                        
             dialog.destroy()
             
             # Get snapshot URLs
@@ -545,13 +599,98 @@ class MigrationAnalysisGUI:
             pady=8
         ).pack(side=tk.LEFT, padx=5)
         
-        username_entry.focus()
+        tk.Button(
+            button_frame,
+            text="Clear Cache",
+            command=lambda: self.on_logout(show_message=True),
+            font=('Segoe UI', 10, 'bold'),
+            bg='#B00020',
+            fg='white',
+            padx=20,
+            pady=8
+        ).pack(side=tk.LEFT, padx=5)
+        
+        if self.rtc_username.get():
+            password_entry.focus()
+        else:
+            username_entry.focus()
         dialog.bind('<Return>', lambda e: on_ok())
         dialog.bind('<Escape>', lambda e: on_cancel())
+    
+    def _load_cached_credentials(self):
+        """Load cached RTC credentials for online-online comparisons."""
+        server_url = self.rtc_server_url.get()
+        cached_credentials = CredentialManager.load_credentials(server_url)
+        
+        if cached_credentials:
+            username, password = cached_credentials
+            self.rtc_username.set(username)
+            self.rtc_password.set(password)
+            self.keep_signed_in_var.set(True)
+            self.cached_credentials_loaded = True
+            logger.info("Cached RTC credentials loaded for online-online mode")
+        else:
+            self.cached_credentials_loaded = False
+        
+        self._refresh_auth_status()
+    
+    def _refresh_auth_status(self):
+        """Refresh the main window RTC auth display."""
+        if not hasattr(self, 'auth_status_label') or not hasattr(self, 'logout_btn'):
+            return
+        
+        if self.rtc_username.get() and self.rtc_password.get():
+            username = self.rtc_username.get()
+            label_text = f"RTC: {username}"
+            self.auth_status_label.config(text=label_text)
+            self.logout_btn.config(state="normal", bg="#B00020")
+        else:
+            self.auth_status_label.config(text="RTC: signed out")
+            self.logout_btn.config(state="disabled", bg="#666666")
+    
+    def _update_cached_credentials_after_login(self, username, password, server_url):
+        """Persist or clear RTC credentials based on the login checkbox."""
+        if self.save_credentials_on_success:
+            saved = CredentialManager.save_credentials(username, password, server_url)
+            if saved:
+                self.cached_credentials_loaded = True
+                logger.info("RTC credentials cached after successful login")
+            else:
+                self.cached_credentials_loaded = False
+                self.root.after(
+                    0,
+                    lambda: messagebox.showwarning(
+                        "Credential Cache",
+                        "Login succeeded, but credentials could not be saved securely."
+                    )
+                )
+        else:
+            CredentialManager.clear_credentials(server_url)
+            self.cached_credentials_loaded = False
+        
+        self.root.after(0, self._refresh_auth_status)
+    
+    def on_logout(self, show_message=True):
+        """Clear online RTC login state and cached credentials."""
+        server_url = self.rtc_server_url.get()
+        CredentialManager.clear_credentials(server_url)
+        self.rtc_username.set("")
+        self.rtc_password.set("")
+        self.keep_signed_in_var.set(False)
+        self.cached_credentials_loaded = False
+        self.rtc_connection = None
+        self._refresh_auth_status()
+        
+        if show_message:
+            messagebox.showinfo(
+                "Logged Out",
+                "RTC credentials have been cleared from this session and local secure storage."
+            )
     
     def start_snapshot_comparison(self, url1, url2):
         """Start RTC snapshot comparison in background thread"""
         # Disable button during processing
+        self.save_credentials_on_success = self.keep_signed_in_var.get()
         self.compare_btn.config(state='disabled')
         self.progress_bar['value'] = 0
         self.progress_label.config(text="🌐 Connecting to RTC server...")
@@ -627,6 +766,8 @@ class MigrationAnalysisGUI:
                 self.root.after(0, lambda: self._update_progress(0, "Ready"))
                 return
             
+            self._update_cached_credentials_after_login(username, password, server_url)
+            
             # Extract and validate UUIDs
             self.root.after(0, lambda: self._update_progress(10, "Validating snapshot URLs..."))
             logger.info("Extracting snapshot UUIDs...")
@@ -658,7 +799,7 @@ class MigrationAnalysisGUI:
             self.root.after(0, lambda: self._update_progress(20, "⬇️ Fetching Snapshot 1 components..."))
             logger.info("Fetching components from Snapshot 1...")
             
-            snap1_components = rtc_conn.fetch_snapshot_components(uuid1, 'Snapshot 1')
+            snap1_components = rtc_conn.fetch_snapshot_components(uuid1, snapshot_name='Snapshot 1')
             
             if not snap1_components:
                 error_msg = "❌ No components found in Snapshot 1\n\nPossible reasons:\n" \
@@ -681,7 +822,7 @@ class MigrationAnalysisGUI:
             )
             logger.info("Fetching components from Snapshot 2...")
             
-            snap2_components = rtc_conn.fetch_snapshot_components(uuid2, 'Snapshot 2')
+            snap2_components = rtc_conn.fetch_snapshot_components(uuid2, snapshot_name='Snapshot 2')
             
             if not snap2_components:
                 error_msg = "❌ No components found in Snapshot 2\n\nPossible reasons:\n" \
