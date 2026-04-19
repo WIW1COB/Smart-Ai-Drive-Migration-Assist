@@ -8,6 +8,7 @@ from tkinter import ttk, messagebox, filedialog, scrolledtext
 import threading
 import logging
 import csv
+import html
 import webbrowser
 import sys
 import os
@@ -1804,8 +1805,314 @@ Features:
         if not self.diff_result:
             messagebox.showwarning("No Data", "No analysis results to export")
             return
-        
-        messagebox.showinfo("HTML Export", "HTML export feature coming soon!")
+
+        html_path = filedialog.asksaveasfilename(
+            defaultextension=".html",
+            filetypes=[("HTML files", "*.html"), ("All files", "*.*")],
+            initialfile=f"interface_diff_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
+            title="Export Interface Diff Report"
+        )
+
+        if not html_path:
+            return
+
+        try:
+            report_html = self._generate_html_report()
+            with open(html_path, 'w', encoding='utf-8') as f:
+                f.write(report_html)
+
+            self.status_var.set(f"✅ Exported to HTML")
+            messagebox.showinfo("Exported", f"HTML report exported to:\n{html_path}")
+
+            if messagebox.askyesno("Open Report", "Would you like to open the HTML report now?"):
+                webbrowser.open(f'file://{os.path.abspath(html_path)}')
+        except Exception as e:
+            logger.exception("HTML export failed")
+            messagebox.showerror("Export Failed", f"Error exporting to HTML:\n\n{str(e)}")
+
+    def _generate_html_report(self):
+        """Generate a standalone HTML interface-analysis report."""
+        generated_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        baseline_path = self._html_escape(getattr(self.diff_result, "baseline_path", self.baseline_root.get()))
+        target_path = self._html_escape(getattr(self.diff_result, "target_path", self.target_root.get()))
+        scope_info = self._html_escape(self._get_scope_display_info())
+
+        total_changes = len(self.all_diffs)
+        files_changed = len(self.file_groups)
+        breaking = getattr(self.diff_result, "breaking_changes", 0)
+        review = getattr(self.diff_result, "review_needed", 0)
+        safe = getattr(self.diff_result, "safe_changes", 0)
+
+        rows = []
+        for diff, file_path in sorted(
+            self.all_diffs,
+            key=lambda item: (
+                self._severity_sort_key(item[0].severity),
+                item[1].lower(),
+                item[0].element_name.lower()
+            )
+        ):
+            severity = self._enum_value(diff.severity)
+            change_type = self._enum_value(diff.change_type)
+            interface_type = self._enum_value(diff.interface_type)
+            details = "<br>".join(self._html_escape(detail) for detail in (diff.diff_details or []))
+            if not details:
+                details = "<span class=\"muted\">No extra details</span>"
+
+            rows.append(f"""
+                <tr class="severity-{self._html_escape(severity)}">
+                    <td class="file">{self._html_escape(file_path)}</td>
+                    <td><code>{self._html_escape(diff.element_name)}</code></td>
+                    <td>{self._html_escape(interface_type)}</td>
+                    <td>{self._html_escape(change_type)}</td>
+                    <td><span class="pill {self._html_escape(severity)}">{self._html_escape(severity)}</span></td>
+                    <td>{self._html_escape(diff.diff_summary)}</td>
+                    <td>{details}</td>
+                </tr>
+""")
+
+        if not rows:
+            rows.append("""
+                <tr>
+                    <td colspan="7" class="empty">No interface changes were found.</td>
+                </tr>
+""")
+
+        return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interface Difference Analysis Report</title>
+    <style>
+        :root {{
+            --ink: #172033;
+            --muted: #667085;
+            --line: #d9e2ec;
+            --surface: #ffffff;
+            --page: #f4f7fb;
+            --brand: #1557b0;
+            --breaking: #c62828;
+            --review: #b26a00;
+            --safe: #1b7f3a;
+            --info: #0b6b88;
+        }}
+        * {{ box-sizing: border-box; }}
+        body {{
+            margin: 0;
+            background: var(--page);
+            color: var(--ink);
+            font-family: "Segoe UI", Arial, sans-serif;
+            line-height: 1.45;
+        }}
+        header {{
+            background: var(--brand);
+            color: white;
+            padding: 28px 36px;
+        }}
+        header h1 {{
+            margin: 0 0 8px;
+            font-size: 28px;
+            font-weight: 700;
+        }}
+        header p {{
+            margin: 0;
+            opacity: 0.92;
+        }}
+        main {{
+            max-width: 1500px;
+            margin: 0 auto;
+            padding: 24px 28px 36px;
+        }}
+        section {{
+            background: var(--surface);
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            margin-bottom: 18px;
+            padding: 20px;
+        }}
+        h2 {{
+            margin: 0 0 14px;
+            font-size: 18px;
+        }}
+        .meta-grid {{
+            display: grid;
+            grid-template-columns: 140px minmax(0, 1fr);
+            gap: 8px 16px;
+            font-size: 14px;
+        }}
+        .label {{
+            color: var(--muted);
+            font-weight: 600;
+        }}
+        .path {{
+            overflow-wrap: anywhere;
+            font-family: Consolas, "Courier New", monospace;
+        }}
+        .stats {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 14px;
+        }}
+        .stat {{
+            border: 1px solid var(--line);
+            border-left: 5px solid var(--brand);
+            border-radius: 7px;
+            padding: 14px;
+            background: #fbfdff;
+        }}
+        .stat.breaking {{ border-left-color: var(--breaking); }}
+        .stat.review {{ border-left-color: var(--review); }}
+        .stat.safe {{ border-left-color: var(--safe); }}
+        .stat-number {{
+            display: block;
+            font-size: 28px;
+            font-weight: 800;
+        }}
+        .stat-label {{
+            color: var(--muted);
+            font-size: 13px;
+        }}
+        .table-wrap {{
+            overflow-x: auto;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+        }}
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 1050px;
+            background: white;
+        }}
+        th {{
+            position: sticky;
+            top: 0;
+            background: #26364d;
+            color: white;
+            padding: 11px 12px;
+            text-align: left;
+            font-size: 13px;
+        }}
+        td {{
+            border-top: 1px solid var(--line);
+            padding: 10px 12px;
+            vertical-align: top;
+            font-size: 13px;
+        }}
+        tr.severity-breaking td {{ background: #fff3f3; }}
+        tr.severity-review td {{ background: #fff9eb; }}
+        tr.severity-safe td {{ background: #f0fbf3; }}
+        tr.severity-info td {{ background: #eefaff; }}
+        code {{
+            font-family: Consolas, "Courier New", monospace;
+            font-size: 12px;
+        }}
+        .file {{
+            min-width: 260px;
+            overflow-wrap: anywhere;
+            font-family: Consolas, "Courier New", monospace;
+        }}
+        .pill {{
+            display: inline-block;
+            min-width: 72px;
+            padding: 3px 8px;
+            border-radius: 999px;
+            color: white;
+            text-align: center;
+            font-size: 12px;
+            font-weight: 700;
+        }}
+        .pill.breaking {{ background: var(--breaking); }}
+        .pill.review {{ background: var(--review); }}
+        .pill.safe {{ background: var(--safe); }}
+        .pill.info {{ background: var(--info); }}
+        .muted, .empty {{
+            color: var(--muted);
+        }}
+        .empty {{
+            text-align: center;
+            padding: 24px;
+        }}
+        @media print {{
+            body {{ background: white; }}
+            header, section {{ box-shadow: none; }}
+            th {{ position: static; }}
+        }}
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Interface Difference Analysis Report</h1>
+        <p>Generated on {self._html_escape(generated_at)}</p>
+    </header>
+    <main>
+        <section>
+            <h2>Analysis Context</h2>
+            <div class="meta-grid">
+                <div class="label">Baseline</div><div class="path">{baseline_path}</div>
+                <div class="label">Target</div><div class="path">{target_path}</div>
+                <div class="label">Scope</div><div>{scope_info}</div>
+            </div>
+        </section>
+
+        <section>
+            <h2>Summary</h2>
+            <div class="stats">
+                <div class="stat"><span class="stat-number">{total_changes}</span><span class="stat-label">Interface Changes</span></div>
+                <div class="stat"><span class="stat-number">{files_changed}</span><span class="stat-label">Files With Changes</span></div>
+                <div class="stat breaking"><span class="stat-number">{breaking}</span><span class="stat-label">Breaking</span></div>
+                <div class="stat review"><span class="stat-number">{review}</span><span class="stat-label">Review Needed</span></div>
+                <div class="stat safe"><span class="stat-number">{safe}</span><span class="stat-label">Safe</span></div>
+            </div>
+        </section>
+
+        <section>
+            <h2>Interface Changes</h2>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>File</th>
+                            <th>Interface</th>
+                            <th>Type</th>
+                            <th>Change</th>
+                            <th>Severity</th>
+                            <th>Summary</th>
+                            <th>Details</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {''.join(rows)}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+</body>
+</html>
+"""
+
+    @staticmethod
+    def _html_escape(value):
+        """Escape a value for safe HTML output."""
+        if value is None:
+            return ""
+        return html.escape(str(value), quote=True)
+
+    @staticmethod
+    def _enum_value(value):
+        """Return enum.value when available, otherwise a safe string."""
+        return getattr(value, "value", str(value)).lower()
+
+    @staticmethod
+    def _severity_sort_key(severity):
+        """Sort severities with highest-risk changes first."""
+        order = {
+            Severity.BREAKING: 0,
+            Severity.REVIEW: 1,
+            Severity.SAFE: 2,
+        }
+        return order.get(severity, 99)
 
 
 def show_interface_diff_viewer(parent=None, baseline_path=None, target_path=None):

@@ -11,6 +11,20 @@ from tkinter import filedialog, messagebox, scrolledtext
 class ComparisonAssistantWindow:
     """Small agentic assistant grounded in the active comparison results."""
 
+    OUT_OF_SCOPE_REPLY = (
+        "Out of scope. Kindly ask about RTC snapshot differences, changesets, "
+        "selected components, interface analysis, or offline/online comparison results."
+    )
+
+    IN_SCOPE_TERMS = {
+        "rtc", "snapshot", "baseline", "component", "components", "changeset", "changesets",
+        "change", "changes", "changed", "difference", "differences", "diff", "compare",
+        "comparison", "migration", "file", "files", "folder", "folders", "report", "reports",
+        "csv", "excel", "html", "interface", "interfaces", "selected", "modified", "added",
+        "removed", "platform", "project", "offline", "online", "source", "line", "lines",
+        "risk", "risky", "inspect", "summary", "summarize", "overview", "status"
+    }
+
     def __init__(self, parent, viewer):
         self.parent = parent
         self.viewer = viewer
@@ -22,10 +36,12 @@ class ComparisonAssistantWindow:
 
         self.window = tk.Toplevel(parent)
         self.window.title("Migration Assistant")
-        self.window.geometry("1100x760")
-        self.window.minsize(880, 620)
+        self.window.geometry(self._initial_geometry())
+        self.window.minsize(760, 520)
+        self.window.resizable(True, True)
         self.window.configure(bg="#ECF2F6")
-        self.window.transient(parent)
+        self.window.grid_columnconfigure(0, weight=1)
+        self.window.grid_rowconfigure(1, weight=1)
 
         self._build_ui()
         self._append_bot(
@@ -41,7 +57,7 @@ class ComparisonAssistantWindow:
 
     def _build_ui(self):
         header = tk.Frame(self.window, bg="#003366", height=78)
-        header.pack(fill="x")
+        header.grid(row=0, column=0, sticky="ew")
         header.pack_propagate(False)
 
         title_group = tk.Frame(header, bg="#003366")
@@ -59,11 +75,11 @@ class ComparisonAssistantWindow:
         badge.pack(side="right", padx=18)
 
         body = tk.Frame(self.window, bg="#ECF2F6")
-        body.pack(fill="both", expand=True, padx=12, pady=12)
+        body.grid(row=1, column=0, sticky="nsew", padx=12, pady=12)
         body.grid_columnconfigure(1, weight=1)
         body.grid_rowconfigure(0, weight=1)
 
-        sidebar = tk.Frame(body, bg="#DDEAF3", width=250)
+        sidebar = tk.Frame(body, bg="#DDEAF3", width=235)
         sidebar.grid(row=0, column=0, sticky="ns", padx=(0, 10))
         sidebar.grid_propagate(False)
 
@@ -141,7 +157,8 @@ class ComparisonAssistantWindow:
         self.chat.tag_config("code", font=("Consolas", 9), background="#F6F8FA", lmargin1=28, lmargin2=28)
 
         self.suggestion_frame = tk.Frame(self.window, bg="#ECF2F6")
-        self.suggestion_frame.pack(fill="x", padx=12, pady=(0, 8))
+        self.suggestion_frame.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 6))
+        self.suggestion_frame.grid_columnconfigure(1, weight=1)
         self._render_suggestions([
             "Summarize this comparison",
             "Tell differences for selected file",
@@ -149,12 +166,37 @@ class ComparisonAssistantWindow:
         ])
 
         input_frame = tk.Frame(self.window, bg="#ECF2F6")
-        input_frame.pack(fill="x", padx=12, pady=(0, 12))
+        input_frame.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 8))
+        input_frame.grid_columnconfigure(0, weight=1)
 
-        self.input_var = tk.StringVar()
-        self.entry = tk.Entry(input_frame, textvariable=self.input_var, font=("Segoe UI", 11), relief="solid", bd=1)
-        self.entry.pack(side="left", fill="x", expand=True, ipady=8)
-        self.entry.bind("<Return>", lambda _e: self._ask())
+        input_box = tk.Frame(input_frame, bg="#FFFFFF", highlightthickness=1, highlightbackground="#B7C3CC")
+        input_box.grid(row=0, column=0, sticky="ew")
+        input_box.grid_columnconfigure(0, weight=1)
+
+        tk.Label(
+            input_box,
+            text="Ask about this comparison",
+            font=("Segoe UI", 8, "bold"),
+            bg="#FFFFFF",
+            fg="#425466",
+            anchor="w"
+        ).grid(row=0, column=0, sticky="ew", padx=10, pady=(6, 0))
+
+        self.entry = tk.Text(
+            input_box,
+            height=3,
+            wrap="word",
+            font=("Segoe UI", 10),
+            relief="flat",
+            bg="#FFFFFF",
+            fg="#17212B",
+            insertbackground="#003366",
+            padx=10,
+            pady=6
+        )
+        self.entry.grid(row=1, column=0, sticky="ew", padx=2, pady=(0, 2))
+        self.entry.bind("<Control-Return>", lambda _e: self._ask())
+        self.entry.bind("<Return>", self._on_entry_return)
 
         self.send_btn = tk.Button(
             input_frame,
@@ -164,22 +206,23 @@ class ComparisonAssistantWindow:
             fg="white",
             font=("Segoe UI", 11, "bold"),
             padx=20,
-            pady=7,
+            pady=19,
             relief="flat"
         )
-        self.send_btn.pack(side="left", padx=(8, 0))
+        self.send_btn.grid(row=0, column=1, sticky="ns", padx=(8, 0))
 
         self.status_var = tk.StringVar(value="Ready")
         tk.Label(self.window, textvariable=self.status_var, font=("Segoe UI", 8),
-                 bg="#ECF2F6", fg="#5C6B73", anchor="w").pack(fill="x", padx=14, pady=(0, 8))
+                 bg="#ECF2F6", fg="#5C6B73", anchor="w").grid(row=4, column=0, sticky="ew", padx=14, pady=(0, 8))
+        self.entry.focus_set()
 
     def _ask(self, prompt=None):
         if self.busy:
             return
-        question = (prompt or self.input_var.get()).strip()
+        question = (prompt or self._get_query_text()).strip()
         if not question:
             return
-        self.input_var.set("")
+        self._clear_query_text()
         self.last_question = question
         self._append_user(question)
 
@@ -187,6 +230,11 @@ class ComparisonAssistantWindow:
         if action_reply:
             self._append_bot(action_reply)
             self._after_reply(action_reply, question)
+            return
+
+        if not self._is_in_scope_question(question):
+            self._append_bot(self.OUT_OF_SCOPE_REPLY)
+            self._after_reply(self.OUT_OF_SCOPE_REPLY, question)
             return
 
         local_context = self._build_context(question)
@@ -223,6 +271,15 @@ class ComparisonAssistantWindow:
         if "select" in q and ("changed" in q or "modified" in q or "different" in q):
             return self._select_first_changed_row()
         return None
+
+    def _is_in_scope_question(self, question):
+        """Return True when the question belongs to comparison/RTC analysis."""
+        q = question.lower()
+        if any(term in q for term in self.IN_SCOPE_TERMS):
+            return True
+
+        # A direct file/component name is also valid even if the wording is short.
+        return self._find_best_result(question) is not None
 
     def _build_context(self, question):
         match = self._find_best_result(question)
@@ -462,6 +519,7 @@ class ComparisonAssistantWindow:
     def _ask_model(self, question, local_context):
         system = (
             "You are a migration-analysis assistant inside a desktop comparison tool. "
+            f"If the user asks anything unrelated, reply exactly: {self.OUT_OF_SCOPE_REPLY} "
             "Answer only from the provided comparison context. If the context is insufficient, say exactly what is missing. "
             "Be concise, practical, and mention whether the row is offline file-level data or online component/baseline data."
         )
@@ -510,10 +568,12 @@ class ComparisonAssistantWindow:
         for child in self.suggestion_frame.winfo_children():
             child.destroy()
         tk.Label(self.suggestion_frame, text="Suggested next:", font=("Segoe UI", 9, "bold"),
-                 bg="#ECF2F6", fg="#425466").pack(side="left", padx=(0, 8))
-        for suggestion in suggestions:
+                 bg="#ECF2F6", fg="#425466").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        chips = tk.Frame(self.suggestion_frame, bg="#ECF2F6")
+        chips.grid(row=0, column=1, sticky="ew")
+        for idx, suggestion in enumerate(suggestions):
             tk.Button(
-                self.suggestion_frame,
+                chips,
                 text=suggestion,
                 command=lambda s=suggestion: self._ask(s),
                 bg="#FFFFFF",
@@ -523,8 +583,35 @@ class ComparisonAssistantWindow:
                 bd=1,
                 padx=10,
                 pady=4,
-                cursor="hand2"
-            ).pack(side="left", padx=4)
+                cursor="hand2",
+                wraplength=150
+            ).grid(row=idx // 2, column=idx % 2, sticky="w", padx=4, pady=2)
+
+    def _initial_geometry(self):
+        """Choose a size that fits the current screen and keeps the input visible."""
+        try:
+            screen_w = self.window.winfo_screenwidth()
+            screen_h = self.window.winfo_screenheight()
+            width = min(1120, max(760, int(screen_w * 0.86)))
+            height = min(780, max(560, int(screen_h * 0.82)))
+            x = max(0, (screen_w - width) // 2)
+            y = max(0, (screen_h - height) // 2)
+            return f"{width}x{height}+{x}+{y}"
+        except Exception:
+            return "1040x700"
+
+    def _on_entry_return(self, event):
+        """Enter sends; Shift+Enter inserts a newline."""
+        if event.state & 0x0001:  # Shift pressed
+            return None
+        self._ask()
+        return "break"
+
+    def _get_query_text(self):
+        return self.entry.get("1.0", "end-1c")
+
+    def _clear_query_text(self):
+        self.entry.delete("1.0", "end")
 
     def _select_first_changed_row(self):
         for item in self.viewer.tree.get_children():
