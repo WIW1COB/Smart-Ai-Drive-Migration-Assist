@@ -2,13 +2,13 @@
 Comparison Engine - Core folder/file comparison logic
 Extracted from test.py and refactored for modular architecture
 """
-
+ 
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 import csv
-
+ 
 from .file_utils import (
     count_file_lines, read_file_as_text, prepare_folder_path,
     sanitize_for_excel, remove_comments, is_only_comment_change
@@ -16,8 +16,8 @@ from .file_utils import (
 from .diff_utils import generate_html_diff, generate_purpose_of_change
 from .excel_utils import write_excel_report
 from src.config import settings
-
-
+ 
+ 
 def get_line_comparison_status(lines1, lines2, files_identical, text1_lines=None, text2_lines=None):
     """
     Determine the status based on line counts and file content.
@@ -51,40 +51,40 @@ def get_line_comparison_status(lines1, lines2, files_identical, text1_lines=None
             return f"Only comments changed ({lines1} → {lines2} lines, -{diff})"
         else:
             return f"Modified ({lines1} → {lines2} lines, -{diff} lines removed)"
-
-
+ 
+ 
 def process_file_comparison(args):
     """
     Process a single file comparison - designed for parallel execution
-    
+   
     Args:
         args: Tuple of (rel_path, path1, path2, output_dir, is_custom_mapping, rtc_info)
-        
+       
     Returns:
         List containing comparison result: [File Path, Lines1, Lines2, Line Status, Status, HTML Link, Purpose, Changeset]
     """
     rel_path, path1, path2, output_dir, is_custom_mapping, rtc_info = args
-    
+   
     try:
         # Determine file existence and status
         exists1 = path1 and os.path.isfile(path1)
         exists2 = path2 and os.path.isfile(path2)
-        
+       
         if not exists1 and not exists2:
             return [rel_path, 0, 0, "File not found", "Error", "", "", ""]
-        
+       
         # Count lines
         lines1 = count_file_lines(path1) if exists1 else 0
         lines2 = count_file_lines(path2) if exists2 else 0
-        
+       
         # Determine status
         if exists1 and exists2:
             # Both files exist - compare them
             text1 = read_file_as_text(path1)
             text2 = read_file_as_text(path2)
-            
+           
             files_identical = (text1 == text2)
-            
+           
             if files_identical:
                 status = "Identical"
             else:
@@ -93,17 +93,17 @@ def process_file_comparison(args):
                     status = "Comments update only"
                 else:
                     status = "Different"
-            
+           
             line_status = get_line_comparison_status(lines1, lines2, files_identical, text1, text2)
-            
+           
             # Generate HTML diff for non-identical files
             if not files_identical:
                 try:
                     html_path, _, _ = generate_html_diff(path1, path2, rel_path, output_dir)
-                    html_link = os.path.basename(html_path)
+                    html_link = html_path  # Store full path for hyperlink
                 except Exception as e:
                     html_link = f"Error: {str(e)}"
-                
+               
                 # Generate purpose of change
                 try:
                     purpose = generate_purpose_of_change(text1, text2)
@@ -112,27 +112,27 @@ def process_file_comparison(args):
             else:
                 html_link = "N/A (Identical)"
                 purpose = "No changes"
-        
+       
         elif exists1 and not exists2:
             # Only in folder 1
             status = "Only in Platform"
             line_status = f"{lines1} lines (only in platform)"
             html_link = "N/A"
             purpose = "File removed in project or not migrated"
-        
+       
         elif not exists1 and exists2:
             # Only in folder 2
             status = "Only in Project"
             line_status = f"{lines2} lines (only in project)"
             html_link = "N/A"
             purpose = "New file added in project"
-        
+       
         # RTC Integration - fetch changesets if enabled
         changeset_info = ""
         if rtc_info and rtc_info.get('enabled') and exists2:
             try:
                 from src.rtc.changeset import get_workitems_for_file
-                
+               
                 changeset_data = get_workitems_for_file(
                     path2,
                     rtc_info.get('repository_path'),
@@ -141,14 +141,14 @@ def process_file_comparison(args):
                     rtc_info.get('workspace_name'),
                     rtc_info.get('stream_name')
                 )
-                
+               
                 if changeset_data:
                     changeset_url = changeset_data.get('changeset_url', '')
                     workitems = changeset_data.get('workitem_ids', [])
                     changeset_info = f"Changeset: {changeset_url} | WorkItems: {', '.join(workitems)}"
             except Exception as e:
                 changeset_info = f"RTC Error: {str(e)}"
-        
+       
         # Return result row
         return [
             rel_path,
@@ -160,7 +160,7 @@ def process_file_comparison(args):
             purpose,
             changeset_info
         ]
-    
+   
     except Exception as e:
         print(f"Error comparing {rel_path}: {e}")
         return [
@@ -173,19 +173,19 @@ def process_file_comparison(args):
             "",
             ""
         ]
-
-
+ 
+ 
 def compare_folders(folder1, folder2, progress_callback=None, custom_mappings=None, rtc_info=None):
     """
     Compare two folders and generate comparison reports.
-    
+   
     Args:
         folder1 (str): Path to first folder (Platform/Baseline)
         folder2 (str): Path to second folder (Project/Target)
         progress_callback (callable, optional): Callback(current, total, message) for progress updates
         custom_mappings (dict, optional): Custom file mappings {file1_rel_path: file2_rel_path}
         rtc_info (dict, optional): RTC integration info with keys: enabled, username, password, etc.
-        
+       
     Returns:
         dict: Result dictionary with keys:
             - 'success': bool
@@ -198,60 +198,60 @@ def compare_folders(folder1, folder2, progress_callback=None, custom_mappings=No
     # Create output directory
     output_dir = os.path.join(os.getcwd(), "Migration_Analysis_Reports")
     os.makedirs(output_dir, exist_ok=True)
-    
+   
     csv_report_path = os.path.join(output_dir, "Migration_Analysis_Report.csv")
     excel_report_path = os.path.join(output_dir, "Migration_Analysis_Report.xlsx")
-    
+   
     # Handle ZIP folder inputs - extract if needed
     temp_dirs_to_cleanup = []
     original_folder1 = folder1
     original_folder2 = folder2
-    
+   
     if progress_callback:
         progress_callback(0, 100, "Preparing folders (extracting if ZIP)...")
-    
+   
     folder1_actual, is_temp1, orig1 = prepare_folder_path(folder1)
     folder2_actual, is_temp2, orig2 = prepare_folder_path(folder2)
-    
+   
     if is_temp1:
         temp_dirs_to_cleanup.append(folder1_actual)
-    
+   
     if is_temp2:
         temp_dirs_to_cleanup.append(folder2_actual)
-    
+   
     if not folder1_actual or not folder2_actual:
         return {
             'success': False,
             'error': 'Invalid folder paths',
             'temp_dirs': temp_dirs_to_cleanup
         }
-    
+   
     # Use actual folders for comparison
     folder1 = folder1_actual
     folder2 = folder2_actual
-    
+   
     # Collect all files from both folders
     files1 = {}
     files2 = {}
-    
+   
     for dp, _, fnames in os.walk(folder1):
         for f in fnames:
             rel_path = os.path.relpath(os.path.join(dp, f), folder1)
             files1[rel_path] = os.path.join(dp, f)
-    
+   
     for dp, _, fnames in os.walk(folder2):
         for f in fnames:
             rel_path = os.path.relpath(os.path.join(dp, f), folder2)
             files2[rel_path] = os.path.join(dp, f)
-    
+   
     all_files = sorted(set(files1.keys()) | set(files2.keys()))
-    
+   
     # Track which files have been processed via custom mappings
     processed_files = set()
-    
+   
     # Prepare comparison tasks
     comparison_tasks = []
-    
+   
     # Add custom mappings first
     if custom_mappings:
         for file1_rel, file2_rel in custom_mappings.items():
@@ -260,39 +260,39 @@ def compare_folders(folder1, folder2, progress_callback=None, custom_mappings=No
             comparison_tasks.append((file2_rel, path1, path2, output_dir, True, rtc_info))
             processed_files.add(file1_rel)
             processed_files.add(file2_rel)
-    
+   
     # Add regular file comparisons
     for rel_path in all_files:
         if rel_path not in processed_files:
             path1 = files1.get(rel_path)
             path2 = files2.get(rel_path)
             comparison_tasks.append((rel_path, path1, path2, output_dir, False, rtc_info))
-    
+   
     total_files = len(comparison_tasks)
     completed = 0
     results = []
-    
+   
     # Use ThreadPoolExecutor for parallel processing
     max_workers = getattr(settings, 'MAX_WORKERS', 8)
     max_workers = min(max_workers, os.cpu_count() or 4)
-    
+   
     if progress_callback:
         progress_callback(0, total_files, f"Starting parallel comparison with {max_workers} workers...")
-    
+   
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Submit all comparison tasks
         future_to_task = {
-            executor.submit(process_file_comparison, task): task 
+            executor.submit(process_file_comparison, task): task
             for task in comparison_tasks
         }
-        
+       
         # Collect results as they complete
         for future in as_completed(future_to_task):
             try:
                 result = future.result()
                 results.append(result)
                 completed += 1
-                
+               
                 # Update progress
                 if progress_callback:
                     percentage = int((completed / total_files) * 100)
@@ -304,18 +304,18 @@ def compare_folders(folder1, folder2, progress_callback=None, custom_mappings=No
             except Exception as e:
                 print(f"Error processing file: {e}")
                 completed += 1
-    
+   
     # Sort results by file path
     results.sort(key=lambda x: x[0])
-    
+   
     # Use original folder names in reports
     folder1_display = original_folder1
     folder2_display = original_folder2
-    
+   
     # Generate CSV report
     if progress_callback:
         progress_callback(total_files, total_files, "Generating CSV report...")
-    
+   
     try:
         with open(csv_report_path, 'w', newline='', encoding='utf-8') as csvfile:
             writer = csv.writer(csvfile)
@@ -335,19 +335,19 @@ def compare_folders(folder1, folder2, progress_callback=None, custom_mappings=No
                 writer.writerow([sanitize_for_excel(str(cell)) for cell in row])
     except Exception as e:
         print(f"Error writing CSV: {e}")
-    
+   
     # Generate Excel report
     if progress_callback:
         progress_callback(total_files, total_files, "Generating Excel report...")
-    
+   
     try:
         write_excel_report(results, excel_report_path, folder1_display, folder2_display)
     except Exception as e:
         print(f"Error writing Excel: {e}")
-    
+   
     if progress_callback:
         progress_callback(total_files, total_files, "✅ Comparison complete!")
-    
+   
     return {
         'success': True,
         'results': results,
@@ -364,8 +364,8 @@ def compare_folders(folder1, folder2, progress_callback=None, custom_mappings=No
         'folder2_display': folder2_display,
         'temp_dirs': temp_dirs_to_cleanup
     }
-
-
+ 
+ 
 def cleanup_temp_dirs(temp_dirs):
     """Clean up temporary directories created during ZIP extraction"""
     import shutil
