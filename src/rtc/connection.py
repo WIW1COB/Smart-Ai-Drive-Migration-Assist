@@ -482,7 +482,8 @@ class RTCConnection:
     
     def compare_snapshots(self, snap1_components, snap2_components):
         """
-        Compare two sets of snapshot components
+        Compare two sets of snapshot components with file-level analysis.
+        If baseline UUIDs differ, fetches folder structures and compares files.
         
         Returns: List of comparison results
         """
@@ -514,7 +515,30 @@ class RTCConnection:
                     if uuid1 == uuid2:
                         comparison['status'] = 'Unchanged'
                     else:
-                        comparison['status'] = 'Modified'
+                        # Baselines differ - fetch folder structures and compare files
+                        logger.info(f'{name}: Baselines differ, performing file-level comparison...')
+                        try:
+                            # Fetch folder structures in sequence (ThreadPoolExecutor not needed for just 2)
+                            folder1 = self.fetch_baseline_folder_structure(uuid1, name)
+                            folder2 = self.fetch_baseline_folder_structure(uuid2, name)
+                            
+                            # Compare file structures
+                            file_comparison = self.compare_folder_structures(folder1, folder2)
+                            comparison['folder_structure1'] = folder1
+                            comparison['folder_structure2'] = folder2
+                            comparison['file_comparison'] = file_comparison
+                            
+                            # Determine status based on actual file changes
+                            if file_comparison.get('added', 0) > 0 or file_comparison.get('modified', 0) > 0 or file_comparison.get('removed', 0) > 0:
+                                comparison['status'] = 'Modified'
+                                logger.info(f'{name}: Modified - {file_comparison["added"]} added, {file_comparison["modified"]} modified, {file_comparison["removed"]} removed')
+                            else:
+                                # UUIDs differ but no file content changes
+                                comparison['status'] = 'Unchanged'
+                                logger.info(f'{name}: Unchanged - baseline UUIDs differ but no file changes detected')
+                        except Exception as e:
+                            logger.warning(f'{name}: Error in file-level comparison, defaulting to Modified: {e}')
+                            comparison['status'] = 'Modified'
                 
                 elif comp1:
                     # Only in snapshot 1
