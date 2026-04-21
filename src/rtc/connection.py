@@ -483,207 +483,322 @@ class RTCConnection:
     def compare_snapshots(self, snap1_components, snap2_components):
         """
         Compare two sets of snapshot components with file-level analysis.
-        If baseline UUIDs differ, fetches folder structures and compares files.
+        When both components exist but baseline UUIDs differ, fetches folder
+        structures and performs file-level comparison.
         
-        Returns: List of comparison results
+        Returns: List of comparison result dicts
         """
         try:
-            # Create lookup dictionaries
-            snap1_dict = {comp['name']: comp for comp in snap1_components if comp.get('name')}
-            snap2_dict = {comp['name']: comp for comp in snap2_components if comp.get('name')}
-            
-            # Find all unique component names
-            all_names = set(snap1_dict.keys()) | set(snap2_dict.keys())
+            snap1_dict = {c['name']: c for c in snap1_components if c.get('name')}
+            snap2_dict = {c['name']: c for c in snap2_components if c.get('name')}
+            all_names = set(snap1_dict) | set(snap2_dict)
             
             results = []
-            
             for name in sorted(all_names):
                 comp1 = snap1_dict.get(name)
                 comp2 = snap2_dict.get(name)
                 
-                comparison = {
-                    'name': name,
-                    'snapshot1': comp1,
-                    'snapshot2': comp2,
-                }
+                entry = {'name': name, 'snapshot1': comp1, 'snapshot2': comp2}
                 
                 if comp1 and comp2:
-                    # Component exists in both
-                    uuid1 = comp1.get('uuid') or comp1.get('baseline_uuid')
-                    uuid2 = comp2.get('uuid') or comp2.get('baseline_uuid')
+                    # Both have this component — first check baseline UUIDs directly
+                    baseline1 = comp1.get('baseline_uuid', '')
+                    baseline2 = comp2.get('baseline_uuid', '')
                     
-                    if uuid1 == uuid2:
-                        comparison['status'] = 'Unchanged'
+                    if baseline1 == baseline2 and baseline1:
+                        entry['status'] = 'Unchanged'
+                        entry['baseline1_uuid'] = baseline1
+                        entry['baseline2_uuid'] = baseline2
                     else:
-                        # Baselines differ - fetch folder structures and compare files
-                        logger.info(f'{name}: Baselines differ, performing file-level comparison...')
+                        # Baseline UUIDs differ (or missing) → file-level comparison
+                        baseline1 = baseline1 or comp1.get('uuid', '')
+                        baseline2 = baseline2 or comp2.get('uuid', '')
                         try:
-                            # Fetch folder structures in sequence (ThreadPoolExecutor not needed for just 2)
-                            folder1 = self.fetch_baseline_folder_structure(uuid1, name)
-                            folder2 = self.fetch_baseline_folder_structure(uuid2, name)
+                            folder1 = self.fetch_baseline_folder_structure(baseline1, name)
+                            folder2 = self.fetch_baseline_folder_structure(baseline2, name)
+                            file_cmp = self.compare_folder_structures(folder1, folder2)
+                            entry['folder_structure1'] = folder1
+                            entry['folder_structure2'] = folder2
+                            entry['file_comparison']   = file_cmp
+                            entry['baseline1_uuid']   = baseline1
+                            entry['baseline2_uuid']   = baseline2
                             
-                            # Compare file structures
-                            file_comparison = self.compare_folder_structures(folder1, folder2)
-                            comparison['folder_structure1'] = folder1
-                            comparison['folder_structure2'] = folder2
-                            comparison['file_comparison'] = file_comparison
-                            
-                            # Determine status based on actual file changes
-                            if file_comparison.get('added', 0) > 0 or file_comparison.get('modified', 0) > 0 or file_comparison.get('removed', 0) > 0:
-                                comparison['status'] = 'Modified'
-                                logger.info(f'{name}: Modified - {file_comparison["added"]} added, {file_comparison["modified"]} modified, {file_comparison["removed"]} removed')
+                            if file_cmp.get('added') or file_cmp.get('modified') or file_cmp.get('removed'):
+                                entry['status'] = 'Modified'
                             else:
-                                # UUIDs differ but no file content changes
-                                comparison['status'] = 'Unchanged'
-                                logger.info(f'{name}: Unchanged - baseline UUIDs differ but no file changes detected')
+                                entry['status'] = 'Unchanged'
                         except Exception as e:
-                            logger.warning(f'{name}: Error in file-level comparison, defaulting to Modified: {e}')
-                            comparison['status'] = 'Modified'
+                            logger.warning(f"File-level comparison failed for {name}: {e}")
+                            entry['status'] = 'Modified'  # Safe default
                 
                 elif comp1:
-                    # Only in snapshot 1
-                    comparison['status'] = 'Removed in Snapshot 2'
-                
+                    entry['status'] = 'Removed in Snapshot 2'
                 else:
-                    # Only in snapshot 2
-                    comparison['status'] = 'Added in Snapshot 2'
+                    entry['status'] = 'Added in Snapshot 2'
                 
-                results.append(comparison)
+                results.append(entry)
             
             logger.info(f"Comparison complete: {len(results)} components analyzed")
             return results
             
         except Exception as e:
-            logger.error(f"Error comparing snapshots: {e}")
+            logger.error(f"Error in compare_snapshots: {e}")
             return []
 
 
     def fetch_baseline_folder_structure(self, baseline_uuid, component_name='Unknown'):
         """
-        Fetch folder/file structure from a baseline via RTC REST API
+        Fetch folder/file structure from a baseline via RTC REST API.
+        Uses: Baseline → Component → Root Folder → Recursive children traversal.
         
-        Args:
-            baseline_uuid: Baseline UUID
-            component_name: Component name for logging
-            
-        Returns: dict with folder structure {'folders': {...}, 'files': [...]}
+        Returns: dict {'folders': {...}, 'files': [{name, path, uuid, content-id, state-id}]}
         """
         try:
             if not baseline_uuid:
                 logger.warning(f"No baseline UUID provided for {component_name}")
                 return {'folders': {}, 'files': []}
             
-            # Add _ prefix if missing
             if not baseline_uuid.startswith('_'):
                 baseline_uuid = '_' + baseline_uuid
             
             logger.info(f"Fetching baseline structure for {component_name}: {baseline_uuid[:12]}...")
             
-            # Build API URL for baseline
-            api_url = f'{self.server_url}/resource/itemOid/com.ibm.team.scm.Baseline/{baseline_uuid}'
-            
-            try:
-                cmd = [
-                    'curl.exe',
-                    '-k',
-                    '-L',
-                    '--noproxy', '*',
-                    '-u', f'{self.username}:{self.password}',
-                    api_url,
-                    '-H', 'Accept: application/json',
-                    '-H', 'OSLC-Core-Version: 2.0'
-                ]
-                
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-                )
-                
-                if result.returncode != 0:
-                    logger.warning(f"Failed to fetch baseline structure for {component_name}")
-                    return {'folders': {}, 'files': []}
-                
-                if not result.stdout.strip():
-                    logger.warning(f"Empty response for baseline {baseline_uuid[:12]}...")
-                    return {'folders': {}, 'files': []}
-                
-                # Parse response
-                try:
-                    data = json.loads(result.stdout)
-                except json.JSONDecodeError:
-                    logger.warning(f"Failed to parse baseline response for {component_name}")
-                    return {'folders': {}, 'files': []}
-                
-                # Extract folder structure from response
-                folders = {}
-                files = []
-                
-                # Handle different response formats
-                if isinstance(data, dict):
-                    # Look for file list or folder structure
-                    file_list = data.get('files', []) or data.get('components', [])
-                    if isinstance(file_list, list):
-                        for file_item in file_list:
-                            if isinstance(file_item, dict):
-                                files.append({
-                                    'name': file_item.get('name', 'Unknown'),
-                                    'path': file_item.get('path', ''),
-                                    'uuid': file_item.get('uuid', '')
-                                })
-                
-                return {'folders': folders, 'files': files}
-                
-            except subprocess.TimeoutExpired:
-                logger.warning(f"Timeout fetching baseline for {component_name}")
+            # Step 1: Get baseline metadata (to extract component ID)
+            baseline_url = f'{self.server_url}/resource/itemOid/com.ibm.team.scm.Baseline/{baseline_uuid}'
+            baseline_curl = [
+                'curl.exe', '-k', '-L', '--noproxy', '*',
+                '-u', f'{self.username}:{self.password}',
+                '-X', 'GET', baseline_url,
+                '-H', 'Accept: application/json',
+                '-H', 'OSLC-Core-Version: 2.0'
+            ]
+            result = subprocess.run(
+                baseline_curl, capture_output=True, text=True, timeout=15,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                logger.warning(f"Failed to fetch baseline metadata for {component_name}")
                 return {'folders': {}, 'files': []}
-                
+            baseline_data = json.loads(result.stdout)
+            component_ref = baseline_data.get('component') or baseline_data.get('com.ibm.team.scm.Component', {})
+            component_id = component_ref.get('itemId', '')
+            if not component_id:
+                logger.warning(f"No component ID in baseline {baseline_uuid[:12]}")
+                return {'folders': {}, 'files': []}
+            
+            # Step 2: Get component metadata (to extract root folder ID)
+            comp_url = f'{self.server_url}/resource/itemOid/com.ibm.team.scm.Component/{component_id}'
+            comp_curl = [
+                'curl.exe', '-k', '-L', '--noproxy', '*',
+                '-u', f'{self.username}:{self.password}',
+                '-X', 'GET', comp_url,
+                '-H', 'Accept: application/json',
+                '-H', 'OSLC-Core-Version: 2.0'
+            ]
+            result = subprocess.run(
+                comp_curl, capture_output=True, text=True, timeout=15,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                logger.warning(f"Failed to fetch component metadata for {component_name}")
+                return {'folders': {}, 'files': []}
+            comp_data = json.loads(result.stdout)
+            root_folder = comp_data.get('rootFolder', {})
+            root_folder_id = root_folder.get('itemId', '')
+            if not root_folder_id:
+                logger.warning(f"No root folder in component {component_name}")
+                return {'folders': {}, 'files': []}
+            
+            if not root_folder_id.startswith('_'):
+                root_folder_id = '_' + root_folder_id
+            
+            # Step 3: Recursively fetch folder tree
+            logger.info(f"Traversing folder tree from root: {root_folder_id[:12]}...")
+            structure = self._fetch_folder_recursively(root_folder_id, baseline_uuid, max_depth=10)
+            
+            num_files = len(structure.get('files', []))
+            num_folders = len(structure.get('folders', {}))
+            logger.info(f"✓ Fetched structure: {num_folders} folders, {num_files} files")
+            return structure
+            
         except Exception as e:
             logger.error(f"Error fetching baseline structure for {component_name}: {e}")
+            import traceback; logger.debug(traceback.format_exc())
             return {'folders': {}, 'files': []}
+    
+    def _fetch_folder_recursively(self, folder_id, baseline_uuid, depth=0, max_depth=10, current_path=''):
+        """Recursively fetch folder contents via RTC REST API."""
+        if depth > max_depth:
+            return {'folders': {}, 'files': []}
+        try:
+            # Ensure folder_id has '_' prefix for REST API
+            if not folder_id.startswith('_'):
+                folder_id = '_' + folder_id
+            
+            folder_url = f'{self.server_url}/service/com.ibm.team.filesystem.service.rest.IVersionableRestService/folder/{folder_id}/children'
+            curl_cmd = [
+                'curl.exe', '-k', '-L', '--noproxy', '*',
+                '-u', f'{self.username}:{self.password}',
+                '-X', 'GET', folder_url,
+                '-H', 'Accept: application/json',
+                '-H', 'OSLC-Core-Version: 2.0'
+            ]
+            result = subprocess.run(curl_cmd, capture_output=True, text=True, timeout=30,
+                                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+            if result.returncode != 0:
+                return {'folders': {}, 'files': []}
+            
+            try:
+                data = json.loads(result.stdout)
+            except Exception:
+                return {'folders': {}, 'files': []}
+            
+            # The response may use different keys
+            children = data.get('children', []) or data.get('versionables', []) or []
+            
+            structure = {'folders': {}, 'files': []}
+            
+            for child in children:
+                if not isinstance(child, dict):
+                    continue
+                child_name = child.get('name', '')
+                child_type = child.get('type', '') or child.get('itemType', '')
+                child_id   = child.get('itemId', child.get('uuid', ''))
+                
+                if not child_name:
+                    continue
+                
+                # Folder?
+                if 'folder' in child_type.lower() or child_type == 'com.ibm.team.filesystem.Folder':
+                    subfolder_name = child_name
+                    subfolder_path = f"{current_path}/{subfolder_name}" if current_path else subfolder_name
+                    structure['folders'][subfolder_name] = self._fetch_folder_recursively(
+                        child_id, baseline_uuid, depth+1, max_depth, subfolder_path
+                    )
+                # File?
+                elif 'file' in child_type.lower() or child_type == 'com.ibm.team.filesystem.FileItem':
+                    file_path = f"{current_path}/{child_name}" if current_path else child_name
+                    structure['files'].append({
+                        'name': child_name,
+                        'path': file_path,
+                        'uuid': child_id,
+                        'content-id': child.get('contentId', child.get('content-id', '')),
+                        'state-id'  : child.get('stateId', child.get('state-id', ''))
+                    })
+                else:
+                    # Unknown type — treat conservatively as file
+                    file_path = f"{current_path}/{child_name}" if current_path else child_name
+                    structure['files'].append({
+                        'name': child_name,
+                        'path': file_path,
+                        'uuid': child_id,
+                        'content-id': child.get('contentId', child.get('content-id', '')),
+                        'state-id'  : child.get('stateId', child.get('state-id', ''))
+                    })
+            return structure
+            
+        except Exception as e:
+            logger.debug(f"Error fetching folder {folder_id[:12]}: {e}")
+            return {'folders': {}, 'files': []}
+    
+    @staticmethod
+    def _get_all_files_from_structure(structure, parent_path=''):
+        """
+        Recursively extract all files from a nested folder structure.
+        
+        Returns: dict {file_path: file_info_dict}
+        """
+        files = {}
+        if not structure:
+            return files
+        
+        # Add files at this level
+        for file_item in structure.get('files', []):
+            if isinstance(file_item, dict):
+                file_name = file_item.get('name', '')
+                if file_name:
+                    file_path = f"{parent_path}/{file_name}" if parent_path else file_name
+                    files[file_path] = file_item
+            elif isinstance(file_item, str):
+                file_path = f"{parent_path}/{file_item}" if parent_path else file_item
+                files[file_path] = {'name': file_item}
+        
+        # Recurse into subfolders
+        for folder_name, folder_content in structure.get('folders', {}).items():
+            folder_path = f"{parent_path}/{folder_name}" if parent_path else folder_name
+            subfolder_files = RTCConnection._get_all_files_from_structure(folder_content, folder_path)
+            files.update(subfolder_files)
+        
+        return files
     
     def compare_folder_structures(self, folder1, folder2):
         """
-        Compare two folder structures from baselines
+        Compare two folder structures from baselines.
         
-        Returns: dict with comparison results
-        {
-            'added': N,
-            'modified': N,
-            'removed': N,
-            'unchanged': N,
-            'details': {file_path: status}
+        Returns: {
+            'added': int,
+            'modified': int,
+            'removed': int,
+            'unchanged': int,
+            'details': {file_path: 'added'|'removed'|'modified'|'unchanged'}
         }
         """
         try:
-            files1 = set((f['path'], f['uuid']) for f in folder1.get('files', []))
-            files2 = set((f['path'], f['uuid']) for f in folder2.get('files', []))
+            if not folder1 and not folder2:
+                return {'added': 0, 'modified': 0, 'removed': 0, 'unchanged': 0, 'details': {}}
             
-            paths1 = {f[0]: f[1] for f in files1}
-            paths2 = {f[0]: f[1] for f in files2}
+            # Recursively collect all files with full metadata
+            files1 = self._get_all_files_from_structure(folder1, '')
+            files2 = self._get_all_files_from_structure(folder2, '')
             
-            all_paths = set(paths1.keys()) | set(paths2.keys())
+            paths1 = set(files1.keys())
+            paths2 = set(files2.keys())
             
-            added = 0
-            modified = 0
-            removed = 0
-            unchanged = 0
+            all_paths = paths1 | paths2
+            added = modified = removed = unchanged = 0
             details = {}
             
             for path in sorted(all_paths):
-                uuid1 = paths1.get(path)
-                uuid2 = paths2.get(path)
+                f1 = files1.get(path)
+                f2 = files2.get(path)
                 
-                if uuid1 and uuid2:
-                    if uuid1 == uuid2:
-                        details[path] = 'unchanged'
-                        unchanged += 1
-                    else:
+                if f1 and f2:
+                    # File exists in both — compare content identifiers
+                    content1 = f1.get('content-id', '')
+                    content2 = f2.get('content-id', '')
+                    state1   = f1.get('state-id', '')
+                    state2   = f2.get('state-id', '')
+                    uuid1    = f1.get('uuid', '')
+                    uuid2    = f2.get('uuid', '')
+                    
+                    # Determine modification using priority: state-id > content-id > uuid
+                    is_modified = False
+                    has_identifiers = False
+                    
+                    if state1 and state2:
+                        has_identifiers = True
+                        if state1 != state2:
+                            is_modified = True
+                    elif content1 and content2:
+                        has_identifiers = True
+                        if content1 != content2:
+                            is_modified = True
+                    elif uuid1 and uuid2:
+                        has_identifiers = True
+                        if uuid1 != uuid2:
+                            is_modified = True
+                    
+                    if not has_identifiers:
+                        # Cannot verify equality — assume modified to avoid false negatives
+                        is_modified = True
+                    
+                    if is_modified:
                         details[path] = 'modified'
                         modified += 1
-                elif uuid2:
+                    else:
+                        details[path] = 'unchanged'
+                        unchanged += 1
+                elif f2:
                     details[path] = 'added'
                     added += 1
                 else:
@@ -697,16 +812,9 @@ class RTCConnection:
                 'unchanged': unchanged,
                 'details': details
             }
-            
         except Exception as e:
             logger.error(f"Error comparing folder structures: {e}")
-            return {
-                'added': 0,
-                'modified': 0,
-                'removed': 0,
-                'unchanged': 0,
-                'details': {}
-            }
+            return {'added': 0, 'modified': 0, 'removed': 0, 'unchanged': 0, 'details': {}}
 
 
 def get_rtc_connection(username, password, server_url=None):
