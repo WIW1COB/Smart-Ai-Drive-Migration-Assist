@@ -375,6 +375,85 @@ class ChatEngine:
 
 
 # ===========================================================================
+# LAYER 2b — Groq Chat Engine  (primary LLM provider; uses Groq API)
+# ===========================================================================
+
+class GroqChatEngine:
+    """
+    Groq API wrapper for the migration assistant.
+    
+    Thread-safe chat-completions client using the Groq API.
+    Preferred over AOAI when GROQ_API_KEY is available.
+    Supports corporate proxy configuration.
+    """
+
+    def __init__(self, api_key: str, model: str = "llama-3.3-70b-versatile",
+                 proxy_url: str | None = None) -> None:
+        """
+        Initialize Groq engine.
+        
+        Args:
+            api_key: Groq API key (from environment GROQ_API_KEY)
+            model: Model name (e.g., 'llama-3.1-70b-versatile')
+            proxy_url: Optional proxy URL (e.g., 'http://proxy:8080')
+        """
+        self.api_key = api_key.strip() if api_key else ""
+        self.model = model
+        self.proxy_url = proxy_url
+
+    def complete(self, messages: List[Dict]) -> str:
+        """
+        POST a messages list to Groq, return the assistant text.
+        
+        Args:
+            messages: List of message dicts with 'role' and 'content' keys.
+            
+        Returns:
+            str: The assistant's response text.
+            
+        Raises:
+            RuntimeError: On any API failure.
+        """
+        if not self.api_key:
+            raise RuntimeError("Groq API key not set (GROQ_API_KEY environment variable).")
+        
+        try:
+            from groq import Groq
+        except ImportError:
+            raise ImportError(
+                "groq library not installed. Install it with: pip install groq"
+            )
+        
+        try:
+            # Create Groq client with optional proxy
+            client_kwargs = {"api_key": self.api_key}
+            
+            # Only set http_client if we have a proxy, as it's optional
+            if self.proxy_url:
+                try:
+                    import httpx
+                    http_client = httpx.Client(
+                        proxies=self.proxy_url,
+                        verify=False  # Bypass SSL for internal networks
+                    )
+                    client_kwargs["http_client"] = http_client
+                except Exception as proxy_err:
+                    # Warn but don't fail - try without proxy
+                    print(f"[WARN] Failed to configure proxy for Groq: {proxy_err}")
+            
+            client = Groq(**client_kwargs)
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=2000,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as exc:
+            raise RuntimeError(f"Groq API request failed: {exc}") from exc
+
+
+# ===========================================================================
 # LAYER 3 — CodeChatbot  (business logic; NO UI dependency)
 # ===========================================================================
 

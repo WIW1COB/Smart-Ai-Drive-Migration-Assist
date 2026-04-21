@@ -1,5 +1,6 @@
 """Comparison-aware chatbot for offline and online results."""
 
+import ast
 import difflib
 import os
 import re
@@ -11,9 +12,14 @@ from tkinter import filedialog, messagebox, scrolledtext
 class ComparisonAssistantWindow:
     """Small agentic assistant grounded in the active comparison results."""
 
+    MAX_CHAT_COPY_CHARS = 200_000
+    MAX_FILE_READ_CHARS = 60_000
+    MAX_DIFF_LINES = 220
+
     OUT_OF_SCOPE_REPLY = (
-        "Out of scope. Kindly ask about RTC snapshot differences, changesets, "
-        "selected components, interface analysis, or offline/online comparison results."
+        "I'm specialized in migration analysis, code comparison, and RTC integration. "
+        "This question is outside my focus area. Please ask about file differences, "
+        "component analysis, migration risks, or code quality insights for this tool."
     )
 
     IN_SCOPE_TERMS = {
@@ -30,9 +36,16 @@ class ComparisonAssistantWindow:
         self.viewer = viewer
         self.busy = False
         self.engine = self._build_chat_engine()
+        
+        # Conversation history & memory
+        self.conversation_history = []  # List of {"role": "user"|"assistant", "content": "..."}
+        self.max_history_turns = 10  # Keep last 10 turns for context
+        
         self.last_question = ""
         self.last_context = ""
         self.last_reply = ""
+        self.engine_tested = False  # Track if we've tested the engine
+        self.engine_working = False  # Track if engine is actually working
 
         self.window = tk.Toplevel(parent)
         self.window.title("Migration Assistant")
@@ -44,16 +57,8 @@ class ComparisonAssistantWindow:
         self.window.grid_rowconfigure(1, weight=1)
 
         self._build_ui()
-        self._append_bot(
-            "Hi. I can answer from this comparison result.\n\n"
-            "Try:\n"
-            "- Summarize this comparison\n"
-            "- Tell differences for selected file\n"
-            "- What changed in <file or component name>?\n"
-            "- List modified files\n"
-            "- Open reports folder\n"
-            "- Run interface analysis"
-        )
+        self._show_startup_message()
+        self.entry.focus_set()
 
     def _build_ui(self):
         header = tk.Frame(self.window, bg="#003366", height=78)
@@ -68,10 +73,10 @@ class ComparisonAssistantWindow:
         tk.Label(title_group, text="Grounded in this comparison result", font=("Segoe UI", 9),
                  bg="#003366", fg="#B8D8FF").pack(anchor="w", pady=(2, 0))
 
-        mode = "Online-Online" if self.viewer.online_context else "Offline"
-        ai_state = "AI polish on" if self.engine else "Local agent mode"
-        badge = tk.Label(header, text=f"{mode} | {ai_state}", font=("Segoe UI", 10, "bold"),
-                         bg="#0F5C8C", fg="white", padx=12, pady=7)
+        # Show only AI state in badge (cleaner display)
+        ai_state = self._get_ai_state_label()
+        badge = tk.Label(header, text=ai_state, font=("Segoe UI", 11, "bold"),
+                         bg="#0F5C8C", fg="white", padx=14, pady=8)
         badge.pack(side="right", padx=18)
 
         body = tk.Frame(self.window, bg="#ECF2F6")
@@ -83,6 +88,7 @@ class ComparisonAssistantWindow:
         sidebar.grid(row=0, column=0, sticky="ns", padx=(0, 10))
         sidebar.grid_propagate(False)
 
+        mode = "Online-Online" if self.viewer.online_context else "Offline"
         context_text = self._context_card_text(mode)
         tk.Label(sidebar, text=context_text, font=("Segoe UI", 9), bg="#CFE0EC",
                  fg="#17364A", justify="left", anchor="nw", wraplength=215,
@@ -140,7 +146,7 @@ class ComparisonAssistantWindow:
         self.chat = scrolledtext.ScrolledText(
             chat_frame,
             wrap="word",
-            state="disabled",
+            state="normal",
             bg="#FFFFFF",
             fg="#17212B",
             font=("Segoe UI", 10),
@@ -149,6 +155,28 @@ class ComparisonAssistantWindow:
             pady=14
         )
         self.chat.grid(row=0, column=0, sticky="nsew")
+        # Keep the transcript read-only while still allowing selection/copy.
+        # Block only text-editing keys; allow selection and copy
+        self.chat.bind("<Key>", self._on_chat_key)
+        self.chat.bind("<<Paste>>", lambda _e: "break")
+        self.chat.bind("<Control-v>", lambda _e: "break")
+        self.chat.bind("<Control-c>", self._copy_chat_selection)
+        self.chat.bind("<Control-a>", self._select_all_chat)
+        self.chat.bind("<Button-3>", self._show_chat_menu)  # right-click
+        # Avoid the "text disappears" effect on some themes when focus/hover changes.
+        self.chat.config(
+            selectbackground="#CDE8FF",
+            inactiveselectbackground="#CDE8FF",
+            selectforeground="#17212B",
+        )
+
+        self._chat_menu = tk.Menu(self.window, tearoff=0)
+        self._chat_menu.add_command(label="Copy selection", command=self._copy_chat_selection)
+        self._chat_menu.add_command(label="Copy last answer", command=self._copy_last_answer)
+        self._chat_menu.add_command(label="Copy all", command=self._copy_all_chat)
+        self._chat_menu.add_separator()
+        self._chat_menu.add_command(label="Save last answer...", command=self._save_last_answer)
+
         self.chat.tag_config("user_label", foreground="#007B3E", font=("Segoe UI", 9, "bold"), spacing1=8)
         self.chat.tag_config("bot_label", foreground="#003366", font=("Segoe UI", 9, "bold"), spacing1=8)
         self.chat.tag_config("user", background="#E8F5E9", lmargin1=24, lmargin2=24, rmargin=110, spacing1=4, spacing3=10)
@@ -237,7 +265,8 @@ class ComparisonAssistantWindow:
             self._after_reply(self.OUT_OF_SCOPE_REPLY, question)
             return
 
-        local_context = self._build_context(question)
+        intent = self._classify_intent(question)
+        local_context = self._build_context(question, intent=intent)
         self.last_context = local_context
         if not self.engine:
             self._append_bot(local_context)
@@ -248,7 +277,7 @@ class ComparisonAssistantWindow:
 
         def worker():
             try:
-                reply = self._ask_model(question, local_context)
+                reply = self._ask_model(question, local_context, intent=intent)
             except Exception as exc:
                 reply = local_context + f"\n\nAI polish unavailable: {exc}"
             self.window.after(0, lambda: self._finish_reply(reply))
@@ -260,6 +289,8 @@ class ComparisonAssistantWindow:
         if "open" in q and "report" in q:
             self.viewer.open_reports_folder()
             return "Opened the reports folder."
+        if "copy" in q and ("last" in q or "answer" in q):
+            return self._copy_last_answer()
         if "save" in q and ("answer" in q or "chat" in q):
             return self._save_last_answer()
         if ("run" in q or "open" in q or "start" in q) and "interface" in q:
@@ -281,9 +312,42 @@ class ComparisonAssistantWindow:
         # A direct file/component name is also valid even if the wording is short.
         return self._find_best_result(question) is not None
 
-    def _build_context(self, question):
+    def _classify_intent(self, question: str) -> str:
+        q = (question or "").lower()
+        if q.strip().startswith("/read") or ("read" in q and "file" in q):
+            return "read_file"
+        if q.strip().startswith("/diff") or ("diff" in q and "file" in q and ("between" in q or "and" in q)):
+            return "diff_files"
+        if q.strip().startswith("/review") or any(w in q for w in ["review", "lint", "syntax", "static check", "code review"]):
+            return "review_file"
+        if "difference" in q or "differences" in q or "diff" in q:
+            return "diff_selected"
+        if any(w in q for w in ["summary", "summarize", "overview", "status"]):
+            return "summary"
+        if any(w in q for w in ["modified", "different", "changed"]):
+            return "list_changed"
+        if any(w in q for w in ["risk", "risky", "inspect next", "priority"]):
+            return "next_steps"
+        return "general"
+
+    def _build_context(self, question, intent="general"):
         match = self._find_best_result(question)
         lowered = question.lower()
+
+        if intent == "read_file":
+            ctx = self._context_read_file(question)
+            if ctx:
+                return ctx
+
+        if intent == "diff_files":
+            ctx = self._context_diff_files(question)
+            if ctx:
+                return ctx
+
+        if intent == "review_file":
+            ctx = self._context_review_file(question)
+            if ctx:
+                return ctx
 
         if match:
             return self._describe_result(match, include_diff=True)
@@ -325,6 +389,232 @@ class ComparisonAssistantWindow:
             "Mention the file/component name, or select a row and ask about the selected file."
         )
 
+    def _context_read_file(self, question: str) -> str | None:
+        ref = self._extract_single_path_or_name(question)
+        if not ref and self.viewer.current_file:
+            ref = self.viewer.current_file
+        if not ref:
+            return "To read a file, mention a file name/path (or select a row and ask: 'read selected file')."
+
+        paths = self._resolve_paths_from_reference(ref)
+        if not paths:
+            return f"I couldn't resolve '{ref}' to a local file in the compared sources."
+
+        blocks = ["Read file"]
+        for label, path in paths:
+            content, note = self._safe_read_text(path)
+            blocks.append(f"- {label}: {path}{note}")
+            blocks.append("```\n" + content + "\n```")
+        return "\n".join(blocks)
+
+    def _context_diff_files(self, question: str) -> str | None:
+        a, b = self._extract_two_paths_or_names(question)
+        if not a and self.viewer.current_file:
+            # Fallback: diff selected file across sources.
+            a = self.viewer.current_file
+            b = self.viewer.current_file
+        if not a:
+            return "To diff files, provide two paths/names (or ask: 'diff selected file')."
+
+        left = self._resolve_single_path(a, side_preference="source1")
+        right = self._resolve_single_path(b or a, side_preference="source2")
+        if not left or not right:
+            return f"Could not resolve both files for diff. Left={left or 'N/A'}, Right={right or 'N/A'}."
+
+        diff = self._make_text_diff(left, right, max_lines=self.MAX_DIFF_LINES)
+        return "\n".join([
+            "Diff files",
+            f"- Left: {left}",
+            f"- Right: {right}",
+            "",
+            diff,
+        ])
+
+    def _context_review_file(self, question: str) -> str | None:
+        ref = self._extract_single_path_or_name(question)
+        if not ref and self.viewer.current_file:
+            ref = self.viewer.current_file
+        if not ref:
+            return "To review a file, mention a file name/path (or select a row and ask: 'review selected file')."
+
+        path = self._resolve_single_path(ref)
+        if not path:
+            return f"I couldn't resolve '{ref}' to a local file path."
+
+        content, note = self._safe_read_text(path)
+        findings = self._basic_static_review(path, content)
+        parts = ["Code review (local checks)", f"- File: {path}{note}"]
+        parts.extend(findings)
+        parts.append("\nFile excerpt:")
+        parts.append("```\n" + content + "\n```")
+        return "\n".join(parts)
+
+    def _extract_single_path_or_name(self, text: str) -> str | None:
+        if not text:
+            return None
+        stripped = text.strip()
+        # Slash-commands: /read path, /review path
+        m = re.match(r"^/(read|review)\s+(.+)$", stripped, flags=re.IGNORECASE)
+        if m:
+            return m.group(2).strip().strip('"').strip("'")
+
+        # Quoted path/name
+        m = re.search(r"['\"]([^'\"]{2,})['\"]", text)
+        if m:
+            return m.group(1).strip()
+
+        # Windows drive absolute path
+        m = re.search(r"([A-Za-z]:\\[^\n\r\t]+)", text)
+        if m:
+            return m.group(1).strip().rstrip(".,;:")
+
+        # Likely relative path tokens
+        m = re.search(r"([\w][\w\-./\\]+\.[A-Za-z0-9]{1,6})", text)
+        if m:
+            return m.group(1).strip().rstrip(".,;:")
+
+        # Fall back: try matching a comparison result by file/component name.
+        match = self._find_best_result(text)
+        if match:
+            return str(match[0])
+        return None
+
+    def _extract_two_paths_or_names(self, text: str) -> tuple[str | None, str | None]:
+        if not text:
+            return (None, None)
+
+        stripped = text.strip()
+        m = re.match(r"^/diff\s+(.+)$", stripped, flags=re.IGNORECASE)
+        if m:
+            tail = m.group(1).strip()
+            parts = re.split(r"\s+", tail, maxsplit=1)
+            if len(parts) == 2:
+                return (parts[0].strip().strip('"').strip("'"), parts[1].strip().strip('"').strip("'"))
+            return (tail, None)
+
+        # Try: diff A and B / diff A vs B / diff A between B
+        for sep in [" vs ", " versus ", " and ", " between "]:
+            if sep in text.lower():
+                left, right = re.split(sep, text, maxsplit=1, flags=re.IGNORECASE)
+                return (self._extract_single_path_or_name(left), self._extract_single_path_or_name(right))
+
+        # Fallback: extract first two path-like tokens.
+        tokens = re.findall(r"([A-Za-z]:\\[^\s]+|[\w][\w\-./\\]+\.[A-Za-z0-9]{1,6})", text)
+        if len(tokens) >= 2:
+            return (tokens[0], tokens[1])
+        if len(tokens) == 1:
+            return (tokens[0], None)
+        return (None, None)
+
+    def _project_root(self) -> str:
+        here = os.path.abspath(os.path.dirname(__file__))
+        return os.path.abspath(os.path.join(here, os.pardir, os.pardir))
+
+    def _is_allowed_root(self, abs_path: str) -> bool:
+        abs_path = os.path.abspath(abs_path)
+        roots = []
+        for attr in ["folder1_actual", "folder2_actual"]:
+            root = getattr(self.viewer, attr, None)
+            if root:
+                roots.append(os.path.abspath(root))
+        roots.append(self._project_root())
+        return any(abs_path.startswith(r + os.sep) or abs_path == r for r in roots)
+
+    def _confirm_external_read(self, abs_path: str) -> bool:
+        if self._is_allowed_root(abs_path):
+            return True
+        return messagebox.askyesno(
+            "Read External File?",
+            "You asked to read a file outside the compared folders / project root:\n\n"
+            f"{abs_path}\n\nProceed?",
+            parent=self.window,
+        )
+
+    def _safe_read_text(self, path: str) -> tuple[str, str]:
+        abs_path = os.path.abspath(path)
+        if not os.path.isfile(abs_path):
+            return (f"(File not found)\n{abs_path}", "")
+        if not self._confirm_external_read(abs_path):
+            return ("(Read cancelled by user)", "")
+
+        try:
+            with open(abs_path, "r", encoding="utf-8", errors="replace") as handle:
+                content = handle.read(self.MAX_FILE_READ_CHARS + 1)
+            if len(content) > self.MAX_FILE_READ_CHARS:
+                return (content[: self.MAX_FILE_READ_CHARS] + "\n...[truncated]...\n", " (truncated)")
+            return (content, "")
+        except Exception as exc:
+            return (f"(Could not read file: {exc})\n{abs_path}", "")
+
+    def _resolve_paths_from_reference(self, ref: str) -> list[tuple[str, str]]:
+        if not ref:
+            return []
+        # Absolute path
+        if os.path.isabs(ref) and os.path.isfile(ref):
+            return [("File", ref)]
+
+        # If it's a comparison result name, prefer mapping to both sources.
+        row = self._result_by_name(ref)
+        if row:
+            name = str(row[0])
+            out = []
+            p1 = self.viewer.files1.get(name)
+            p2 = self.viewer.files2.get(name)
+            if p1:
+                out.append(("Source 1", p1))
+            if p2:
+                out.append(("Source 2", p2))
+            return out
+
+        # Otherwise try to locate by file basename in both maps.
+        needle = os.path.basename(ref).lower()
+        out = []
+        for label, mapping in [("Source 1", getattr(self.viewer, "files1", {})), ("Source 2", getattr(self.viewer, "files2", {}))]:
+            for name, path in (mapping or {}).items():
+                if os.path.basename(str(name)).lower() == needle and path:
+                    out.append((label, path))
+                    break
+        return out
+
+    def _resolve_single_path(self, ref: str, side_preference: str | None = None) -> str | None:
+        if not ref:
+            return None
+        if os.path.isabs(ref):
+            return ref
+
+        paths = self._resolve_paths_from_reference(ref)
+        if not paths:
+            return None
+        if side_preference == "source2":
+            for label, path in paths:
+                if label == "Source 2":
+                    return path
+        if side_preference == "source1":
+            for label, path in paths:
+                if label == "Source 1":
+                    return path
+        return paths[0][1]
+
+    def _basic_static_review(self, path: str, content: str) -> list[str]:
+        ext = os.path.splitext(path)[1].lower()
+        findings = []
+        if ext in (".py",):
+            try:
+                ast.parse(content)
+                findings.append("- Python syntax: OK")
+            except SyntaxError as exc:
+                findings.append(f"- Python syntax: ERROR at line {exc.lineno}, col {exc.offset}: {exc.msg}")
+        else:
+            findings.append(f"- Syntax check: not available for '{ext or 'no extension'}' (local).")
+
+        if "\t" in content and "    " in content:
+            findings.append("- Style note: mixed tabs/spaces detected.")
+        if "TODO" in content or "FIXME" in content:
+            findings.append("- Hygiene: TODO/FIXME markers present.")
+        if not findings:
+            findings.append("- No local findings.")
+        return findings
+
     def _context_card_text(self, mode):
         counts = {}
         for row in self.viewer.results:
@@ -337,6 +627,52 @@ class ComparisonAssistantWindow:
             f"Only source 1: {counts.get('Only in Platform', 0) + counts.get('Only in Snapshot 1', 0)}\n"
             f"Only source 2: {counts.get('Only in Project', 0) + counts.get('Only in Snapshot 2', 0)}"
         )
+
+    def _get_ai_state_label(self) -> str:
+        """Return a human-readable AI state label based on the engine type."""
+        if not self.engine:
+            return "⚫ Local agent"
+        
+        engine_class_name = self.engine.__class__.__name__
+        if "Groq" in engine_class_name:
+            return "🤖 Groq AI"
+        elif "ChatEngine" in engine_class_name:
+            return "🔵 Azure OpenAI"
+        else:
+            return "✨ AI enabled"
+
+    def _show_startup_message(self):
+        """Display startup message showing AI readiness."""
+        ai_status = self._get_ai_state_label()
+        if self.engine:
+            greeting = (
+                f"{ai_status}\n\n"
+                "I'm ready to help with your code migration analysis.\n\n"
+                "I can:\n"
+                "• Explain file differences and migration risks\n"
+                "• Open files and generate diffs\n"
+                "• Remember our conversation for follow-ups\n"
+                "• Execute actions (open files, copy, etc.)\n\n"
+                "Try asking:\n"
+                "- Summarize this comparison\n"
+                "- What changed in <file name>?\n"
+                "- Open the selected file\n"
+                "- Review <file> for issues"
+            )
+        else:
+            greeting = (
+                "⚫ Local agent (offline mode)\n\n"
+                "AI engine unavailable. I'm running in local mode.\n"
+                "I can still help with:\n"
+                "• File operations (open, copy, diff)\n"
+                "• Local analysis (syntax review)\n"
+                "• Conversation memory\n\n"
+                "To enable Groq AI:\n"
+                "1. Set GROQ_API_KEY in your .env file\n"
+                "2. Restart the tool\n"
+                "See GROQ_SETUP.md for details."
+            )
+        self._append_bot(greeting)
 
     def _comparison_summary(self):
         counts = {}
@@ -439,7 +775,13 @@ class ComparisonAssistantWindow:
             lines.append("- Interpretation: the selected component points to different baselines between snapshots.")
         return lines
 
-    def _make_text_diff(self, path1, path2):
+    def _make_text_diff(self, path1, path2, max_lines=140):
+        abs1 = os.path.abspath(path1)
+        abs2 = os.path.abspath(path2)
+        if os.path.isfile(abs1) and not self._confirm_external_read(abs1):
+            return "(Diff cancelled by user for left file)"
+        if os.path.isfile(abs2) and not self._confirm_external_read(abs2):
+            return "(Diff cancelled by user for right file)"
         try:
             with open(path1, "r", encoding="utf-8", errors="replace") as f1:
                 left = f1.readlines()
@@ -457,8 +799,8 @@ class ComparisonAssistantWindow:
         ))
         if not diff:
             return "No textual differences detected."
-        if len(diff) > 140:
-            diff = diff[:140] + ["... diff truncated; open HTML diff for full view.\n"]
+        if len(diff) > max_lines:
+            diff = diff[:max_lines] + ["... diff truncated; open HTML diff for full view.\n"]
         return "```diff\n" + "".join(diff) + "\n```"
 
     def _find_best_result(self, question):
@@ -492,45 +834,313 @@ class ComparisonAssistantWindow:
         return None
 
     def _build_chat_engine(self):
+        """Build chat engine: tries Groq first, then AOAI (if available)."""
         try:
             from src.config import settings
-            key = getattr(settings, "AOAI_FARM_SUBSCRIPTION_KEY", "")
-            if not key:
-                return None
-            from src.chatbot.chatbot import ChatConfig, ChatEngine
-            endpoint_base = getattr(settings, "AOAI_FARM_ENDPOINT", "").rstrip("/")
-            deployment = getattr(settings, "AOAI_CHAT_DEPLOYMENT", None) or getattr(settings, "AOAI_FARM_DEPLOYMENT", "")
-            api_version = getattr(settings, "AOAI_CHAT_API_VERSION", None) or getattr(settings, "AOAI_FARM_API_VERSION", "")
-            endpoint = f"{endpoint_base}/openai/deployments/{deployment}/chat/completions?api-version={api_version}"
-            cfg = ChatConfig(
-                api_key=key,
-                endpoint=endpoint,
-                # Bosch AOAI GPT-5 chat-completions deployments accept the
-                # same minimal body that works in Postman: {"messages": ...}.
-                # Legacy params like temperature/max_tokens can produce 400s.
-                temperature=None,
-                max_tokens=None,
-                timeout_sec=90
-            )
-            return ChatEngine(cfg)
-        except Exception:
+            
+            # ========== Try Groq (Primary) ==========
+            groq_key = getattr(settings, "GROQ_API_KEY", "")
+            if groq_key and groq_key.strip():
+                try:
+                    from src.chatbot.chatbot import GroqChatEngine
+                    groq_model = getattr(settings, "GROQ_MODEL", "llama-3.1-70b-versatile")
+                    
+                    # Pass proxy URL if configured
+                    proxy_url = getattr(settings, "PROXY_URL", "")
+                    if proxy_url and proxy_url.strip():
+                        print(f"[INFO] Groq configured with proxy: {proxy_url}")
+                    
+                    engine = GroqChatEngine(
+                        api_key=groq_key,
+                        model=groq_model,
+                        proxy_url=proxy_url if proxy_url and proxy_url.strip() else None
+                    )
+                    # Don't test during initialization - test will happen on first use
+                    print("[INFO] ✅ Groq engine configured (will test on first use)")
+                    return engine
+                except Exception as groq_err:
+                    # Fall through to AOAI if Groq fails
+                    print(f"[WARN] Groq initialization failed: {groq_err}")
+                    import traceback
+                    traceback.print_exc()
+            
+            # ========== Fallback: Try AOAI (Bosch Farm; currently disabled) ==========
+            # Uncomment below when AOAI Farm service is back online.
+            # aoai_key = getattr(settings, "AOAI_FARM_SUBSCRIPTION_KEY", "")
+            # if aoai_key and aoai_key.strip():
+            #     try:
+            #         from src.chatbot.chatbot import ChatConfig, ChatEngine
+            #         endpoint_base = getattr(settings, "AOAI_FARM_ENDPOINT", "").rstrip("/")
+            #         deployment = getattr(settings, "AOAI_CHAT_DEPLOYMENT", None) or getattr(settings, "AOAI_FARM_DEPLOYMENT", "")
+            #         api_version = getattr(settings, "AOAI_CHAT_API_VERSION", None) or getattr(settings, "AOAI_FARM_API_VERSION", "")
+            #         endpoint = f"{endpoint_base}/openai/deployments/{deployment}/chat/completions?api-version={api_version}"
+            #         cfg = ChatConfig(
+            #             api_key=aoai_key,
+            #             endpoint=endpoint,
+            #             temperature=None,
+            #             max_tokens=None,
+            #             timeout_sec=90
+            #         )
+            #         return ChatEngine(cfg)
+            #     except Exception as aoai_err:
+            #         print(f"[INFO] AOAI initialization failed: {aoai_err}")
+            
+            print("[INFO] No LLM engine available. Running in local agent mode.")
+            return None
+        except Exception as exc:
+            print(f"[ERROR] Chat engine initialization failed: {exc}")
             return None
 
-    def _ask_model(self, question, local_context):
-        system = (
-            "You are a migration-analysis assistant inside a desktop comparison tool. "
-            f"If the user asks anything unrelated, reply exactly: {self.OUT_OF_SCOPE_REPLY} "
-            "Answer only from the provided comparison context. If the context is insufficient, say exactly what is missing. "
-            "Be concise, practical, and mention whether the row is offline file-level data or online component/baseline data."
+    def _ask_model(self, question, local_context, intent="general"):
+        system = self._system_prompt(intent=intent)
+        
+        # Build messages with conversation history
+        messages = []
+        
+        # Add system prompt
+        messages.append({"role": "system", "content": system})
+        
+        # Add conversation history (last N turns)
+        for msg in self.conversation_history[-self.max_history_turns:]:
+            messages.append(msg)
+        
+        # Add current user question
+        messages.append({
+            "role": "user",
+            "content": f"User question:\n{question}\n\nComparison/tool context:\n{local_context}"
+        })
+        
+        try:
+            reply = self.engine.complete(messages)
+            # Add to history
+            self.conversation_history.append({"role": "user", "content": question})
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            # Trim history if too long
+            if len(self.conversation_history) > self.max_history_turns * 2:
+                self.conversation_history = self.conversation_history[-self.max_history_turns * 2:]
+            return reply
+        except Exception as exc:
+            raise RuntimeError(f"Model call failed: {exc}") from exc
+
+    def _execute_agent_action(self, action_name: str, args: dict = None) -> str:
+        """Execute an agentic action (tool call). Called when the model requests an action."""
+        args = args or {}
+        
+        try:
+            if action_name == "open_file":
+                filename = args.get("filename", None)
+                file_ref = args.get("file_ref", None)
+                return self._action_open_file(filename=filename, file_ref=file_ref)
+            elif action_name == "view_diff":
+                return self._action_view_diff()
+            elif action_name == "open_reports":
+                self.viewer.open_reports_folder()
+                return "Opened reports folder."
+            elif action_name == "run_interface_analysis":
+                self.window.after(100, self.viewer.open_interface_analysis_tool)
+                return "Starting interface analysis..."
+            elif action_name == "select_changed_file":
+                return self._select_first_changed_row()
+            elif action_name == "copy_file":
+                src = args.get("source", "1")
+                dst = args.get("destination", "2")
+                return self._action_copy_file(src, dst)
+            else:
+                return f"Unknown action: {action_name}"
+        except Exception as exc:
+            return f"Action '{action_name}' failed: {exc}"
+
+    def _action_open_file(self, filename: str = None, file_ref: str = None) -> str:
+        """Open a file by filename or file_ref (f1/f2).
+        
+        Search strategy:
+        1. If filename provided: search in files1/files2 dicts by basename
+        2. If file_ref provided: use currently selected file paths
+        3. Fall back to searching comparison results
+        """
+        import subprocess
+        import platform as sys_platform
+        
+        path_to_open = None
+        file_name_display = None
+        source_label = None
+        
+        # Strategy 1: If filename is specified, search in the files dictionaries
+        if filename:
+            filename_clean = filename.strip("'\"")
+            basename_clean = os.path.basename(filename_clean).lower()
+            
+            # Search in files1 (Platform/Source 1)
+            for rel_path, abs_path in (self.viewer.files1 or {}).items():
+                if os.path.basename(rel_path).lower() == basename_clean:
+                    if os.path.exists(abs_path):
+                        path_to_open = abs_path
+                        source_label = "Source 1 (Platform)"
+                        file_name_display = rel_path
+                        break
+            
+            # If not found, search in files2 (Project/Source 2)
+            if not path_to_open:
+                for rel_path, abs_path in (self.viewer.files2 or {}).items():
+                    if os.path.basename(rel_path).lower() == basename_clean:
+                        if os.path.exists(abs_path):
+                            path_to_open = abs_path
+                            source_label = "Source 2 (Project)"
+                            file_name_display = rel_path
+                            break
+            
+            # Fallback: Search in comparison results
+            if not path_to_open:
+                for row in self.viewer.results:
+                    name = str(row[0])
+                    if os.path.basename(name).lower() == basename_clean:
+                        path1 = str(row[1]) if len(row) > 1 else None
+                        path2 = str(row[2]) if len(row) > 2 else None
+                        
+                        if path1 and os.path.exists(path1):
+                            path_to_open = path1
+                            source_label = "Source 1 (Platform)"
+                            file_name_display = name
+                        elif path2 and os.path.exists(path2):
+                            path_to_open = path2
+                            source_label = "Source 2 (Project)"
+                            file_name_display = name
+                        if path_to_open:
+                            break
+        
+        # Strategy 2: If file_ref is specified, use current selection from results
+        elif file_ref:
+            file_ref_clean = file_ref.strip("'\"")
+            if "f1" in file_ref_clean.lower() or "source 1" in file_ref_clean.lower() or "platform" in file_ref_clean.lower():
+                if self.viewer.current_path1 and os.path.exists(self.viewer.current_path1):
+                    path_to_open = self.viewer.current_path1
+                    source_label = "Source 1 (Platform)"
+                    file_name_display = self.viewer.current_file
+            elif "f2" in file_ref_clean.lower() or "source 2" in file_ref_clean.lower() or "project" in file_ref_clean.lower():
+                if self.viewer.current_path2 and os.path.exists(self.viewer.current_path2):
+                    path_to_open = self.viewer.current_path2
+                    source_label = "Source 2 (Project)"
+                    file_name_display = self.viewer.current_file
+        
+        if not path_to_open:
+            # Give helpful error message
+            found_where = []
+            if filename:
+                found_where.append(f"file '{filename}' in comparison folders")
+            if file_ref:
+                found_where.append("selected row (nothing selected)")
+            msg = f"Could not open {' or '.join(found_where) if found_where else 'file'}."
+            msg += "\n\nTip: Select a row in the results table first, or ask to open a specific filename."
+            return msg
+        
+        try:
+            if sys_platform.system() == "Windows":
+                subprocess.run(["notepad.exe", path_to_open], check=False)
+            else:
+                subprocess.run(["open", path_to_open], check=False)
+            return f"✓ Opened: {file_name_display}\n({source_label})"
+        except Exception as e:
+            return f"Failed to open file: {e}"
+
+    def _action_view_diff(self) -> str:
+        """Open HTML diff viewer for selected file."""
+        if not self.viewer.current_file:
+            return "No file selected. Please select a row first."
+        self.viewer.open_diff()
+        return f"Opened HTML diff for: {self.viewer.current_file}"
+
+    def _action_copy_file(self, src: str, dst: str) -> str:
+        """Copy file between sources. src/dst can be '1' or '2'."""
+        try:
+            src_num = int(src) if src.isdigit() else 1
+            dst_num = int(dst) if dst.isdigit() else 2
+            if src_num == dst_num:
+                return "Source and destination must be different."
+            self.viewer.copy_file(src_num, dst_num)
+            return f"Copied file from source {src_num} to source {dst_num}: {self.viewer.current_file}"
+        except Exception as e:
+            return f"Copy failed: {e}"
+
+    def _extract_and_execute_actions(self, reply: str) -> list[str]:
+        """Extract [ACTION: ...] patterns from the reply and execute them."""
+        action_pattern = r"\[ACTION:\s*(\w+)\s*\((.*?)\)\s*\]"
+        matches = re.findall(action_pattern, reply)
+        
+        results = []
+        for action_name, args_str in matches:
+            try:
+                # Parse arguments from the string (improved key=value parsing)
+                args = {}
+                if args_str.strip():
+                    # Handle formats like: filename='app_main.c', file_ref='f1', source='1', destination='2'
+                    # Match key='value', key="value", or key=value (unquoted)
+                    arg_pairs = re.findall(r"(\w+)=(?:'([^']*)'|\"([^\"]*)\"|([^,)]*))", args_str)
+                    for key, single_q, double_q, unquoted in arg_pairs:
+                        value = single_q or double_q or unquoted
+                        if value:
+                            args[key] = value.strip()
+                
+                result = self._execute_agent_action(action_name, args)
+                results.append(f"✓ {action_name}: {result}")
+            except Exception as e:
+                results.append(f"✗ {action_name}: {e}")
+        
+        return results
+
+    def _system_prompt(self, intent: str = "general") -> str:
+        # Enterprise-ready guardrails: grounded answers, explicit uncertainty, no hallucinations.
+        # This prompt also teaches the model which knowledge sources are authoritative.
+        intent_hint = {
+            "summary": "Focus on a concise executive summary and next steps.",
+            "diff_selected": "Explain differences and likely impact; keep it actionable.",
+            "diff_files": "Explain the diff at a high level and call out risky changes.",
+            "read_file": "Summarize what the file does based on the excerpt; note truncation.",
+            "review_file": "Provide a code review: correctness, style, migration risk, and suggested edits.",
+            "next_steps": "Prioritize what to inspect next and why.",
+            "list_changed": "Summarize changed items and recommended triage.",
+        }.get(intent, "")
+
+        return (
+            "You are an enterprise-grade migration-analysis assistant inside a desktop comparison tool.\n"
+            "You MUST be grounded in the provided context only. If something is missing, say exactly what you need.\n\n"
+            
+            "CONVERSATION MEMORY:\n"
+            "• You have access to the full conversation history in this session.\n"
+            "• Reference previous exchanges when answering follow-up questions.\n"
+            "• Build on prior context to provide more relevant and personalized answers.\n"
+            "• If the user references earlier decisions or files mentioned before, remember them.\n\n"
+            
+            "AVAILABLE TOOLS (Agentic Actions):\n"
+            "You can suggest or request these actions when appropriate:\n"
+            "• open_file(filename='app_main.c') — Opens the specified file in an editor\n"
+            "  OR: open_file(file_ref='f1'|'f2') — Opens source 1 or source 2 of selected file\n"
+            "• view_diff() — Opens the HTML diff viewer for the selected file\n"
+            "• open_reports() — Opens the reports folder\n"
+            "• run_interface_analysis() — Starts interface analysis on selected components\n"
+            "• select_changed_file() — Auto-selects the first changed row\n"
+            "• copy_file(source='1'|'2', destination='1'|'2') — Copies file between sources\n\n"
+            
+            "TO SUGGEST AN ACTION:\n"
+            "Respond naturally and end your message with a line like:\n"
+            "[ACTION: open_file(filename='app_main.c')]\n"
+            "[ACTION: view_diff()]\n"
+            "[ACTION: copy_file(source='1', destination='2')]\n\n"
+            "TIP: When opening a file, use the actual filename (e.g., 'app_main.c') not the reference.\n"
+            "The tool will find the correct file in the comparison results.\n\n"
+            
+            "Authoritative knowledge sources (in priority order):\n"
+            "1) The comparison/tool context provided in the user message (statuses, paths, counts).\n"
+            "2) Any embedded file excerpts and unified diffs in that context.\n"
+            "3) Online RTC component metadata if explicitly present.\n\n"
+            "Rules:\n"
+            f"- If the user asks anything unrelated, reply exactly: {self.OUT_OF_SCOPE_REPLY}\n"
+            "- Do not invent file contents, baselines, paths, or metrics.\n"
+            "- If a diff/excerpt is truncated, acknowledge it and suggest viewing the full HTML diff.\n"
+            "- Prefer short, structured answers with bullet points and concrete next actions.\n"
+            "- When proposing code changes, give precise edits (function/section names).\n"
+            "- If you suggest an action, make it clear and place it at the end in [ACTION: ...] format.\n\n"
+            f"Intent guidance: {intent_hint}"
         )
-        messages = [
-            {"role": "system", "content": system},
-            {
-                "role": "user",
-                "content": f"User question:\n{question}\n\nComparison/tool context:\n{local_context}"
-            }
-        ]
-        return self.engine.complete(messages)
 
     def _set_busy(self, busy):
         self.busy = busy
@@ -541,7 +1151,17 @@ class ComparisonAssistantWindow:
 
     def _finish_reply(self, reply):
         self._set_busy(False)
+        
+        # Extract and execute suggested actions
+        action_results = self._extract_and_execute_actions(reply)
+        
+        # Display reply
         self._append_bot(reply)
+        
+        # Display action results if any
+        if action_results:
+            self._append_system("\n📌 Actions executed:\n" + "\n".join(action_results))
+        
         self._after_reply(reply, self.last_question)
 
     def _after_reply(self, reply, question):
@@ -648,13 +1268,95 @@ class ComparisonAssistantWindow:
 
     def _append_bot(self, text):
         self._write("\nAssistant\n", "bot_label")
-        self._write(text + "\n", "bot")
+        self._write_with_code_blocks(text + "\n", base_tag="bot")
 
     def _append_system(self, text):
         self._write("\n" + text + "\n", "system")
 
+    def _write_with_code_blocks(self, text: str, base_tag: str) -> None:
+        """Render simple fenced code blocks (```...```) using the `code` tag."""
+        in_code = False
+        for line in text.splitlines(keepends=True):
+            if line.lstrip().startswith("```"):
+                in_code = not in_code
+                self._write(line, "system" if base_tag == "system" else base_tag)
+                continue
+            self._write(line, "code" if in_code else base_tag)
+
     def _write(self, text, tag):
-        self.chat.config(state="normal")
         self.chat.insert("end", text, tag)
-        self.chat.config(state="disabled")
         self.chat.see("end")
+
+    def _show_chat_menu(self, event=None):
+        try:
+            self._chat_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self._chat_menu.grab_release()
+
+    def _copy_chat_selection(self, _event=None):
+        try:
+            selection = self.chat.get("sel.first", "sel.last")
+        except Exception:
+            selection = ""
+        if not selection.strip():
+            self.status_var.set("No selection to copy")
+            return "break"
+        if len(selection) > self.MAX_CHAT_COPY_CHARS:
+            selection = selection[: self.MAX_CHAT_COPY_CHARS] + "\n...[truncated for clipboard]...\n"
+        self.window.clipboard_clear()
+        self.window.clipboard_append(selection)
+        self.status_var.set("Copied selection")
+        return "break"
+
+    def _copy_all_chat(self):
+        content = self.chat.get("1.0", "end-1c")
+        if len(content) > self.MAX_CHAT_COPY_CHARS:
+            content = content[: self.MAX_CHAT_COPY_CHARS] + "\n...[truncated for clipboard]...\n"
+        self.window.clipboard_clear()
+        self.window.clipboard_append(content)
+        self.status_var.set("Copied full transcript")
+        return "Copied the full transcript to clipboard."
+
+    def _copy_last_answer(self):
+        if not self.last_reply:
+            self.status_var.set("No answer to copy")
+            return "There is no assistant answer to copy yet."
+        text = self.last_reply
+        if len(text) > self.MAX_CHAT_COPY_CHARS:
+            text = text[: self.MAX_CHAT_COPY_CHARS] + "\n...[truncated for clipboard]...\n"
+        self.window.clipboard_clear()
+        self.window.clipboard_append(text)
+        self.status_var.set("Copied last answer")
+        return "Copied the last answer to clipboard."
+
+    def _select_all_chat(self, _event=None):
+        self.chat.tag_add("sel", "1.0", "end-1c")
+        self.status_var.set("Selected all text")
+        return "break"
+
+    def _on_chat_key(self, event=None):
+        """Handle key events: block editing but allow selection."""
+        if not event:
+            return None
+        
+        # Allow arrow keys, page up/down, shift for selection
+        if event.keysym in ("Up", "Down", "Left", "Right", "Prior", "Next", "Home", "End"):
+            return None  # Allow these
+        
+        # Block Delete, Backspace, and other editing keys
+        if event.keysym in ("Delete", "BackSpace"):
+            return "break"
+        
+        # Block any regular character input (text editing)
+        if event.state & 0x0004:  # Control key pressed
+            # Allow Ctrl+A, Ctrl+C (handled by their own bindings)
+            return None
+        if event.state & 0x0001:  # Shift key pressed
+            # Allow Shift+Arrow for selection
+            return None
+        
+        # Block regular character input
+        if len(event.char) > 0 and event.char.isprintable():
+            return "break"
+        
+        return None
