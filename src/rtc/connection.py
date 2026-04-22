@@ -6,11 +6,19 @@ import json
 import re
 import logging
 import threading
+import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError, wait
 from src.config import settings
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('rtc_comparison.log', mode='a', encoding='utf-8')
+    ]
+)
 logger = logging.getLogger(__name__)
 
 
@@ -129,9 +137,16 @@ class RTCConnection:
         
         return None
     
-    def fetch_snapshot_components(self, snapshot_url, username=None, password=None, snapshot_name='Snapshot'):
+    def fetch_snapshot_components(self, snapshot_url, username=None, password=None, snapshot_name='Snapshot', progress_callback=None):
         """
         Fetch all components from a snapshot URL
+        
+        Args:
+            snapshot_url: Snapshot URL or UUID
+            username: RTC username
+            password: RTC password
+            snapshot_name: Display name for logging
+            progress_callback: Optional callback function(current, total, message) for progress updates
         
         Based on test2.py implementation with SCM CLI and REST API fallback
         """
@@ -215,13 +230,22 @@ class RTCConnection:
             result = None
             api_url = None
             
-            for candidate_url in api_url_candidates:
-                logger.info(f'{snapshot_name}: Trying API URL: {candidate_url}')
+            # Try API URLs in order, but fail fast on wrong ones
+            for idx, candidate_url in enumerate(api_url_candidates):
+                logger.info(f'{snapshot_name}: Trying API URL {idx+1}/{len(api_url_candidates)}: {candidate_url}')
+                
+                # Update progress if callback provided
+                if progress_callback:
+                    try:
+                        progress_callback(0, 100, f"{snapshot_name}: Connecting to RTC server...")
+                    except Exception:
+                        pass
+                
                 curl_command = _build_curl(candidate_url)
                 try:
                     request_start = time.time()
                     candidate_result = subprocess.run(
-                        curl_command, capture_output=True, text=True, timeout=15,
+                        curl_command, capture_output=True, text=True, timeout=10,  # Reduced from 15s
                         creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
                     )
                     request_elapsed = time.time() - request_start
@@ -282,10 +306,23 @@ class RTCConnection:
             try:
                 data = json.loads(result.stdout)
                 logger.info(f'{snapshot_name}: Successfully parsed JSON response')
+                
+                # Extract snapshot name from response
+                extracted_name = None
+                if isinstance(data, dict):
+                    # Try various name fields
+                    extracted_name = (
+                        data.get('name') or 
+                        data.get('dc:title') or 
+                        data.get('dcterms:title') or 
+                        data.get('title')
+                    )
+                    if extracted_name:
+                        logger.info(f'{snapshot_name}: Extracted snapshot name: {extracted_name}')
             except json.JSONDecodeError as e:
                 logger.error(f'{snapshot_name}: Failed to parse JSON: {e}')
                 logger.error(f'{snapshot_name}: Response: {result.stdout[:500]}')
-                return []
+                return {'name': None, 'components': []}
 
             # Check for authentication errors in JSON response
             if isinstance(data, dict):
@@ -293,7 +330,7 @@ class RTCConnection:
                     error_code = data.get('error_code', 'unknown')
                     error_msg = data.get('error_message', 'Unknown error')
                     logger.error(f'{snapshot_name}: API ERROR: {error_code} - {error_msg}')
-                    return []
+                    return {'name': extracted_name, 'components': []}
 
             components = []
 
@@ -314,17 +351,26 @@ class RTCConnection:
 
             if baseline_list and isinstance(baseline_list, list):
                 total_baselines = len(baseline_list)
+                
+                # Notify GUI of total count
+                if progress_callback:
+                    try:
+                        progress_callback(0, total_baselines, f"{snapshot_name}: Found {total_baselines} baselines, fetching components...")
+                    except Exception:
+                        pass
+                
                 requested_workers = getattr(settings, "MAX_WORKERS", 10)
                 try:
                     requested_workers = int(requested_workers)
                 except Exception:
                     requested_workers = 10
 
-                # Too many parallel curl processes can trigger RTC throttling / long stalls.
-                max_workers = max(1, min(requested_workers, 12))
+                # Use configured MAX_WORKERS for optimal performance
+                # Modern RTC servers can handle 50+ parallel connections
+                max_workers = max(1, requested_workers)
                 logger.info(
                     f'{snapshot_name}: Fetching component details for {total_baselines} baselines '
-                    f'(workers={max_workers}, requested={requested_workers})...'
+                    f'(workers={max_workers})...'
                 )
 
                 # Shared cache for component names
@@ -350,11 +396,12 @@ class RTCConnection:
                     ]
 
                     try:
+                        api_timeout = getattr(settings, 'RTC_API_TIMEOUT', 15)
                         comp_result = subprocess.run(
                             curl_comp,
                             capture_output=True,
                             text=True,
-                            timeout=30,
+                            timeout=api_timeout,
                             creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
                         )
                         if comp_result.returncode == 0 and comp_result.stdout.strip():
@@ -396,11 +443,12 @@ class RTCConnection:
                     ]
 
                     try:
+                        api_timeout = getattr(settings, 'RTC_API_TIMEOUT', 15)
                         baseline_result = subprocess.run(
                             curl_baseline,
                             capture_output=True,
                             text=True,
-                            timeout=30,
+                            timeout=api_timeout,
                             creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
                         )
 
@@ -432,6 +480,7 @@ class RTCConnection:
 
                 start_time = time.time()
                 last_heartbeat = start_time
+                last_gui_update = start_time
                 processed = 0
 
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -440,7 +489,7 @@ class RTCConnection:
                     # Heartbeat loop: logs progress even when the server is slow and no futures
                     # have completed yet (so it doesn't look stuck).
                     while pending:
-                        done, pending = wait(pending, timeout=5)
+                        done, pending = wait(pending, timeout=2)  # Reduced from 5s to 2s for more responsive GUI
 
                         for future in done:
                             processed += 1
@@ -450,21 +499,61 @@ class RTCConnection:
                                     components.append(component)
                             except Exception as e:
                                 logger.debug(f'{snapshot_name}: Baseline processing error: {e}')
+                        
+                        # Update GUI more frequently (every 2 seconds or every 10 components)
+                        now = time.time()
+                        should_update_gui = (now - last_gui_update >= 2) or (processed % 10 == 0 and processed > 0)
+                        
+                        if should_update_gui and progress_callback:
+                            try:
+                                elapsed = now - start_time
+                                rate = processed / elapsed if elapsed > 0 else 0
+                                progress_callback(
+                                    processed,
+                                    total_baselines,
+                                    f"{snapshot_name}: {processed}/{total_baselines} ({len(components)} components, {rate:.1f}/s)"
+                                )
+                                last_gui_update = now
+                            except Exception:
+                                pass
 
                         now = time.time()
                         if (processed % 20 == 0 and processed > 0) or processed == total_baselines:
                             elapsed = now - start_time
+                            rate = processed / elapsed if elapsed > 0 else 0
+                            remaining = (total_baselines - processed) / rate if rate > 0 else 0
                             logger.info(
                                 f'{snapshot_name}: Progress: {processed}/{total_baselines} baselines processed '
-                                f'({len(components)} components found) - {elapsed:.1f}s'
+                                f'({len(components)} components found) - {elapsed:.1f}s ({rate:.1f}/s, ~{remaining:.0f}s remaining)'
                             )
+                            # Send progress update to GUI if callback provided
+                            if progress_callback:
+                                try:
+                                    progress_callback(
+                                        processed, 
+                                        total_baselines,
+                                        f"{snapshot_name}: {processed}/{total_baselines} baselines ({len(components)} components, {rate:.1f}/s)"
+                                    )
+                                except Exception as cb_err:
+                                    logger.debug(f"Progress callback error: {cb_err}")
                             last_heartbeat = now
                         elif now - last_heartbeat >= 10:
                             elapsed = now - start_time
+                            rate = processed / elapsed if elapsed > 0 else 0
                             logger.info(
                                 f'{snapshot_name}: Still working... {processed}/{total_baselines} processed, '
-                                f'{len(pending)} pending, {len(components)} components found - {elapsed:.1f}s'
+                                f'{len(pending)} pending, {len(components)} components found - {elapsed:.1f}s ({rate:.1f}/s)'
                             )
+                            # Send heartbeat update to GUI
+                            if progress_callback:
+                                try:
+                                    progress_callback(
+                                        processed,
+                                        total_baselines,
+                                        f"{snapshot_name}: {processed}/{total_baselines} processed ({len(components)} components)..."
+                                    )
+                                except Exception:
+                                    pass
                             last_heartbeat = now
 
                 logger.info(f'{snapshot_name}: ✓ Successfully extracted {len(components)} components')
@@ -472,13 +561,269 @@ class RTCConnection:
             if len(components) == 0:
                 logger.warning(f'{snapshot_name}: No components could be extracted from {len(baseline_list) if baseline_list else 0} baselines')
 
-            return components
+            return {'name': extracted_name, 'components': components}
 
         except Exception as e:
             logger.error(f'{snapshot_name}: Error fetching components: {e}')
             import traceback
             logger.debug(traceback.format_exc())
-            return []
+            return {'name': None, 'components': []}
+    
+    def fetch_file_content_from_baseline(self, baseline_uuid, file_path, component_name=None):
+        """
+        Fetch file content from RTC baseline using SCM CLI
+        
+        Args:
+            baseline_uuid: Baseline UUID  
+            file_path: File path within the component (without leading slash)
+            component_name: Optional component name
+            
+        Returns: File content as string, or None if error
+        """
+        try:
+            if not settings.LSCM_PATH or not os.path.exists(settings.LSCM_PATH):
+                logger.warning('LSCM/SCM CLI not found, cannot download file content')
+                return None
+            
+            # Clean up the file path - ensure it starts with /
+            clean_path = file_path.strip()
+            if not clean_path.startswith('/'):
+                clean_path = '/' + clean_path
+            
+            logger.debug(f'{component_name}: Downloading file: {clean_path} from baseline {baseline_uuid[:12]}...')
+            
+            # Use temporary directory for file download
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Get the filename from the path
+                filename = os.path.basename(clean_path)
+                if not filename:
+                    logger.error(f'{component_name}: Invalid file path: {clean_path}')
+                    return None
+                
+                output_file = os.path.join(temp_dir, filename)
+                
+                # Build scm get file command
+                # Correct syntax from help: scm get file [options] <item> [state] [path-on-disk]
+                # When using -b -f, <item> is the baseline UUID, path-on-disk is the output location
+                cmd = [
+                    settings.LSCM_PATH,
+                    'get', 'file',
+                    '-b',                     # Get from baseline
+                    '-f', clean_path,         # File path within baseline
+                    '-r', self.server_url,    # Repository URL
+                    '-u', self.username,      # Username
+                    '-P', self.password,      # Password
+                    '-o',                     # Overwrite if exists
+                    baseline_uuid,            # Baseline UUID (positional arg)
+                    output_file               # Output file location (positional arg)
+                ]
+                
+                # Add component if provided (use lowercase -c, not -C)
+                if component_name:
+                    # Insert component option after -b but before -f
+                    cmd.insert(4, '-c')
+                    cmd.insert(5, component_name)
+                
+                logger.debug(f'{component_name}: Running lscm get file for {clean_path}')
+                
+                # Remove proxy settings
+                env = os.environ.copy()
+                for proxy_var in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy',
+                                 'NO_PROXY', 'no_proxy']:
+                    env.pop(proxy_var, None)
+                
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=45,  # Reduced from 90s - fail faster on stuck file downloads
+                    env=env,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                )
+                
+                if result.returncode == 0 and os.path.exists(output_file):
+                    with open(output_file, 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read()
+                    logger.debug(f'{component_name}: ✓ Downloaded {clean_path}: {len(content)} bytes')
+                    return content
+                else:
+                    logger.warning(f'{component_name}: Failed to download {clean_path}')
+                    logger.warning(f'{component_name}: Exit code: {result.returncode}')
+                    logger.warning(f'{component_name}: Stderr: {result.stderr[:300]}')
+                    logger.warning(f'{component_name}: Stdout: {result.stdout[:300]}')
+                    logger.warning(f'{component_name}: File exists: {os.path.exists(output_file)}')
+                    return None
+        
+        except subprocess.TimeoutExpired:
+            logger.error(f'{component_name}: Timeout downloading file: {file_path}')
+            return None
+        except Exception as e:
+            logger.error(f'{component_name}: Error downloading file content: {e}')
+            import traceback
+            logger.debug(traceback.format_exc())
+            return None
+    
+    def fetch_baseline_file_list(self, baseline_uuid, component_name='Unknown'):
+        """
+        Fetch list of files from a baseline using lscm CLI
+        
+        Args:
+            baseline_uuid: Baseline UUID
+            component_name: Component name for logging
+            
+        Returns: dict {file_path: file_metadata_dict}
+        """
+        try:
+            if not settings.LSCM_PATH or not os.path.exists(settings.LSCM_PATH):
+                logger.warning(f'{component_name}: LSCM not available, cannot list files')
+                return {}
+            
+            logger.info(f'{component_name}: Fetching file list from baseline {baseline_uuid[:12]}...')
+            
+            # Use lscm list files command with JSON output
+            cmd = [
+                settings.LSCM_PATH,
+                'list', 'files',
+                '-b', baseline_uuid,  # Baseline UUID
+                '-r', self.server_url,
+                '-u', self.username,
+                '-P', self.password,
+                '-D', 'all',  # Recursive listing with infinite depth
+                '-j'  # JSON output
+            ]
+            
+            logger.debug(f'{component_name}: Running lscm command: {" ".join([c if i != cmd.index(self.password) else "****" for i, c in enumerate(cmd)])}')
+            
+            # Remove proxy settings
+            env = os.environ.copy()
+            for proxy_var in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy',
+                             'NO_PROXY', 'no_proxy']:
+                env.pop(proxy_var, None)
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=60,  # Reduced from 120s - fail faster on stuck operations
+                env=env,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            )
+            
+            # SCM CLI may return exit code 1 even with valid output
+            if not result.stdout or not result.stdout.strip():
+                logger.warning(f'{component_name}: No output from list files')
+                logger.warning(f'{component_name}: Exit code: {result.returncode}')
+                logger.warning(f'{component_name}: Stderr: {result.stderr[:500]}')
+                return {}
+            
+            # Log first 500 chars of output for debugging
+            logger.debug(f'{component_name}: lscm output (first 500 chars): {result.stdout[:500]}')
+            
+            # Parse JSON output
+            try:
+                data = json.loads(result.stdout)
+                baseline_data = data.get('baseline', {})
+                remote_files = baseline_data.get('remote-files', [])
+                
+                if not remote_files:
+                    logger.warning(f'{component_name}: No remote-files in JSON output')
+                    return {}
+                
+                # Build file dictionary with metadata
+                files = {}
+                for item in remote_files:
+                    path = item.get('path', '').strip('/')
+                    
+                    if not path or path.endswith('/'):
+                        # Skip folders
+                        continue
+                    
+                    # Store file with metadata for comparison
+                    files[path] = {
+                        'uuid': item.get('uuid', item.get('item-id', '')),
+                        'content-id': item.get('content-id', ''),
+                        'state-id': item.get('state-id', ''),
+                        'path': path
+                    }
+                
+                logger.info(f'{component_name}: Found {len(files)} files in baseline')
+                return files
+                
+            except json.JSONDecodeError as e:
+                logger.error(f'{component_name}: Failed to parse JSON: {e}')
+                logger.debug(f'Output: {result.stdout[:500]}')
+                return {}
+            
+        except subprocess.TimeoutExpired:
+            logger.error(f'{component_name}: Timeout fetching file list')
+            return {}
+        except Exception as e:
+            logger.error(f'{component_name}: Error fetching file list: {e}')
+            return {}
+    
+    def compare_file_lists(self, files1, files2):
+        """
+        Compare two file lists to identify added/modified/removed files
+        
+        Args:
+            files1: dict of files from baseline 1 {path: metadata}
+            files2: dict of files from baseline 2 {path: metadata}
+            
+        Returns: dict with added, modified, removed, unchanged lists
+        """
+        paths1 = set(files1.keys())
+        paths2 = set(files2.keys())
+        
+        added = sorted(paths2 - paths1)
+        removed = sorted(paths1 - paths2)
+        common = sorted(paths1 & paths2)
+        
+        # For common files, compare content-id or state-id to determine if modified
+        modified = []
+        unchanged = []
+        
+        for path in common:
+            file1 = files1[path]
+            file2 = files2[path]
+            
+            # Compare using content-id (most reliable - file content hash)
+            content1 = file1.get('content-id', '')
+            content2 = file2.get('content-id', '')
+            
+            if content1 and content2:
+                if content1 != content2:
+                    modified.append(path)
+                else:
+                    unchanged.append(path)
+            else:
+                # Fallback to state-id comparison
+                state1 = file1.get('state-id', '')
+                state2 = file2.get('state-id', '')
+                
+                if state1 and state2:
+                    if state1 != state2:
+                        modified.append(path)
+                    else:
+                        unchanged.append(path)
+                else:
+                    # No reliable comparison possible - assume modified
+                    modified.append(path)
+        
+        logger.debug(f"File comparison: {len(added)} added, {len(modified)} modified, "
+                    f"{len(removed)} removed, {len(unchanged)} unchanged")
+        
+        return {
+            'added': added,
+            'modified': modified,
+            'removed': removed,
+            'unchanged': unchanged,
+            'details': {
+                **{path: 'added' for path in added},
+                **{path: 'modified' for path in modified},
+                **{path: 'removed' for path in removed},
+                **{path: 'unchanged' for path in unchanged}
+            }
+        }
     
     def compare_snapshots(self, snap1_components, snap2_components):
         """
@@ -488,6 +833,19 @@ class RTCConnection:
         Returns: List of comparison results
         """
         try:
+            logger.info("=" * 80)
+            logger.info("STARTING SNAPSHOT COMPONENT COMPARISON")
+            logger.info(f"Snapshot 1: {len(snap1_components)} components")
+            logger.info(f"Snapshot 2: {len(snap2_components)} components")
+            
+            # Show sample component data for debugging
+            if snap1_components:
+                sample = snap1_components[0]
+                logger.info(f"Sample component structure: name={sample.get('name', 'N/A')}, "
+                           f"uuid={sample.get('uuid', 'N/A')[:12] if sample.get('uuid') else 'N/A'}..., "
+                           f"baseline_uuid={sample.get('baseline_uuid', 'N/A')[:12] if sample.get('baseline_uuid') else 'N/A'}...")
+            logger.info("=" * 80)
+            
             # Create lookup dictionaries
             snap1_dict = {comp['name']: comp for comp in snap1_components if comp.get('name')}
             snap2_dict = {comp['name']: comp for comp in snap2_components if comp.get('name')}
@@ -509,36 +867,50 @@ class RTCConnection:
                 
                 if comp1 and comp2:
                     # Component exists in both
-                    uuid1 = comp1.get('uuid') or comp1.get('baseline_uuid')
-                    uuid2 = comp2.get('uuid') or comp2.get('baseline_uuid')
+                    # Use baseline_uuid (content version) for comparison, not component uuid (component ID)
+                    uuid1 = comp1.get('baseline_uuid') or comp1.get('uuid')
+                    uuid2 = comp2.get('baseline_uuid') or comp2.get('uuid')
+                    
+                    logger.debug(f'{name}: Comparing baselines: {uuid1[:12] if uuid1 else "None"}... vs {uuid2[:12] if uuid2 else "None"}...')
                     
                     if uuid1 == uuid2:
                         comparison['status'] = 'Unchanged'
+                        logger.info(f'{name}: Unchanged - baseline UUIDs match')
                     else:
-                        # Baselines differ - fetch folder structures and compare files
-                        logger.info(f'{name}: Baselines differ, performing file-level comparison...')
+                        # Baselines differ - perform file-level comparison
+                        logger.info(f'{name}: Baseline UUIDs differ - performing file-level comparison...')
+                        comparison['status'] = 'Modified'
+                        comparison['baseline1_uuid'] = uuid1
+                        comparison['baseline2_uuid'] = uuid2
+                        
+                        # Fetch file lists from both baselines
                         try:
-                            # Fetch folder structures in sequence (ThreadPoolExecutor not needed for just 2)
-                            folder1 = self.fetch_baseline_folder_structure(uuid1, name)
-                            folder2 = self.fetch_baseline_folder_structure(uuid2, name)
+                            logger.info(f'{name}: Fetching file lists from both baselines...')
+                            files1 = self.fetch_baseline_file_list(uuid1, name)
+                            files2 = self.fetch_baseline_file_list(uuid2, name)
                             
-                            # Compare file structures
-                            file_comparison = self.compare_folder_structures(folder1, folder2)
-                            comparison['folder_structure1'] = folder1
-                            comparison['folder_structure2'] = folder2
-                            comparison['file_comparison'] = file_comparison
+                            logger.info(f'{name}: Baseline 1 has {len(files1)} files, Baseline 2 has {len(files2)} files')
                             
-                            # Determine status based on actual file changes
-                            if file_comparison.get('added', 0) > 0 or file_comparison.get('modified', 0) > 0 or file_comparison.get('removed', 0) > 0:
-                                comparison['status'] = 'Modified'
-                                logger.info(f'{name}: Modified - {file_comparison["added"]} added, {file_comparison["modified"]} modified, {file_comparison["removed"]} removed')
+                            if not files1 and not files2:
+                                logger.warning(f'{name}: Could not fetch file lists from either baseline - skipping file comparison')
+                                comparison['file_comparison'] = None
                             else:
-                                # UUIDs differ but no file content changes
-                                comparison['status'] = 'Unchanged'
-                                logger.info(f'{name}: Unchanged - baseline UUIDs differ but no file changes detected')
-                        except Exception as e:
-                            logger.warning(f'{name}: Error in file-level comparison, defaulting to Modified: {e}')
-                            comparison['status'] = 'Modified'
+                                # Compare file lists
+                                file_comparison = self.compare_file_lists(files1, files2)
+                                comparison['file_comparison'] = file_comparison
+                                comparison['files_added'] = file_comparison['added']
+                                comparison['files_modified'] = file_comparison['modified']
+                                comparison['files_removed'] = file_comparison['removed']
+                                comparison['files_unchanged'] = file_comparison['unchanged']
+                                
+                                logger.info(f'{name}: File changes - Added: {len(file_comparison["added"])}, '
+                                           f'Modified: {len(file_comparison["modified"])}, '
+                                           f'Removed: {len(file_comparison["removed"])}, '
+                                           f'Unchanged: {len(file_comparison["unchanged"])}')
+                            
+                        except Exception as file_err:
+                            logger.error(f'{name}: Error in file-level comparison: {file_err}', exc_info=True)
+                            comparison['file_comparison'] = None
                 
                 elif comp1:
                     # Only in snapshot 1
@@ -550,12 +922,165 @@ class RTCConnection:
                 
                 results.append(comparison)
             
-            logger.info(f"Comparison complete: {len(results)} components analyzed")
+            # Log summary
+            logger.info("=" * 80)
+            logger.info("COMPARISON SUMMARY:")
+            logger.info(f"  Total components: {len(results)}")
+            modified = sum(1 for r in results if r['status'] == 'Modified')
+            unchanged = sum(1 for r in results if r['status'] == 'Unchanged')
+            added = sum(1 for r in results if 'Added' in r['status'])
+            removed = sum(1 for r in results if 'Removed' in r['status'])
+            logger.info(f"  Modified: {modified}")
+            logger.info(f"  Unchanged: {unchanged}")
+            logger.info(f"  Added: {added}")
+            logger.info(f"  Removed: {removed}")
+            logger.info("=" * 80)
+            
             return results
             
         except Exception as e:
             logger.error(f"Error comparing snapshots: {e}")
             return []
+
+    
+    def fetch_changesets_for_files(self, modified_files, baseline_uuid, component_name='Unknown'):
+        """
+        Fetch changeset information for a list of modified files in a baseline.
+        
+        Args:
+            modified_files: List of file paths (from baseline file list)
+            baseline_uuid: Baseline UUID for context
+            component_name: Component name for logging
+            
+        Returns: Dictionary mapping file_path -> changeset_data
+        """
+        try:
+            from src.rtc.changeset import fetch_file_changesets_from_scm, fetch_workitems_from_changeset
+            
+            if not modified_files:
+                logger.debug(f"{component_name}: No modified files to fetch changesets for")
+                return {}
+            
+            logger.info(f"{component_name}: Fetching changesets for {len(modified_files)} modified files...")
+            
+            changeset_map = {}
+            
+            # Use SCM CLI to get file history in baseline context
+            lscm_path = settings.LSCM_PATH
+            if not lscm_path or not os.path.exists(lscm_path):
+                logger.warning(f"LSCM not available at {lscm_path} - cannot fetch changesets")
+                return {}
+            
+            # Ensure baseline UUID has underscore prefix
+            if baseline_uuid and not baseline_uuid.startswith('_'):
+                baseline_uuid = '_' + baseline_uuid
+            
+            logger.info(f"{component_name}: Using LSCM at {lscm_path}")
+            logger.info(f"{component_name}: Baseline UUID: {baseline_uuid[:20]}...")
+            
+            for file_path in modified_files[:10]:  # Limit to first 10 files to avoid slowdown
+                try:
+                    logger.debug(f"  Fetching changeset for: {file_path}")
+                    
+                    # SCM history command for repository file
+                    # Note: SCM history might not support -b flag, so try without it first
+                    cmd = [
+                        lscm_path,
+                        'history',
+                        file_path,
+                        '-r', self.server_url,
+                        '-u', self.username,
+                        '-P', self.password,
+                        '-m', '1'  # Only most recent changeset
+                    ]
+                    
+                    logger.debug(f"  SCM command: scm history {file_path} -r ... -m 1")
+                    
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=20,
+                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                    )
+                    
+                    logger.debug(f"  Return code: {result.returncode}")
+                    
+                    if result.returncode == 0 and result.stdout:
+                        logger.debug(f"  Got output: {result.stdout[:200]}")
+                        # Parse changeset from output
+                        changeset_data = self._parse_changeset_from_scm_output(result.stdout)
+                        if changeset_data:
+                            changeset_map[file_path] = changeset_data
+                            logger.info(f"  ✓ {file_path}: Found changeset {changeset_data.get('uuid', 'N/A')[:12]}...")
+                        else:
+                            logger.debug(f"  {file_path}: Could not parse changeset from output")
+                    else:
+                        stderr_preview = result.stderr[:200] if result.stderr else 'No error output'
+                        logger.debug(f"  {file_path}: Command failed or no output. Stderr: {stderr_preview}")
+                    
+                except subprocess.TimeoutExpired:
+                    logger.warning(f"  {file_path}: Timeout fetching changeset")
+                    continue
+                except Exception as e:
+                    logger.debug(f"  {file_path}: Failed to fetch changeset: {e}")
+                    continue
+            
+            if changeset_map:
+                logger.info(f"{component_name}: ✓ Successfully fetched changesets for {len(changeset_map)}/{len(modified_files[:10])} files")
+            else:
+                logger.warning(f"{component_name}: ⚠ No changesets found for any files")
+            
+            return changeset_map
+            
+        except Exception as e:
+            logger.error(f"{component_name}: Error fetching changesets: {e}", exc_info=True)
+            return {}
+    
+    
+    def _parse_changeset_from_scm_output(self, scm_output):
+        """Parse changeset information from SCM history output"""
+        try:
+            # Try JSON parsing first
+            try:
+                data = json.loads(scm_output)
+                changesets = data.get('changesets', [])
+                if changesets:
+                    cs = changesets[0]
+                    uuid = cs.get('uuid', '')
+                    logger.debug(f"  Parsed JSON changeset: {uuid}")
+                    return {
+                        'uuid': uuid,
+                        'comment': cs.get('comment', ''),
+                        'author': cs.get('author', {}).get('name', ''),
+                        'url': f"{self.server_url}/resource/itemName/com.ibm.team.scm.ChangeSet/{uuid}"
+                    }
+            except json.JSONDecodeError:
+                logger.debug("  JSON parsing failed, trying text parsing...")
+            
+            # Fallback to text parsing
+            lines = scm_output.split('\n')
+            for line in lines:
+                # Match: (1234) ---$ "Comment"
+                cs_match = re.match(r'\((\d+)\)\s+---\$?\s*"?([^"]*)"?', line.strip())
+                if cs_match:
+                    cs_number = cs_match.group(1)
+                    comment = cs_match.group(2).strip()
+                    logger.debug(f"  Parsed text changeset: {cs_number}")
+                    return {
+                        'uuid': cs_number,
+                        'comment': comment,
+                        'author': '',
+                        'url': f"{self.server_url}/resource/itemName/com.ibm.team.scm.ChangeSet/{cs_number}"
+                    }
+            
+            # If no match found, log the output for debugging
+            logger.debug(f"  Could not parse changeset. Output preview: {scm_output[:300]}")
+            return None
+            
+        except Exception as e:
+            logger.debug(f"Failed to parse changeset output: {e}")
+            return None
 
 
     def fetch_baseline_folder_structure(self, baseline_uuid, component_name='Unknown'):
@@ -594,11 +1119,12 @@ class RTCConnection:
                     '-H', 'OSLC-Core-Version: 2.0'
                 ]
                 
+                api_timeout = getattr(settings, 'RTC_API_TIMEOUT', 15)
                 result = subprocess.run(
                     cmd,
                     capture_output=True,
                     text=True,
-                    timeout=30,
+                    timeout=api_timeout,
                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
                 )
                 

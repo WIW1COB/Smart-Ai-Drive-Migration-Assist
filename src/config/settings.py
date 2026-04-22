@@ -1,6 +1,7 @@
 """Configuration settings for Migration Analysis Tool"""
 
 import os
+import sys
 
 # ---------------------------------------------------------------------------
 # RTC/ALM Configuration
@@ -14,13 +15,42 @@ RTC_CLIENT_LIB_PATH = r"C:\Users\WIW1COB\Desktop\TOOL_Developed\Migration_Analys
 # RTC SCM CLI (lscm) Configuration - OPTIONAL for faster component fetching
 # The tool will automatically fall back to REST API if lscm is not available or fails
 # Using scm.exe directly instead of lscm.bat to bypass Java environment issues
-# Example: r"C:\Program Files\IBM\RTC-SCM-CLI\scmtools\eclipse\scm.exe"
-LSCM_PATH = r"C:\toolbase\lscm\7.0.3\jazz\scmtools\eclipse\scm.exe"  # BOSCH STEPS ALM SCM installation
+
+def _get_bundled_scm_path():
+    """Get SCM path - use bundled version if running as exe, otherwise use dev path"""
+    if getattr(sys, 'frozen', False):
+        # Running as compiled executable - use bundled SCM
+        bundle_dir = sys._MEIPASS
+        scm_path = os.path.join(bundle_dir, 'scmtools', 'scm.exe')
+        if os.path.exists(scm_path):
+            return scm_path
+        # Fallback: check if scmtools is at root of bundle
+        scm_path = os.path.join(bundle_dir, 'scm.exe')
+        if os.path.exists(scm_path):
+            return scm_path
+    
+    # Running in development mode - use installed SCM
+    dev_path = r"C:\Users\yyy1cob\Desktop\598_Kit_Download_Fail\Migration_Assist\EWM-scmTools-Win64-7.0.3\jazz\scmtools\eclipse\scm.exe"
+    if os.path.exists(dev_path):
+        return dev_path
+    
+    # Try common installation paths
+    common_paths = [
+        r"C:\Program Files\IBM\RTC-SCM-CLI\scmtools\eclipse\scm.exe",
+        r"C:\toolbase\lscm\scmtools\eclipse\scm.exe",
+    ]
+    for path in common_paths:
+        if os.path.exists(path):
+            return path
+    
+    return None
+
+LSCM_PATH = _get_bundled_scm_path()
 
 # Global variables for RTC authentication
 RTC_USERNAME = None
 RTC_PASSWORD = None
-RTC_ENABLED = False
+RTC_ENABLED = True  # Enable RTC integration for changeset fetching
 
 # Global variables for RTC workspace/stream detection
 RTC_WORKSPACE_NAME = None
@@ -82,6 +112,10 @@ _proxy_cred_cache = {}
 # Maximum number of concurrent threads for parallel processing
 # Increase for faster baseline comparison (50 workers = near-instant)
 MAX_WORKERS = 50
+
+# API request timeout in seconds (applies to RTC REST API calls)
+# Lower values fail faster on slow connections
+RTC_API_TIMEOUT = 15
 
 # Skip SCM CLI and use REST API directly for better performance
 # SCM CLI often times out (300s) on large snapshots
