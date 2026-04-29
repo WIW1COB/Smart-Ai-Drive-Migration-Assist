@@ -2,6 +2,12 @@
 
 import os
 
+try:
+    from dotenv import load_dotenv  # type: ignore
+    load_dotenv(os.path.join(os.path.dirname(__file__), "../..", ".env"), override=True)
+except Exception:
+    pass
+
 # ---------------------------------------------------------------------------
 # RTC/ALM Configuration
 # ---------------------------------------------------------------------------
@@ -49,6 +55,26 @@ GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 #   - llama-3.1-405b-reasoning (most capable, slower)
 #   - mixtral-8x7b-32768
 #   - gemma-7b-it
+
+# ============ Groq Proxy Configuration (for corporate networks) ============
+# Set these if Groq fails with DNS/network errors on corporate networks
+GROQ_PROXY_URL = os.environ.get(
+    "GROQ_PROXY_URL",
+    os.environ.get("HTTPS_PROXY", os.environ.get("HTTP_PROXY", "")),
+)
+# Example: "http://proxy.company.com:8080" or "http://user:pass@proxy:8080"
+
+GROQ_PROXY_USERNAME = os.environ.get(
+    "GROQ_PROXY_USERNAME",
+    os.environ.get("PROXY_USER", ""),
+)
+# Example: "DOMAIN\\username" or just "username"
+
+GROQ_PROXY_PASSWORD = os.environ.get(
+    "GROQ_PROXY_PASSWORD",
+    os.environ.get("PROXY_PASS", ""),
+)
+# Example: "password" (will be prompted if not set and proxy_url is configured)
 
 # ============ Azure OpenAI / Bosch Farm (Disabled for now; will reuse when available) ============
 # NOTE: Bosch AOAI Farm is currently unavailable.

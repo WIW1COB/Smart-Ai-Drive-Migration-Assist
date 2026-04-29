@@ -55,6 +55,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
+from urllib.parse import quote, urlsplit, urlunsplit
 
 
 # ===========================================================================
@@ -388,22 +389,49 @@ class GroqChatEngine:
     """
 
     def __init__(self, api_key: str, model: str = "llama-3.3-70b-versatile",
-                 proxy_url: str | None = None) -> None:
+                 proxy_url: str | None = None, proxy_user: str | None = None,
+                 proxy_password: str | None = None) -> None:
         """
         Initialize Groq engine.
         
         Args:
             api_key: Groq API key (from environment GROQ_API_KEY)
-            model: Model name (e.g., 'llama-3.1-70b-versatile')
+            model: Model name (e.g., 'llama-3.3-70b-versatile')
             proxy_url: Optional proxy URL (e.g., 'http://proxy:8080')
+            proxy_user: Optional proxy username (e.g., 'DOMAIN\\username')
+            proxy_password: Optional proxy password
         """
         self.api_key = api_key.strip() if api_key else ""
         self.model = model
-        self.proxy_url = proxy_url
+        self.proxy_url = proxy_url or os.environ.get("GROQ_PROXY_URL", "").strip() or os.environ.get("HTTPS_PROXY", "").strip() or os.environ.get("HTTP_PROXY", "").strip()
+        self._proxy_user = proxy_user or os.environ.get("GROQ_PROXY_USERNAME", "").strip() or os.environ.get("PROXY_USER", "").strip()
+        self._proxy_password = proxy_password if proxy_password is not None else (os.environ.get("GROQ_PROXY_PASSWORD", "").strip() or os.environ.get("PROXY_PASS", "").strip())
+
+        proxy_domain = os.environ.get("PROXY_DOMAIN", "").strip()
+        if proxy_domain and self._proxy_user and "\\" not in self._proxy_user and "/" not in self._proxy_user:
+            self._proxy_user = f"{proxy_domain}\\{self._proxy_user}"
+
+    def _proxy_url_with_credentials(self) -> str:
+        """Return the configured proxy URL, embedding credentials when supplied."""
+        if not self.proxy_url:
+            return ""
+
+        parsed = urlsplit(self.proxy_url if "://" in self.proxy_url else f"http://{self.proxy_url}")
+        if "@" in parsed.netloc or not self._proxy_user:
+            return urlunsplit(parsed)
+
+        auth = quote(self._proxy_user, safe="")
+        if self._proxy_password:
+            auth = f"{auth}:{quote(self._proxy_password, safe='')}"
+        return urlunsplit((parsed.scheme, f"{auth}@{parsed.netloc}", parsed.path, parsed.query, parsed.fragment))
 
     def complete(self, messages: List[Dict]) -> str:
         """
         POST a messages list to Groq, return the assistant text.
+        
+        Supports:
+        1. Direct connection (no proxy)
+        2. Corporate proxy with/without auth (HTTP, HTTPS, NTLM)
         
         Args:
             messages: List of message dicts with 'role' and 'content' keys.
@@ -425,32 +453,109 @@ class GroqChatEngine:
             )
         
         try:
-            # Create Groq client with optional proxy
-            client_kwargs = {"api_key": self.api_key}
-            
-            # Only set http_client if we have a proxy, as it's optional
-            if self.proxy_url:
-                try:
-                    import httpx
+            import httpx
+
+            try:
+                http_client = None
+
+                # Strategy 1: Use configured corporate proxy first.
+                if self.proxy_url:
+                    proxy_str = self._proxy_url_with_credentials()
+                    print(f"[INFO] Groq: Attempting via configured proxy: {self.proxy_url}")
                     http_client = httpx.Client(
-                        proxies=self.proxy_url,
-                        verify=False  # Bypass SSL for internal networks
+                        proxy=proxy_str,
+                        trust_env=False,
+                        verify=False,
+                        timeout=90.0,
                     )
-                    client_kwargs["http_client"] = http_client
-                except Exception as proxy_err:
-                    # Warn but don't fail - try without proxy
-                    print(f"[WARN] Failed to configure proxy for Groq: {proxy_err}")
+                    client = Groq(api_key=self.api_key, http_client=http_client)
+                    response = client.chat.completions.create(
+                        model=self.model,
+                        messages=messages,
+                        temperature=0.7,
+                        max_tokens=2000,
+                    )
+                    print("[SUCCESS] Groq: Connected via configured proxy")
+                    return response.choices[0].message.content.strip()
+
+                # Strategy 2: Try direct when no proxy is configured.
+                print("[INFO] Groq: Attempting direct connection (no proxy)...")
+                try:
+                    http_client = httpx.Client(
+                        mounts={
+                            "http://": httpx.HTTPTransport(proxy=None),
+                            "https://": httpx.HTTPTransport(proxy=None),
+                        },
+                        trust_env=False,
+                        verify=True,
+                    )
+                    client = Groq(api_key=self.api_key, http_client=http_client)
+                    response = client.chat.completions.create(
+                        model=self.model,
+                        messages=messages,
+                        temperature=0.7,
+                        max_tokens=2000,
+                    )
+                    print("[SUCCESS] Groq: Direct connection successful")
+                    return response.choices[0].message.content.strip()
+                    
+                except Exception as direct_err:
+                    raise direct_err
+                
+            except Exception as initial_err:
+                if self.proxy_url:
+                    # Proxy authentication failed, provide better error
+                    error_msg = str(initial_err)
+                    if "407" in error_msg or "auth" in error_msg.lower():
+                        print("[WARN] Proxy authentication failed")
+                        error_msg += (
+                            "\n\n[FIX] Proxy credentials needed:\n"
+                            "1. Run: python setup_corporate_proxy.py\n"
+                            "2. Add to .env:\n"
+                            "   GROQ_PROXY_URL=http://proxy-server:port\n"
+                            "   GROQ_PROXY_USERNAME=DOMAIN\\username\n"
+                            "   GROQ_PROXY_PASSWORD=password"
+                        )
+                    raise RuntimeError(error_msg) from initial_err
+                raise initial_err
             
-            client = Groq(**client_kwargs)
-            response = client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=0.7,
-                max_tokens=2000,
-            )
-            return response.choices[0].message.content.strip()
         except Exception as exc:
-            raise RuntimeError(f"Groq API request failed: {exc}") from exc
+            error_msg = str(exc)
+            
+            # Diagnose specific errors
+            if "11001" in error_msg or "getaddrinfo failed" in error_msg:
+                error_msg += (
+                    "\n\n[DIAGNOSIS] DNS Resolution Error\n"
+                    "Your network cannot resolve 'api.groq.com'\n\n"
+                    "[FIXES]:\n"
+                    "1. Use corporate proxy (if available):\n"
+                    "   python setup_corporate_proxy.py\n"
+                    "2. Change DNS to 8.8.8.8 or 1.1.1.1\n"
+                    "3. Use VPN: https://1.1.1.1/ (Cloudflare Warp)\n"
+                    "4. Run: python diagnose_network.py"
+                )
+            elif "407" in error_msg or "Proxy" in error_msg.title():
+                error_msg += (
+                    "\n\n[DIAGNOSIS] Proxy Authentication Error\n"
+                    "[FIXES]:\n"
+                    "1. Get proxy URL from IT: settings/proxy URL\n"
+                    "2. Run: python setup_corporate_proxy.py\n"
+                    "3. Or manually add to .env:\n"
+                    "   GROQ_PROXY_URL=http://proxy:port\n"
+                    "   GROQ_PROXY_USERNAME=username\n"
+                    "   GROQ_PROXY_PASSWORD=password"
+                )
+            elif "Connection" in error_msg or "refused" in error_msg.lower():
+                error_msg += (
+                    "\n\n[DIAGNOSIS] Connection Refused\n"
+                    "Cannot reach api.groq.com (firewall or DNS blocking)\n"
+                    "[FIXES]:\n"
+                    "1. Try proxy: python setup_corporate_proxy.py\n"
+                    "2. Test network: python diagnose_network.py\n"
+                    "3. Use VPN to bypass restrictions"
+                )
+            
+            raise RuntimeError(f"Groq API request failed:\n{error_msg}") from exc
 
 
 # ===========================================================================

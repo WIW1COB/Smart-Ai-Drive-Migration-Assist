@@ -303,6 +303,37 @@ class ComparisonAssistantWindow:
             return self._select_first_changed_row()
         return None
 
+    def _is_explicit_action_request(self, question: str) -> bool:
+        """Return True only when the user is asking the tool to do something."""
+        q = (question or "").lower()
+        action_words = (
+            "open", "launch", "start", "run", "execute", "save", "copy",
+            "select", "choose", "export"
+        )
+        if any(word in q for word in action_words):
+            return True
+        return q.strip().startswith(("/open", "/run", "/save", "/copy", "/select"))
+
+    def _should_execute_model_action(self, action_name: str, question: str) -> bool:
+        """Gate model-suggested actions so explanation prompts do not open files."""
+        if not self._is_explicit_action_request(question):
+            return False
+
+        q = (question or "").lower()
+        if action_name == "open_file":
+            return any(word in q for word in ("open", "launch"))
+        if action_name == "view_diff":
+            return "open" in q and ("diff" in q or "html" in q or "report" in q)
+        if action_name == "open_reports":
+            return "open" in q and "report" in q
+        if action_name == "run_interface_analysis":
+            return any(word in q for word in ("run", "start", "launch", "execute")) and "interface" in q
+        if action_name == "select_changed_file":
+            return any(word in q for word in ("select", "choose"))
+        if action_name == "copy_file":
+            return "copy" in q
+        return False
+
     def _is_in_scope_question(self, question):
         """Return True when the question belongs to comparison/RTC analysis."""
         q = question.lower()
@@ -843,19 +874,41 @@ class ComparisonAssistantWindow:
             if groq_key and groq_key.strip():
                 try:
                     from src.chatbot.chatbot import GroqChatEngine
-                    groq_model = getattr(settings, "GROQ_MODEL", "llama-3.1-70b-versatile")
+                    groq_model = getattr(settings, "GROQ_MODEL", "llama-3.3-70b-versatile")
                     
-                    # Pass proxy URL if configured
-                    proxy_url = getattr(settings, "PROXY_URL", "")
-                    if proxy_url and proxy_url.strip():
-                        print(f"[INFO] Groq configured with proxy: {proxy_url}")
+                    # Get proxy configuration (if corporate network). Prefer
+                    # Groq-specific values, then the standard Bosch proxy envs.
+                    groq_proxy_url = (
+                        getattr(settings, "GROQ_PROXY_URL", "")
+                        or getattr(settings, "PROXY_URL", "")
+                    )
+                    groq_proxy_user = (
+                        getattr(settings, "GROQ_PROXY_USERNAME", "")
+                        or getattr(settings, "PROXY_USER", "")
+                    )
+                    groq_proxy_pass = (
+                        getattr(settings, "GROQ_PROXY_PASSWORD", "")
+                        or getattr(settings, "PROXY_PASS", "")
+                    )
+                    groq_proxy_domain = getattr(settings, "PROXY_DOMAIN", "")
+                    if (
+                        groq_proxy_domain
+                        and groq_proxy_user
+                        and "\\" not in groq_proxy_user
+                        and "/" not in groq_proxy_user
+                    ):
+                        groq_proxy_user = f"{groq_proxy_domain}\\{groq_proxy_user}"
+                    
+                    if groq_proxy_url and groq_proxy_url.strip():
+                        print(f"[INFO] Groq configured with corporate proxy")
                     
                     engine = GroqChatEngine(
                         api_key=groq_key,
                         model=groq_model,
-                        proxy_url=proxy_url if proxy_url and proxy_url.strip() else None
+                        proxy_url=groq_proxy_url if groq_proxy_url and groq_proxy_url.strip() else None,
+                        proxy_user=groq_proxy_user if groq_proxy_user and groq_proxy_user.strip() else None,
+                        proxy_password=groq_proxy_pass if groq_proxy_pass and groq_proxy_pass.strip() else None
                     )
-                    # Don't test during initialization - test will happen on first use
                     print("[INFO] ✅ Groq engine configured (will test on first use)")
                     return engine
                 except Exception as groq_err:
@@ -1061,7 +1114,7 @@ class ComparisonAssistantWindow:
         except Exception as e:
             return f"Copy failed: {e}"
 
-    def _extract_and_execute_actions(self, reply: str) -> list[str]:
+    def _extract_and_execute_actions(self, reply: str, question: str = "") -> list[str]:
         """Extract [ACTION: ...] patterns from the reply and execute them."""
         action_pattern = r"\[ACTION:\s*(\w+)\s*\((.*?)\)\s*\]"
         matches = re.findall(action_pattern, reply)
@@ -1069,6 +1122,10 @@ class ComparisonAssistantWindow:
         results = []
         for action_name, args_str in matches:
             try:
+                if not self._should_execute_model_action(action_name, question):
+                    results.append(f"Skipped {action_name}: action was not explicitly requested.")
+                    continue
+
                 # Parse arguments from the string (improved key=value parsing)
                 args = {}
                 if args_str.strip():
@@ -1086,6 +1143,11 @@ class ComparisonAssistantWindow:
                 results.append(f"✗ {action_name}: {e}")
         
         return results
+
+    def _strip_action_tags(self, reply: str) -> str:
+        """Hide internal action tags from the chat transcript."""
+        cleaned = re.sub(r"\n?\[ACTION:\s*\w+\s*\(.*?\)\s*\]\s*", "", reply, flags=re.DOTALL)
+        return cleaned.strip()
 
     def _system_prompt(self, intent: str = "general") -> str:
         # Enterprise-ready guardrails: grounded answers, explicit uncertainty, no hallucinations.
@@ -1121,6 +1183,8 @@ class ComparisonAssistantWindow:
             "• copy_file(source='1'|'2', destination='1'|'2') — Copies file between sources\n\n"
             
             "TO SUGGEST AN ACTION:\n"
+            "Only include an [ACTION: ...] tag when the user explicitly asks to open, run, copy, save, or select something.\n"
+            "If the user asks to explain, summarize, tell differences, assess risk, or say why something changed, answer in text only and do not include an action tag.\n"
             "Respond naturally and end your message with a line like:\n"
             "[ACTION: open_file(filename='app_main.c')]\n"
             "[ACTION: view_diff()]\n"
@@ -1153,16 +1217,22 @@ class ComparisonAssistantWindow:
         self._set_busy(False)
         
         # Extract and execute suggested actions
-        action_results = self._extract_and_execute_actions(reply)
+        action_results = self._extract_and_execute_actions(reply, self.last_question)
+        display_reply = self._strip_action_tags(reply)
         
         # Display reply
-        self._append_bot(reply)
+        self._append_bot(display_reply)
         
         # Display action results if any
         if action_results:
-            self._append_system("\n📌 Actions executed:\n" + "\n".join(action_results))
+            executed = [item for item in action_results if not item.startswith("Skipped ")]
+            skipped = [item for item in action_results if item.startswith("Skipped ")]
+            if executed:
+                self._append_system("\nActions executed:\n" + "\n".join(executed))
+            if skipped and self._is_explicit_action_request(self.last_question):
+                self._append_system("\nActions not run:\n" + "\n".join(skipped))
         
-        self._after_reply(reply, self.last_question)
+        self._after_reply(display_reply, self.last_question)
 
     def _after_reply(self, reply, question):
         self.last_reply = reply
