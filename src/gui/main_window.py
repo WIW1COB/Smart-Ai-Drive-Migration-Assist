@@ -652,23 +652,35 @@ class MigrationAnalysisGUI:
     
     def _update_cached_credentials_after_login(self, username, password, server_url):
         """Persist or clear RTC credentials based on the login checkbox."""
-        if self.save_credentials_on_success:
+        # CRITICAL FIX: Always check current checkbox value at time of credential save
+        # This ensures credentials are saved even if start_snapshot_comparison wasn't called yet
+        should_save = self.keep_signed_in_var.get()
+        
+        if should_save:
             saved = CredentialManager.save_credentials(username, password, server_url)
             if saved:
                 self.cached_credentials_loaded = True
-                logger.info("RTC credentials cached after successful login")
+                logger.info("✓ RTC credentials cached after successful login")
             else:
                 self.cached_credentials_loaded = False
+                logger.warning("✗ Failed to save credentials securely")
                 self.root.after(
                     0,
                     lambda: messagebox.showwarning(
-                        "Credential Cache",
-                        "Login succeeded, but credentials could not be saved securely."
+                        "Credential Cache Warning",
+                        "Login succeeded, but credentials could not be saved securely.\n\n" +
+                        "Possible causes:\n" +
+                        "• keyring library not installed (pip install keyring)\n" +
+                        "• cryptography library not installed (pip install cryptography)\n" +
+                        "• File permission issues\n\n" +
+                        "You will need to re-enter credentials on next login."
                     )
                 )
         else:
+            # User unchecked "Keep me signed in" - clear any existing cached credentials
             CredentialManager.clear_credentials(server_url)
             self.cached_credentials_loaded = False
+            logger.info("Credentials not saved (Keep me signed in unchecked)")
         
         self.root.after(0, self._refresh_auth_status)
     
@@ -973,11 +985,17 @@ class MigrationAnalysisGUI:
             logger.info(f"Filtered: {len(snap1_filtered)} from Snapshot 1, {len(snap2_filtered)} from Snapshot 2")
             logger.info(f"Excluded: {len(selection_result['only_in_snap1'])} only in Snap1, {len(selection_result['only_in_snap2'])} only in Snap2")
             
-            # Compare snapshots (only selected components)
+            # Compare snapshots (only selected components) - OPTIMIZED with parallel processing
             self.root.after(0, lambda: self._update_progress(70, f"🔍 Comparing {len(snap1_filtered)} selected components..."))
-            logger.info(f"Comparing {len(snap1_filtered)} vs {len(snap2_filtered)} selected components...")
+            logger.info(f"Comparing {len(snap1_filtered)} vs {len(snap2_filtered)} selected components (PARALLEL MODE)...")
             
-            comparison_results = rtc_conn.compare_snapshots(snap1_filtered, snap2_filtered)
+            # Progress callback for comparison
+            def comparison_progress(current, total, message):
+                if total > 0:
+                    progress_pct = 70 + int((current / total) * 10)  # 70-80% range
+                    self.root.after(0, lambda: self._update_progress(progress_pct, f"🔍 {message}"))
+            
+            comparison_results = rtc_conn.compare_snapshots(snap1_filtered, snap2_filtered, progress_callback=comparison_progress)
             
             # Create output directory for this comparison
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1010,12 +1028,17 @@ class MigrationAnalysisGUI:
             self.root.after(0, lambda: self._update_progress(85, "📊 Preparing results viewer..."))
             
             # Enable changeset fetching for modified components
-            enable_changesets = True  # Enabled to show changeset information in reports
+            # IMPORTANT: Changeset fetching requires LSCM/SCM CLI to be installed and configured
+            # Set to True to fetch changeset information (adds comprehensive change tracking to reports)
+            # Set to False for faster comparisons without changeset details
+            enable_changesets = True  # ENABLED: Fetch changeset information for modified files
             
             # Transform snapshot results into results_viewer format (with changeset fetching)
             if enable_changesets:
-                logger.info("Changeset fetching enabled - fetching changesets for modified files...")
+                logger.info("Changeset fetching ENABLED - fetching changesets for modified files...")
                 self.root.after(0, lambda: self._update_progress(87, "🔍 Fetching changesets..."))
+            else:
+                logger.info("Changeset fetching DISABLED for faster performance")
             viewer_results = self._transform_snapshot_results_for_viewer(
                 comparison_results,
                 rtc_conn=rtc_conn,
@@ -1265,6 +1288,8 @@ class MigrationAnalysisGUI:
                     with open(diff_path, 'w', encoding='utf-8') as f:
                         f.write(html_diff)
                     
+                    logger.debug(f"{comp_name}: ✓ Generated diff for {file_path} ({total_diffs} differences)")
+                    
                     return {
                         'success': True,
                         'comp_name': comp_name,
@@ -1274,25 +1299,15 @@ class MigrationAnalysisGUI:
                         'diff_count': total_diffs
                     }
                     
-                    with open(diff_path, 'w', encoding='utf-8') as f:
-                        f.write(html_diff)
-                    
-                    return {
-                        'success': True,
-                        'comp_name': comp_name,
-                        'file_path': file_path,
-                        'diff_path': diff_path,
-                        'size': max_size
-                    }
-                    
                 except Exception as e:
-                    logger.debug(f"{comp_name}: Error processing {file_path}: {e}")
-                    return {'success': False, 'reason': str(e)[:100]}
+                    logger.warning(f"{comp_name}: ✗ Error generating diff for {file_path}: {e}", exc_info=True)
+                    return {'success': False, 'comp_name': comp_name, 'file_path': file_path, 'reason': str(e)[:100]}
             
             # Process diffs in parallel
             completed_count = 0
             success_count = 0
             failed_count = 0
+            failed_details = []  # Track failures for debugging
             
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_to_task = {executor.submit(generate_single_diff, task): task for task in all_tasks}
@@ -1323,6 +1338,11 @@ class MigrationAnalysisGUI:
                         })
                     else:
                         failed_count += 1
+                        # Track failure details for logging
+                        comp_name = result.get('comp_name', 'Unknown')
+                        file_path = result.get('file_path', 'Unknown')
+                        reason = result.get('reason', 'Unknown')
+                        failed_details.append(f"{comp_name}: {file_path} ({reason})")
             
             logger.info("=" * 80)
             logger.info(f"✓ FILE DIFF GENERATION COMPLETE (PARALLEL):")
@@ -1330,6 +1350,14 @@ class MigrationAnalysisGUI:
             logger.info(f"  Successfully generated diffs: {success_count}")
             logger.info(f"  Failed: {failed_count}")
             logger.info(f"  Diffs saved to: {diffs_dir}")
+            
+            if failed_count > 0 and failed_details:
+                logger.warning(f"Failed diffs (showing first 10):")
+                for detail in failed_details[:10]:
+                    logger.warning(f"  - {detail}")
+                if len(failed_details) > 10:
+                    logger.warning(f"  ... and {len(failed_details) - 10} more")
+            
             logger.info("=" * 80)
             
         except Exception as e:
@@ -1391,7 +1419,16 @@ class MigrationAnalysisGUI:
             
             # Generate purpose/description based on status
             if status == 'Modified':
-                purpose = f"Component baseline changed: {baseline1_uuid[:12]}... → {baseline2_uuid[:12]}..."
+                # Show file change details in purpose
+                file_comparison = result.get('file_comparison', {})
+                if file_comparison:
+                    added_count = len(file_comparison.get('added', []))
+                    modified_count = len(file_comparison.get('modified', []))
+                    removed_count = len(file_comparison.get('removed', []))
+                    purpose = f"Component baseline changed: {baseline1_uuid[:12]}... → {baseline2_uuid[:12]}... " \
+                             f"(+{added_count} added, ~{modified_count} modified, -{removed_count} removed)"
+                else:
+                    purpose = f"Component baseline changed: {baseline1_uuid[:12]}... → {baseline2_uuid[:12]}..."
             elif status == 'Unchanged':
                 purpose = f"Component baseline unchanged: {baseline1_uuid[:12]}..."
             elif status == 'Added in Snapshot 2':
@@ -1432,20 +1469,30 @@ class MigrationAnalysisGUI:
                                 changeset_count = len(changeset_map)
                                 first_file = list(changeset_map.keys())[0]
                                 first_cs = changeset_map[first_file]
-                                changeset_info = f"Changeset: {first_cs.get('uuid', 'N/A')[:10]}... ({changeset_count} files)"
+                                changeset_uuid = first_cs.get('uuid', 'N/A')[:10]
+                                changeset_info = f"Changeset: {changeset_uuid}... ({changeset_count} file(s))"
                                 changeset_stats['changesets_found'] += 1
                                 logger.info(f"   ✓ {comp_name}: Found changesets for {changeset_count} files - {changeset_info}")
-                            else:
-                                changeset_info = "No changesets found"
+                            elif not settings.LSCM_PATH:
+                                changeset_info = "LSCM not configured - Install RTC SCM CLI for changeset details"
                                 changeset_stats['changesets_failed'] += 1
-                                logger.warning(f"   ⚠ {comp_name}: No changesets found for any modified files")
+                                logger.warning(f"   ⚠ {comp_name}: LSCM not available")
+                            elif changeset_map is not None and len(changeset_map) == 0:
+                                changeset_info = "No changesets found (LSCM may not be configured correctly)"
+                                changeset_stats['changesets_failed'] += 1
+                                logger.warning(f"   ⚠ {comp_name}: No changesets found")
+                            else:
+                                changeset_info = "Changeset fetch failed"
+                                changeset_stats['changesets_failed'] += 1
                         else:
                             logger.debug(f"{comp_name}: No modified files to fetch changesets for")
+                            changeset_info = "No modified files"
                     else:
                         logger.debug(f"{comp_name}: No file comparison data available")
+                        changeset_info = "No file comparison data"
                 except Exception as e:
                     logger.warning(f"{comp_name}: Failed to fetch changesets: {e}", exc_info=True)
-                    changeset_info = f"Changeset fetch failed"
+                    changeset_info = f"Changeset fetch error: {str(e)[:50]}"
                     changeset_stats['changesets_failed'] += 1
             
             # Create result list matching offline format

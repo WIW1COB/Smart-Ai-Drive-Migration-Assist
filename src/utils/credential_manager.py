@@ -124,6 +124,8 @@ class CredentialManager:
             True if saved successfully, False otherwise
         """
         try:
+            logger.info(f"Attempting to save credentials for {username}@{server_url}")
+            
             # Method 1: Use system keyring if available
             if KEYRING_AVAILABLE:
                 try:
@@ -133,19 +135,26 @@ class CredentialManager:
                     keyring.set_password(CredentialManager.SERVICE_NAME, 
                                         f"{server_url}:password", 
                                         password)
-                    logger.info("✓ Credentials saved to system keyring")
+                    logger.info("✓ Credentials saved to system keyring successfully")
                     return True
                 except Exception as e:
-                    logger.warning(f"Keyring save failed, falling back to file: {e}")
+                    logger.warning(f"⚠ Keyring save failed, falling back to encrypted file: {e}")
+            else:
+                logger.warning("⚠ keyring library not available, using encrypted file storage")
+            
+            # Method 2: Save to encrypted file
+            if not ENCRYPTION_AVAILABLE:
+                logger.error("✗ cryptography library not available - cannot save credentials")
+                logger.error("Install with: pip install cryptography")
+                return False
             
             encrypted_username = CredentialManager._encrypt(username)
             encrypted_password = CredentialManager._encrypt(password)
             
             if not encrypted_username or not encrypted_password:
-                logger.error("Encrypted credential storage is unavailable")
+                logger.error("✗ Encryption failed - cannot save credentials")
                 return False
             
-            # Method 2: Save to encrypted file
             credentials = {
                 'username': encrypted_username,
                 'password': encrypted_password,
@@ -154,15 +163,21 @@ class CredentialManager:
             }
             
             # Write to file with restricted permissions
-            with open(CredentialManager.CRED_FILE, 'w') as f:
-                json.dump(credentials, f)
-            os.chmod(CredentialManager.CRED_FILE, 0o600)  # Read/write for owner only
-            
-            logger.info(f"✓ Credentials saved to {CredentialManager.CRED_FILE}")
-            return True
+            try:
+                with open(CredentialManager.CRED_FILE, 'w') as f:
+                    json.dump(credentials, f)
+                os.chmod(CredentialManager.CRED_FILE, 0o600)  # Read/write for owner only
+                logger.info(f"✓ Credentials saved to encrypted file: {CredentialManager.CRED_FILE}")
+                return True
+            except PermissionError as e:
+                logger.error(f"✗ Permission denied writing to {CredentialManager.CRED_FILE}: {e}")
+                return False
+            except Exception as e:
+                logger.error(f"✗ Failed to write credential file: {e}")
+                return False
         
         except Exception as e:
-            logger.error(f"Failed to save credentials: {e}")
+            logger.error(f"✗ Unexpected error saving credentials: {e}", exc_info=True)
             return False
     
     @staticmethod

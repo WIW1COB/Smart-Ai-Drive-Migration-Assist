@@ -647,20 +647,18 @@ class RTCConnection:
                     logger.debug(f'{component_name}: ✓ Downloaded {clean_path}: {len(content)} bytes')
                     return content
                 else:
-                    logger.warning(f'{component_name}: Failed to download {clean_path}')
-                    logger.warning(f'{component_name}: Exit code: {result.returncode}')
-                    logger.warning(f'{component_name}: Stderr: {result.stderr[:300]}')
-                    logger.warning(f'{component_name}: Stdout: {result.stdout[:300]}')
+                    stderr_preview = result.stderr[:200] if result.stderr else 'No error output'
+                    logger.warning(f'{component_name}: ✗ Failed to download {clean_path}')
+                    logger.warning(f'{component_name}: Return code: {result.returncode}')
+                    logger.warning(f'{component_name}: Stderr: {stderr_preview}')
                     logger.warning(f'{component_name}: File exists: {os.path.exists(output_file)}')
                     return None
         
         except subprocess.TimeoutExpired:
-            logger.error(f'{component_name}: Timeout downloading file: {file_path}')
+            logger.error(f'{component_name}: ✗ Timeout downloading {file_path} (45s)')
             return None
         except Exception as e:
-            logger.error(f'{component_name}: Error downloading file content: {e}')
-            import traceback
-            logger.debug(traceback.format_exc())
+            logger.error(f'{component_name}: ✗ Error downloading {file_path}: {e}', exc_info=True)
             return None
     
     def fetch_baseline_file_list(self, baseline_uuid, component_name='Unknown'):
@@ -704,7 +702,7 @@ class RTCConnection:
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=60,  # Reduced from 120s - fail faster on stuck operations
+                timeout=30,  # OPTIMIZED: Reduced from 60s to 30s for faster failure detection
                 env=env,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
             )
@@ -781,6 +779,7 @@ class RTCConnection:
         # For common files, compare content-id or state-id to determine if modified
         modified = []
         unchanged = []
+        no_metadata_files = []
         
         for path in common:
             file1 = files1[path]
@@ -806,8 +805,18 @@ class RTCConnection:
                     else:
                         unchanged.append(path)
                 else:
-                    # No reliable comparison possible - assume modified
-                    modified.append(path)
+                    # CRITICAL FIX: No metadata to compare - treat as UNCHANGED
+                    # Rationale: If we can't prove it changed, assume it didn't
+                    # This prevents false positives from missing metadata
+                    unchanged.append(path)
+                    no_metadata_files.append(path)
+        
+        # Log warning if files had no metadata for comparison
+        if no_metadata_files:
+            logger.warning(f"⚠ {len(no_metadata_files)} file(s) lacked content-id/state-id metadata, treated as unchanged")
+            if len(no_metadata_files) <= 5:
+                for path in no_metadata_files:
+                    logger.debug(f"  - No metadata: {path}")
         
         logger.debug(f"File comparison: {len(added)} added, {len(modified)} modified, "
                     f"{len(removed)} removed, {len(unchanged)} unchanged")
@@ -825,16 +834,25 @@ class RTCConnection:
             }
         }
     
-    def compare_snapshots(self, snap1_components, snap2_components):
+    def compare_snapshots(self, snap1_components, snap2_components, progress_callback=None):
         """
         Compare two sets of snapshot components with file-level analysis.
         If baseline UUIDs differ, fetches folder structures and compares files.
         
+        OPTIMIZED: Uses parallel processing for baseline file list fetching
+        
+        Args:
+            snap1_components: List of components from snapshot 1
+            snap2_components: List of components from snapshot 2
+            progress_callback: Optional callback(current, total, message) for progress updates
+        
         Returns: List of comparison results
         """
         try:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            
             logger.info("=" * 80)
-            logger.info("STARTING SNAPSHOT COMPONENT COMPARISON")
+            logger.info("STARTING SNAPSHOT COMPONENT COMPARISON (OPTIMIZED)")
             logger.info(f"Snapshot 1: {len(snap1_components)} components")
             logger.info(f"Snapshot 2: {len(snap2_components)} components")
             
@@ -851,11 +869,17 @@ class RTCConnection:
             snap2_dict = {comp['name']: comp for comp in snap2_components if comp.get('name')}
             
             # Find all unique component names
-            all_names = set(snap1_dict.keys()) | set(snap2_dict.keys())
+            all_names = sorted(set(snap1_dict.keys()) | set(snap2_dict.keys()))
             
+            # Phase 1: Quick comparison - identify modified components
+            logger.info("Phase 1: Identifying modified components...")
+            components_needing_file_comparison = []
             results = []
             
-            for name in sorted(all_names):
+            for idx, name in enumerate(all_names):
+                if progress_callback:
+                    progress_callback(idx, len(all_names), f"Analyzing {name}...")
+                
                 comp1 = snap1_dict.get(name)
                 comp2 = snap2_dict.get(name)
                 
@@ -867,60 +891,140 @@ class RTCConnection:
                 
                 if comp1 and comp2:
                     # Component exists in both
-                    # Use baseline_uuid (content version) for comparison, not component uuid (component ID)
                     uuid1 = comp1.get('baseline_uuid') or comp1.get('uuid')
                     uuid2 = comp2.get('baseline_uuid') or comp2.get('uuid')
                     
-                    logger.debug(f'{name}: Comparing baselines: {uuid1[:12] if uuid1 else "None"}... vs {uuid2[:12] if uuid2 else "None"}...')
+                    # Log the UUIDs being compared for debugging
+                    logger.debug(f'{name}: Comparing baseline_uuid1={uuid1[:20]}... vs baseline_uuid2={uuid2[:20]}...')
                     
                     if uuid1 == uuid2:
                         comparison['status'] = 'Unchanged'
                         logger.info(f'{name}: Unchanged - baseline UUIDs match')
                     else:
-                        # Baselines differ - perform file-level comparison
-                        logger.info(f'{name}: Baseline UUIDs differ - performing file-level comparison...')
+                        # Baselines differ - queue for file-level comparison
+                        # Note: Baseline UUIDs can differ even with identical content if:
+                        # - Baseline was recreated
+                        # - Metadata/permissions changed
+                        # - Component configuration changed
                         comparison['status'] = 'Modified'
                         comparison['baseline1_uuid'] = uuid1
                         comparison['baseline2_uuid'] = uuid2
-                        
-                        # Fetch file lists from both baselines
-                        try:
-                            logger.info(f'{name}: Fetching file lists from both baselines...')
-                            files1 = self.fetch_baseline_file_list(uuid1, name)
-                            files2 = self.fetch_baseline_file_list(uuid2, name)
-                            
-                            logger.info(f'{name}: Baseline 1 has {len(files1)} files, Baseline 2 has {len(files2)} files')
-                            
-                            if not files1 and not files2:
-                                logger.warning(f'{name}: Could not fetch file lists from either baseline - skipping file comparison')
-                                comparison['file_comparison'] = None
-                            else:
-                                # Compare file lists
-                                file_comparison = self.compare_file_lists(files1, files2)
-                                comparison['file_comparison'] = file_comparison
-                                comparison['files_added'] = file_comparison['added']
-                                comparison['files_modified'] = file_comparison['modified']
-                                comparison['files_removed'] = file_comparison['removed']
-                                comparison['files_unchanged'] = file_comparison['unchanged']
-                                
-                                logger.info(f'{name}: File changes - Added: {len(file_comparison["added"])}, '
-                                           f'Modified: {len(file_comparison["modified"])}, '
-                                           f'Removed: {len(file_comparison["removed"])}, '
-                                           f'Unchanged: {len(file_comparison["unchanged"])}')
-                            
-                        except Exception as file_err:
-                            logger.error(f'{name}: Error in file-level comparison: {file_err}', exc_info=True)
-                            comparison['file_comparison'] = None
+                        components_needing_file_comparison.append((name, uuid1, uuid2, comparison))
+                        logger.info(f'{name}: Baseline UUIDs differ ({uuid1[:8]}...≠{uuid2[:8]}...) - queued for file-level comparison')
                 
                 elif comp1:
-                    # Only in snapshot 1
                     comparison['status'] = 'Removed in Snapshot 2'
-                
                 else:
-                    # Only in snapshot 2
                     comparison['status'] = 'Added in Snapshot 2'
                 
                 results.append(comparison)
+            
+            # Phase 2: Parallel file list fetching for modified components
+            if components_needing_file_comparison:
+                logger.info(f"Phase 2: Fetching file lists for {len(components_needing_file_comparison)} modified components (PARALLEL)...")
+                
+                # Build list of baseline UUIDs to fetch (deduplicate)
+                baselines_to_fetch = set()
+                for name, uuid1, uuid2, _ in components_needing_file_comparison:
+                    if uuid1:
+                        baselines_to_fetch.add((uuid1, name, 1))
+                    if uuid2:
+                        baselines_to_fetch.add((uuid2, name, 2))
+                
+                logger.info(f"Fetching {len(baselines_to_fetch)} unique baselines in parallel...")
+                
+                # Parallel fetch with ThreadPoolExecutor
+                baseline_cache = {}
+                max_workers = min(8, len(baselines_to_fetch))  # Cap at 8 parallel workers
+                
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    future_to_baseline = {
+                        executor.submit(self.fetch_baseline_file_list, uuid, f"{name}_snap{snap_num}"): (uuid, name, snap_num)
+                        for uuid, name, snap_num in baselines_to_fetch
+                    }
+                    
+                    completed = 0
+                    for future in as_completed(future_to_baseline):
+                        uuid, name, snap_num = future_to_baseline[future]
+                        completed += 1
+                        
+                        if progress_callback:
+                            progress_callback(completed, len(baselines_to_fetch), 
+                                            f"Fetching files for {name} ({completed}/{len(baselines_to_fetch)})...")
+                        
+                        try:
+                            files = future.result()
+                            baseline_cache[uuid] = files
+                            logger.info(f'{name} (snap{snap_num}): ✓ Fetched {len(files)} files')
+                        except Exception as e:
+                            logger.error(f'{name} (snap{snap_num}): ✗ Failed to fetch: {e}')
+                            baseline_cache[uuid] = {}
+                
+                # Phase 3: Compare file lists using cached results
+                logger.info("Phase 3: Comparing file lists...")
+                for idx, (name, uuid1, uuid2, comparison) in enumerate(components_needing_file_comparison):
+                    if progress_callback:
+                        progress_callback(idx, len(components_needing_file_comparison), f"Comparing files in {name}...")
+                    
+                    try:
+                        files1 = baseline_cache.get(uuid1, {})
+                        files2 = baseline_cache.get(uuid2, {})
+                        
+                        # Always perform file comparison - even for empty components
+                        # Empty file lists (both {}) should result in 'Unchanged' status
+                        file_comparison = self.compare_file_lists(files1, files2)
+                        comparison['file_comparison'] = file_comparison
+                        comparison['files_added'] = file_comparison['added']
+                        comparison['files_modified'] = file_comparison['modified']
+                        comparison['files_removed'] = file_comparison['removed']
+                        comparison['files_unchanged'] = file_comparison['unchanged']
+                        
+                        # CRITICAL FIX: Update status to 'Unchanged' if NO actual file changes
+                        # This now correctly handles components with no files (empty baselines)
+                        if (len(file_comparison['added']) == 0 and 
+                            len(file_comparison['modified']) == 0 and 
+                            len(file_comparison['removed']) == 0):
+                            comparison['status'] = 'Unchanged'
+                            if not files1 and not files2:
+                                logger.info(f'{name}: ✓ Both baselines are empty (no files) - Status: Unchanged')
+                            else:
+                                logger.info(f'{name}: ✓ Baseline UUIDs differ but NO file changes - Status: Unchanged')
+                        else:
+                            # Log which files are causing the Modified status
+                            change_summary = []
+                            if file_comparison['added']:
+                                change_summary.append(f"{len(file_comparison['added'])} added")
+                                if len(file_comparison['added']) <= 3:
+                                    for f in file_comparison['added'][:3]:
+                                        logger.debug(f"  + Added: {f}")
+                            if file_comparison['modified']:
+                                change_summary.append(f"{len(file_comparison['modified'])} modified")
+                                if len(file_comparison['modified']) <= 3:
+                                    for f in file_comparison['modified'][:3]:
+                                        logger.debug(f"  ~ Modified: {f}")
+                            if file_comparison['removed']:
+                                change_summary.append(f"{len(file_comparison['removed'])} removed")
+                                if len(file_comparison['removed']) <= 3:
+                                    for f in file_comparison['removed'][:3]:
+                                        logger.debug(f"  - Removed: {f}")
+                            
+                            logger.info(f'{name}: ✓ {", ".join(change_summary)} - Status: Modified')
+                    
+                    except Exception as file_err:
+                        logger.error(f'{name}: Error comparing files: {file_err}', exc_info=True)
+                        comparison['file_comparison'] = None
+            
+            # Update results with file comparisons
+            result_dict = {r['name']: r for r in results}
+            for name, _, _, comparison in components_needing_file_comparison:
+                if name in result_dict:
+                    # Log status before and after update for debugging
+                    old_status = result_dict[name].get('status', 'Unknown')
+                    result_dict[name].update(comparison)
+                    new_status = result_dict[name].get('status', 'Unknown')
+                    
+                    if old_status != new_status:
+                        logger.info(f"{name}: Status updated from '{old_status}' → '{new_status}'")
             
             # Log summary
             logger.info("=" * 80)
@@ -934,8 +1038,22 @@ class RTCConnection:
             logger.info(f"  Unchanged: {unchanged}")
             logger.info(f"  Added: {added}")
             logger.info(f"  Removed: {removed}")
+            
+            # Detailed status verification for debugging
+            status_breakdown = {}
+            for r in results:
+                status = r.get('status', 'Unknown')
+                status_breakdown[status] = status_breakdown.get(status, 0) + 1
+            
+            if len(status_breakdown) > 0:
+                logger.info("  Status breakdown:")
+                for status, count in sorted(status_breakdown.items()):
+                    logger.info(f"    - '{status}': {count}")
+            
             logger.info("=" * 80)
             
+            # Return ALL components with their correct status
+            # Status is already set correctly: 'Modified', 'Unchanged', 'Added', 'Removed'
             return results
             
         except Exception as e:
@@ -947,6 +1065,9 @@ class RTCConnection:
         """
         Fetch changeset information for a list of modified files in a baseline.
         
+        REQUIREMENTS: This feature requires RTC SCM CLI (lscm/scm.exe) to be installed.
+        If not available, returns empty results with a warning.
+        
         Args:
             modified_files: List of file paths (from baseline file list)
             baseline_uuid: Baseline UUID for context
@@ -955,35 +1076,43 @@ class RTCConnection:
         Returns: Dictionary mapping file_path -> changeset_data
         """
         try:
-            from src.rtc.changeset import fetch_file_changesets_from_scm, fetch_workitems_from_changeset
-            
             if not modified_files:
                 logger.debug(f"{component_name}: No modified files to fetch changesets for")
                 return {}
             
-            logger.info(f"{component_name}: Fetching changesets for {len(modified_files)} modified files...")
+            logger.info(f"{component_name}: Attempting to fetch changesets for {len(modified_files)} modified files...")
             
             changeset_map = {}
             
-            # Use SCM CLI to get file history in baseline context
+            # Check LSCM availability
             lscm_path = settings.LSCM_PATH
-            if not lscm_path or not os.path.exists(lscm_path):
-                logger.warning(f"LSCM not available at {lscm_path} - cannot fetch changesets")
+            if not lscm_path:
+                logger.warning(f"{component_name}: LSCM_PATH not configured - changeset fetching unavailable")
+                logger.warning(f"Install RTC SCM CLI and configure settings.LSCM_PATH to enable changeset fetching")
                 return {}
+            
+            if not os.path.exists(lscm_path):
+                logger.warning(f"{component_name}: LSCM not found at {lscm_path} - changeset fetching unavailable")
+                logger.warning(f"Please install RTC SCM CLI (scm.exe/lscm) to enable changeset details")
+                return {}
+            
+            logger.info(f"{component_name}: Using LSCM at {lscm_path}")
             
             # Ensure baseline UUID has underscore prefix
             if baseline_uuid and not baseline_uuid.startswith('_'):
                 baseline_uuid = '_' + baseline_uuid
             
-            logger.info(f"{component_name}: Using LSCM at {lscm_path}")
             logger.info(f"{component_name}: Baseline UUID: {baseline_uuid[:20]}...")
             
-            for file_path in modified_files[:10]:  # Limit to first 10 files to avoid slowdown
+            # Fetch changesets for up to 10 files (to avoid excessive delay)
+            files_to_check = modified_files[:10]
+            logger.info(f"{component_name}: Fetching changesets for {len(files_to_check)} files (limited from {len(modified_files)} total)")
+            
+            for idx, file_path in enumerate(files_to_check, 1):
                 try:
-                    logger.debug(f"  Fetching changeset for: {file_path}")
+                    logger.debug(f"  [{idx}/{len(files_to_check)}] Fetching changeset for: {file_path}")
                     
                     # SCM history command for repository file
-                    # Note: SCM history might not support -b flag, so try without it first
                     cmd = [
                         lscm_path,
                         'history',
@@ -991,45 +1120,41 @@ class RTCConnection:
                         '-r', self.server_url,
                         '-u', self.username,
                         '-P', self.password,
-                        '-m', '1'  # Only most recent changeset
+                        '-m', '1',  # Only most recent changeset
+                        '-j'  # JSON output (if supported)
                     ]
-                    
-                    logger.debug(f"  SCM command: scm history {file_path} -r ... -m 1")
                     
                     result = subprocess.run(
                         cmd,
                         capture_output=True,
                         text=True,
-                        timeout=20,
+                        timeout=15,  # Reduced timeout for faster failure
                         creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
                     )
                     
-                    logger.debug(f"  Return code: {result.returncode}")
-                    
                     if result.returncode == 0 and result.stdout:
-                        logger.debug(f"  Got output: {result.stdout[:200]}")
                         # Parse changeset from output
                         changeset_data = self._parse_changeset_from_scm_output(result.stdout)
                         if changeset_data:
                             changeset_map[file_path] = changeset_data
-                            logger.info(f"  ✓ {file_path}: Found changeset {changeset_data.get('uuid', 'N/A')[:12]}...")
+                            logger.info(f"  ✓ [{idx}/{len(files_to_check)}] {file_path}: Found changeset {changeset_data.get('uuid', 'N/A')[:12]}...")
                         else:
-                            logger.debug(f"  {file_path}: Could not parse changeset from output")
+                            logger.debug(f"  ⚠ [{idx}/{len(files_to_check)}] {file_path}: Could not parse changeset from output")
                     else:
-                        stderr_preview = result.stderr[:200] if result.stderr else 'No error output'
-                        logger.debug(f"  {file_path}: Command failed or no output. Stderr: {stderr_preview}")
+                        stderr_preview = result.stderr[:100] if result.stderr else 'No error output'
+                        logger.debug(f"  ✗ [{idx}/{len(files_to_check)}] {file_path}: Command failed. Stderr: {stderr_preview}")
                     
                 except subprocess.TimeoutExpired:
-                    logger.warning(f"  {file_path}: Timeout fetching changeset")
+                    logger.warning(f"  ⏱ [{idx}/{len(files_to_check)}] {file_path}: Timeout (15s) fetching changeset")
                     continue
                 except Exception as e:
-                    logger.debug(f"  {file_path}: Failed to fetch changeset: {e}")
+                    logger.debug(f"  ✗ [{idx}/{len(files_to_check)}] {file_path}: Failed: {e}")
                     continue
             
             if changeset_map:
-                logger.info(f"{component_name}: ✓ Successfully fetched changesets for {len(changeset_map)}/{len(modified_files[:10])} files")
+                logger.info(f"{component_name}: ✓ Successfully fetched changesets for {len(changeset_map)}/{len(files_to_check)} files")
             else:
-                logger.warning(f"{component_name}: ⚠ No changesets found for any files")
+                logger.warning(f"{component_name}: ⚠ No changesets found for any files (LSCM may not be properly configured)")
             
             return changeset_map
             
