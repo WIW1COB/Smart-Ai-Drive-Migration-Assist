@@ -1,6 +1,7 @@
 """Comparison-aware chatbot for offline and online results."""
 
 import ast
+import ast
 import difflib
 import json
 import os
@@ -31,7 +32,14 @@ class ComparisonAssistantWindow:
     MAX_FILE_READ_CHARS = 60_000
     MAX_DIFF_LINES = 220
 
+    MAX_CHAT_COPY_CHARS = 200_000
+    MAX_FILE_READ_CHARS = 60_000
+    MAX_DIFF_LINES = 220
+
     OUT_OF_SCOPE_REPLY = (
+        "I'm specialized in migration analysis, code comparison, and RTC integration. "
+        "This question is outside my focus area. Please ask about file differences, "
+        "component analysis, migration risks, or code quality insights for this tool."
         "I'm specialized in migration analysis, code comparison, and RTC integration. "
         "This question is outside my focus area. Please ask about file differences, "
         "component analysis, migration risks, or code quality insights for this tool."
@@ -56,6 +64,11 @@ class ComparisonAssistantWindow:
         self.viewer = viewer
         self.busy = False
         self.engine = self._build_chat_engine()
+        
+        # Conversation history & memory
+        self.conversation_history = []  # List of {"role": "user"|"assistant", "content": "..."}
+        self.max_history_turns = 10  # Keep last 10 turns for context
+        
         
         # Conversation history & memory
         self.conversation_history = []  # List of {"role": "user"|"assistant", "content": "..."}
@@ -89,6 +102,8 @@ class ComparisonAssistantWindow:
         self._build_ui()
         self._show_startup_message()
         self.entry.focus_set()
+        self._show_startup_message()
+        self.entry.focus_set()
 
     def _build_ui(self):
         header = tk.Frame(self.window, bg="#003366", height=78)
@@ -107,6 +122,10 @@ class ComparisonAssistantWindow:
         ai_state = self._get_ai_state_label()
         badge = tk.Label(header, text=ai_state, font=("Segoe UI", 11, "bold"),
                          bg="#0F5C8C", fg="white", padx=14, pady=8)
+        # Show only AI state in badge (cleaner display)
+        ai_state = self._get_ai_state_label()
+        badge = tk.Label(header, text=ai_state, font=("Segoe UI", 11, "bold"),
+                         bg="#0F5C8C", fg="white", padx=14, pady=8)
         badge.pack(side="right", padx=18)
 
         body = tk.Frame(self.window, bg="#ECF2F6")
@@ -118,6 +137,7 @@ class ComparisonAssistantWindow:
         sidebar.grid(row=0, column=0, sticky="ns", padx=(0, 10))
         sidebar.grid_propagate(False)
 
+        mode = "Online-Online" if self.viewer.online_context else "Offline"
         mode = "Online-Online" if self.viewer.online_context else "Offline"
         context_text = self._context_card_text(mode)
         tk.Label(sidebar, text=context_text, font=("Segoe UI", 9), bg="#CFE0EC",
@@ -179,6 +199,7 @@ class ComparisonAssistantWindow:
             chat_frame,
             wrap="word",
             state="normal",
+            state="normal",
             bg="#FFFFFF",
             fg="#17212B",
             font=("Segoe UI", 10),
@@ -187,6 +208,28 @@ class ComparisonAssistantWindow:
             pady=14
         )
         self.chat.grid(row=0, column=0, sticky="nsew")
+        # Keep the transcript read-only while still allowing selection/copy.
+        # Block only text-editing keys; allow selection and copy
+        self.chat.bind("<Key>", self._on_chat_key)
+        self.chat.bind("<<Paste>>", lambda _e: "break")
+        self.chat.bind("<Control-v>", lambda _e: "break")
+        self.chat.bind("<Control-c>", self._copy_chat_selection)
+        self.chat.bind("<Control-a>", self._select_all_chat)
+        self.chat.bind("<Button-3>", self._show_chat_menu)  # right-click
+        # Avoid the "text disappears" effect on some themes when focus/hover changes.
+        self.chat.config(
+            selectbackground="#CDE8FF",
+            inactiveselectbackground="#CDE8FF",
+            selectforeground="#17212B",
+        )
+
+        self._chat_menu = tk.Menu(self.window, tearoff=0)
+        self._chat_menu.add_command(label="Copy selection", command=self._copy_chat_selection)
+        self._chat_menu.add_command(label="Copy last answer", command=self._copy_last_answer)
+        self._chat_menu.add_command(label="Copy all", command=self._copy_all_chat)
+        self._chat_menu.add_separator()
+        self._chat_menu.add_command(label="Save last answer...", command=self._save_last_answer)
+
         # Keep the transcript read-only while still allowing selection/copy.
         # Block only text-editing keys; allow selection and copy
         self.chat.bind("<Key>", self._on_chat_key)
@@ -299,6 +342,8 @@ class ComparisonAssistantWindow:
 
         intent = self._classify_intent(question)
         local_context = self._build_context(question, intent=intent)
+        intent = self._classify_intent(question)
+        local_context = self._build_context(question, intent=intent)
         self.last_context = local_context
         if not self.engine or self._should_answer_locally(intent):
             self._append_bot(local_context)
@@ -309,6 +354,7 @@ class ComparisonAssistantWindow:
 
         def worker():
             try:
+                reply = self._ask_model(question, local_context, intent=intent)
                 reply = self._ask_model(question, local_context, intent=intent)
             except Exception as exc:
                 reply = local_context + f"\n\nAI polish unavailable: {exc}"
@@ -323,6 +369,8 @@ class ComparisonAssistantWindow:
             return "Opened the reports folder."
         if "copy" in q and ("last" in q or "answer" in q):
             return self._copy_last_answer()
+        if "copy" in q and ("last" in q or "answer" in q):
+            return self._copy_last_answer()
         if "save" in q and ("answer" in q or "chat" in q):
             return self._save_last_answer()
         if ("run" in q or "open" in q or "start" in q) and "interface" in q:
@@ -334,6 +382,37 @@ class ComparisonAssistantWindow:
         if "select" in q and ("changed" in q or "modified" in q or "different" in q):
             return self._select_first_changed_row()
         return None
+
+    def _is_explicit_action_request(self, question: str) -> bool:
+        """Return True only when the user is asking the tool to do something."""
+        q = (question or "").lower()
+        action_words = (
+            "open", "launch", "start", "run", "execute", "save", "copy",
+            "select", "choose", "export"
+        )
+        if any(word in q for word in action_words):
+            return True
+        return q.strip().startswith(("/open", "/run", "/save", "/copy", "/select"))
+
+    def _should_execute_model_action(self, action_name: str, question: str) -> bool:
+        """Gate model-suggested actions so explanation prompts do not open files."""
+        if not self._is_explicit_action_request(question):
+            return False
+
+        q = (question or "").lower()
+        if action_name == "open_file":
+            return any(word in q for word in ("open", "launch"))
+        if action_name == "view_diff":
+            return "open" in q and ("diff" in q or "html" in q or "report" in q)
+        if action_name == "open_reports":
+            return "open" in q and "report" in q
+        if action_name == "run_interface_analysis":
+            return any(word in q for word in ("run", "start", "launch", "execute")) and "interface" in q
+        if action_name == "select_changed_file":
+            return any(word in q for word in ("select", "choose"))
+        if action_name == "copy_file":
+            return "copy" in q
+        return False
 
     def _is_explicit_action_request(self, question: str) -> bool:
         """Return True only when the user is asking the tool to do something."""
@@ -1665,6 +1744,8 @@ class ComparisonAssistantWindow:
             return "No textual differences detected."
         if len(diff) > max_lines:
             diff = diff[:max_lines] + ["... diff truncated; open HTML diff for full view.\n"]
+        if len(diff) > max_lines:
+            diff = diff[:max_lines] + ["... diff truncated; open HTML diff for full view.\n"]
         return "```diff\n" + "".join(diff) + "\n```"
 
     def _make_diff_explanation(self, path1: str, path2: str) -> str:
@@ -1744,6 +1825,7 @@ class ComparisonAssistantWindow:
         return None
 
     def _build_chat_engine(self):
+        """Build chat engine: tries Groq first, then AOAI (if available)."""
         """Build chat engine: tries Groq first, then AOAI (if available)."""
         try:
             from src.config import settings
@@ -2134,6 +2216,24 @@ class ComparisonAssistantWindow:
                 self._append_system("\nActions not run:\n" + "\n".join(skipped))
         
         self._after_reply(display_reply, self.last_question)
+        
+        # Extract and execute suggested actions
+        action_results = self._extract_and_execute_actions(reply, self.last_question)
+        display_reply = self._strip_action_tags(reply)
+        
+        # Display reply
+        self._append_bot(display_reply)
+        
+        # Display action results if any
+        if action_results:
+            executed = [item for item in action_results if not item.startswith("Skipped ")]
+            skipped = [item for item in action_results if item.startswith("Skipped ")]
+            if executed:
+                self._append_system("\nActions executed:\n" + "\n".join(executed))
+            if skipped and self._is_explicit_action_request(self.last_question):
+                self._append_system("\nActions not run:\n" + "\n".join(skipped))
+        
+        self._after_reply(display_reply, self.last_question)
 
     def _after_reply(self, reply, question):
         self.last_reply = reply
@@ -2242,6 +2342,7 @@ class ComparisonAssistantWindow:
     def _append_bot(self, text):
         self._write("\nAssistant\n", "bot_label")
         self._write_with_code_blocks(text + "\n", base_tag="bot")
+        self._write_with_code_blocks(text + "\n", base_tag="bot")
 
     def _append_system(self, text):
         self._write("\n" + text + "\n", "system")
@@ -2256,9 +2357,93 @@ class ComparisonAssistantWindow:
                 continue
             self._write(line, "code" if in_code else base_tag)
 
+    def _write_with_code_blocks(self, text: str, base_tag: str) -> None:
+        """Render simple fenced code blocks (```...```) using the `code` tag."""
+        in_code = False
+        for line in text.splitlines(keepends=True):
+            if line.lstrip().startswith("```"):
+                in_code = not in_code
+                self._write(line, "system" if base_tag == "system" else base_tag)
+                continue
+            self._write(line, "code" if in_code else base_tag)
+
     def _write(self, text, tag):
         self.chat.insert("end", text, tag)
         self.chat.see("end")
+
+    def _show_chat_menu(self, event=None):
+        try:
+            self._chat_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self._chat_menu.grab_release()
+
+    def _copy_chat_selection(self, _event=None):
+        try:
+            selection = self.chat.get("sel.first", "sel.last")
+        except Exception:
+            selection = ""
+        if not selection.strip():
+            self.status_var.set("No selection to copy")
+            return "break"
+        if len(selection) > self.MAX_CHAT_COPY_CHARS:
+            selection = selection[: self.MAX_CHAT_COPY_CHARS] + "\n...[truncated for clipboard]...\n"
+        self.window.clipboard_clear()
+        self.window.clipboard_append(selection)
+        self.status_var.set("Copied selection")
+        return "break"
+
+    def _copy_all_chat(self):
+        content = self.chat.get("1.0", "end-1c")
+        if len(content) > self.MAX_CHAT_COPY_CHARS:
+            content = content[: self.MAX_CHAT_COPY_CHARS] + "\n...[truncated for clipboard]...\n"
+        self.window.clipboard_clear()
+        self.window.clipboard_append(content)
+        self.status_var.set("Copied full transcript")
+        return "Copied the full transcript to clipboard."
+
+    def _copy_last_answer(self):
+        if not self.last_reply:
+            self.status_var.set("No answer to copy")
+            return "There is no assistant answer to copy yet."
+        text = self.last_reply
+        if len(text) > self.MAX_CHAT_COPY_CHARS:
+            text = text[: self.MAX_CHAT_COPY_CHARS] + "\n...[truncated for clipboard]...\n"
+        self.window.clipboard_clear()
+        self.window.clipboard_append(text)
+        self.status_var.set("Copied last answer")
+        return "Copied the last answer to clipboard."
+
+    def _select_all_chat(self, _event=None):
+        self.chat.tag_add("sel", "1.0", "end-1c")
+        self.status_var.set("Selected all text")
+        return "break"
+
+    def _on_chat_key(self, event=None):
+        """Handle key events: block editing but allow selection."""
+        if not event:
+            return None
+        
+        # Allow arrow keys, page up/down, shift for selection
+        if event.keysym in ("Up", "Down", "Left", "Right", "Prior", "Next", "Home", "End"):
+            return None  # Allow these
+        
+        # Block Delete, Backspace, and other editing keys
+        if event.keysym in ("Delete", "BackSpace"):
+            return "break"
+        
+        # Block any regular character input (text editing)
+        if event.state & 0x0004:  # Control key pressed
+            # Allow Ctrl+A, Ctrl+C (handled by their own bindings)
+            return None
+        if event.state & 0x0001:  # Shift key pressed
+            # Allow Shift+Arrow for selection
+            return None
+        
+        # Block regular character input
+        if len(event.char) > 0 and event.char.isprintable():
+            return "break"
+        
+        return None
 
     def _show_chat_menu(self, event=None):
         try:

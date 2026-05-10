@@ -3,6 +3,12 @@
 import os
 import sys
 
+try:
+    from dotenv import load_dotenv  # type: ignore
+    load_dotenv(os.path.join(os.path.dirname(__file__), "../..", ".env"), override=True)
+except Exception:
+    pass
+
 # ---------------------------------------------------------------------------
 # RTC/ALM Configuration
 # ---------------------------------------------------------------------------
@@ -65,28 +71,56 @@ SNAPSHOT2_URL = None
 # ---------------------------------------------------------------------------
 # AI Configuration — set keys via environment variables
 # ---------------------------------------------------------------------------
-# Azure OpenAI (Bosch Farm) — used for AI Smart Merge
-# Required env var:
-#   GENAIPLATFORM_FARM_SUBSCRIPTION_KEY
-AOAI_FARM_SUBSCRIPTION_KEY = os.environ.get("GENAIPLATFORM_FARM_SUBSCRIPTION_KEY", "")
 
-# These defaults match your provided snippet; override via env if needed.
-AOAI_FARM_ENDPOINT = os.environ.get("AOAI_FARM_ENDPOINT", "https://aoai-farm.bosch-temp.com/api")
-AOAI_FARM_DEPLOYMENT = os.environ.get(
-    "AOAI_FARM_DEPLOYMENT",
-    "askbosch-prod-farm-openai-gpt-41-mini-2025-04-14",
+# ============ GROQ (Primary LLM — Active) ============
+# Groq API key for the migration assistant chatbot.
+# Set via environment variable GROQ_API_KEY
+# Get your key from: https://console.groq.com
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+
+# Groq model selection
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+# Other available models:
+#   - llama-3.3-70b-versatile (recommended for general tasks, currently available)
+#   - llama-3.1-405b-reasoning (most capable, slower)
+#   - mixtral-8x7b-32768
+#   - gemma-7b-it
+
+# ============ Groq Proxy Configuration (for corporate networks) ============
+# Set these if Groq fails with DNS/network errors on corporate networks
+GROQ_PROXY_URL = os.environ.get(
+    "GROQ_PROXY_URL",
+    os.environ.get("HTTPS_PROXY", os.environ.get("HTTP_PROXY", "")),
 )
-AOAI_FARM_API_VERSION = os.environ.get("AOAI_FARM_API_VERSION", "2025-04-14-preview")
+# Example: "http://proxy.company.com:8080" or "http://user:pass@proxy:8080"
 
-# Model name used in request payload. Some Azure setups require the deployment name here;
-# the merge code will try this first, then fall back to AOAI_FARM_DEPLOYMENT.
-AOAI_FARM_MODEL = os.environ.get("AOAI_FARM_MODEL", "gpt-5-2025-08-07")
+GROQ_PROXY_USERNAME = os.environ.get(
+    "GROQ_PROXY_USERNAME",
+    os.environ.get("PROXY_USER", ""),
+)
+# Example: "DOMAIN\\username" or just "username"
 
-# Chat assistant endpoint settings. Kept separate from AI merge so the chatbot
-# can use the lightweight GPT-5-nano chat-completions deployment that works with
-# the minimal {"messages": ...} request body.
-AOAI_CHAT_DEPLOYMENT = os.environ.get("AOAI_CHAT_DEPLOYMENT", "gpt-5-nano-2025-08-07")
-AOAI_CHAT_API_VERSION = os.environ.get("AOAI_CHAT_API_VERSION", "2025-04-01-preview")
+GROQ_PROXY_PASSWORD = os.environ.get(
+    "GROQ_PROXY_PASSWORD",
+    os.environ.get("PROXY_PASS", ""),
+)
+# Example: "password" (will be prompted if not set and proxy_url is configured)
+
+# ============ Azure OpenAI / Bosch Farm (Disabled for now; will reuse when available) ============
+# NOTE: Bosch AOAI Farm is currently unavailable.
+#       Uncomment and configure these settings to re-enable when the service returns.
+#       The chatbot will automatically prefer Groq if both are available.
+
+# AOAI_FARM_SUBSCRIPTION_KEY = os.environ.get("GENAIPLATFORM_FARM_SUBSCRIPTION_KEY", "")
+# AOAI_FARM_ENDPOINT = os.environ.get("AOAI_FARM_ENDPOINT", "https://aoai-farm.bosch-temp.com/api")
+# AOAI_FARM_DEPLOYMENT = os.environ.get(
+#     "AOAI_FARM_DEPLOYMENT",
+#     "askbosch-prod-farm-openai-gpt-41-mini-2025-04-14",
+# )
+# AOAI_FARM_API_VERSION = os.environ.get("AOAI_FARM_API_VERSION", "2025-04-14-preview")
+# AOAI_FARM_MODEL = os.environ.get("AOAI_FARM_MODEL", "gpt-5-2025-08-07")
+# AOAI_CHAT_DEPLOYMENT = os.environ.get("AOAI_CHAT_DEPLOYMENT", "gpt-5-nano-2025-08-07")
+# AOAI_CHAT_API_VERSION = os.environ.get("AOAI_CHAT_API_VERSION", "2025-04-01-preview")
 
 # OpenAI API key — used to enhance AI Suggest (optional; heuristics work without it)
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
@@ -95,6 +129,7 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 # Corporate Proxy Configuration (optional; used for outbound HTTP calls)
 # ---------------------------------------------------------------------------
 # Auto-detected Bosch proxy. Change PROXY_URL to "" to disable.
+# NOTE: Groq may work better without corporate proxy; configure HTTPS_PROXY if needed.
 PROXY_URL = os.environ.get("HTTPS_PROXY",
                           os.environ.get("HTTP_PROXY", "http://rb-proxy-in.bosch.com:8080"))
 # Leave PROXY_USER / PROXY_PASS empty to be prompted once at runtime.

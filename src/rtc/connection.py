@@ -837,7 +837,8 @@ class RTCConnection:
     def compare_snapshots(self, snap1_components, snap2_components, progress_callback=None):
         """
         Compare two sets of snapshot components with file-level analysis.
-        If baseline UUIDs differ, fetches folder structures and compares files.
+        When both components exist but baseline UUIDs differ, fetches folder
+        structures and performs file-level comparison.
         
         OPTIMIZED: Uses parallel processing for baseline file list fetching
         
@@ -883,11 +884,7 @@ class RTCConnection:
                 comp1 = snap1_dict.get(name)
                 comp2 = snap2_dict.get(name)
                 
-                comparison = {
-                    'name': name,
-                    'snapshot1': comp1,
-                    'snapshot2': comp2,
-                }
+                entry = {'name': name, 'snapshot1': comp1, 'snapshot2': comp2}
                 
                 if comp1 and comp2:
                     # Component exists in both
@@ -1057,7 +1054,7 @@ class RTCConnection:
             return results
             
         except Exception as e:
-            logger.error(f"Error comparing snapshots: {e}")
+            logger.error(f"Error in compare_snapshots: {e}")
             return []
 
     
@@ -1223,7 +1220,6 @@ class RTCConnection:
                 logger.warning(f"No baseline UUID provided for {component_name}")
                 return {'folders': {}, 'files': []}
             
-            # Add _ prefix if missing
             if not baseline_uuid.startswith('_'):
                 baseline_uuid = '_' + baseline_uuid
             
@@ -1292,35 +1288,64 @@ class RTCConnection:
                 return {'folders': {}, 'files': []}
                 
         except Exception as e:
-            logger.error(f"Error fetching baseline structure for {component_name}: {e}")
+            logger.debug(f"Error fetching folder {folder_id[:12]}: {e}")
             return {'folders': {}, 'files': []}
+    
+    @staticmethod
+    def _get_all_files_from_structure(structure, parent_path=''):
+        """
+        Recursively extract all files from a nested folder structure.
+        
+        Returns: dict {file_path: file_info_dict}
+        """
+        files = {}
+        if not structure:
+            return files
+        
+        # Add files at this level
+        for file_item in structure.get('files', []):
+            if isinstance(file_item, dict):
+                file_name = file_item.get('name', '')
+                if file_name:
+                    file_path = f"{parent_path}/{file_name}" if parent_path else file_name
+                    files[file_path] = file_item
+            elif isinstance(file_item, str):
+                file_path = f"{parent_path}/{file_item}" if parent_path else file_item
+                files[file_path] = {'name': file_item}
+        
+        # Recurse into subfolders
+        for folder_name, folder_content in structure.get('folders', {}).items():
+            folder_path = f"{parent_path}/{folder_name}" if parent_path else folder_name
+            subfolder_files = RTCConnection._get_all_files_from_structure(folder_content, folder_path)
+            files.update(subfolder_files)
+        
+        return files
     
     def compare_folder_structures(self, folder1, folder2):
         """
-        Compare two folder structures from baselines
+        Compare two folder structures from baselines.
         
-        Returns: dict with comparison results
-        {
-            'added': N,
-            'modified': N,
-            'removed': N,
-            'unchanged': N,
-            'details': {file_path: status}
+        Returns: {
+            'added': int,
+            'modified': int,
+            'removed': int,
+            'unchanged': int,
+            'details': {file_path: 'added'|'removed'|'modified'|'unchanged'}
         }
         """
         try:
-            files1 = set((f['path'], f['uuid']) for f in folder1.get('files', []))
-            files2 = set((f['path'], f['uuid']) for f in folder2.get('files', []))
+            if not folder1 and not folder2:
+                return {'added': 0, 'modified': 0, 'removed': 0, 'unchanged': 0, 'details': {}}
             
-            paths1 = {f[0]: f[1] for f in files1}
-            paths2 = {f[0]: f[1] for f in files2}
+            # Recursively collect all files with full metadata
+            files1 = self._get_all_files_from_structure(folder1, '')
+            files2 = self._get_all_files_from_structure(folder2, '')
             
-            all_paths = set(paths1.keys()) | set(paths2.keys())
+            paths1 = set(files1.keys())
+            paths2 = set(files2.keys())
             
-            added = 0
-            modified = 0
-            removed = 0
-            unchanged = 0
+            all_paths = paths1 | paths2
+            added = modified = removed = unchanged = 0
             details = {}
             
             for path in sorted(all_paths):
@@ -1348,16 +1373,9 @@ class RTCConnection:
                 'unchanged': unchanged,
                 'details': details
             }
-            
         except Exception as e:
             logger.error(f"Error comparing folder structures: {e}")
-            return {
-                'added': 0,
-                'modified': 0,
-                'removed': 0,
-                'unchanged': 0,
-                'details': {}
-            }
+            return {'added': 0, 'modified': 0, 'removed': 0, 'unchanged': 0, 'details': {}}
 
 
 def get_rtc_connection(username, password, server_url=None):

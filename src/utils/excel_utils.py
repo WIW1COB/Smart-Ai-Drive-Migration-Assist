@@ -1,15 +1,15 @@
 """Excel utility functions for Migration Analysis Tool"""
-
+ 
 import os
 import csv
 import datetime
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.styles import numbers
-
+ 
 from .file_utils import sanitize_for_excel
-
-
+ 
+ 
 def create_overview_sheet(wb, results, folder1, folder2):
     """
     Create an overview sheet with summary statistics and comparison info.
@@ -17,10 +17,10 @@ def create_overview_sheet(wb, results, folder1, folder2):
     """
     from datetime import datetime
     from openpyxl.styles import Border, Side
-    
+   
     ws = wb.active
     ws.title = "Overview"
-    
+   
     # Define styles
     title_font = Font(size=14, bold=True, color="1F4E78")
     subtitle_font = Font(size=11, bold=True, color="003366")
@@ -31,7 +31,7 @@ def create_overview_sheet(wb, results, folder1, folder2):
         top=Side(style='thin'),
         bottom=Side(style='thin')
     )
-    
+   
     # Calculate statistics
     # Results structure: [File Path, Lines1, Lines2, Line Status, Status, HTML Link, Purpose]
     # Status is at index 4, Lines1 at index 1, Lines2 at index 2
@@ -41,7 +41,7 @@ def create_overview_sheet(wb, results, folder1, folder2):
     comments_only_count = sum(1 for r in results if r[4] == "Comments update only")
     only_folder1_count = sum(1 for r in results if r[4] == "Only in Platform")
     only_folder2_count = sum(1 for r in results if r[4] == "Only in Project")
-    
+   
     # Calculate line statistics
     def get_lines(r):
         """Get line counts safely"""
@@ -51,19 +51,19 @@ def create_overview_sheet(wb, results, folder1, folder2):
             return lines1, lines2
         except:
             return 0, 0
-    
+   
     # Total lines
     total_lines_folder1 = sum(get_lines(r)[0] for r in results)
     total_lines_folder2 = sum(get_lines(r)[1] for r in results)
     total_lines_combined = total_lines_folder1 + total_lines_folder2
-    
+   
     # Lines by category
     identical_lines = sum(get_lines(r)[0] + get_lines(r)[1] for r in results if r[4] == "Identical")
     different_lines = sum(get_lines(r)[0] + get_lines(r)[1] for r in results if r[4] == "Different")
     comments_only_lines = sum(get_lines(r)[0] + get_lines(r)[1] for r in results if r[4] == "Comments update only")
     only_folder1_lines = sum(get_lines(r)[0] for r in results if r[4] == "Only in Platform")
     only_folder2_lines = sum(get_lines(r)[1] for r in results if r[4] == "Only in Project")
-    
+   
     # Determine complexity level based on percentage of different files
     def get_complexity(diff_pct):
         """Determine complexity level based on percentage of differences"""
@@ -73,7 +73,7 @@ def create_overview_sheet(wb, results, folder1, folder2):
             return "Medium"
         else:
             return "Major"
-    
+   
     # Title
     ws.merge_cells('A1:D1')
     cell = ws['A1']
@@ -81,26 +81,26 @@ def create_overview_sheet(wb, results, folder1, folder2):
     cell.font = title_font
     cell.alignment = Alignment(horizontal='center', vertical='center')
     ws.row_dimensions[1].height = 25
-    
+   
     # Comparison Information
     ws.append([])
     ws.append(["Comparison Information:"])
     ws['A3'].font = subtitle_font
-    
+   
     ws.append(["Platform (Baseline):", folder1])
     ws.append(["Project:", folder2])
     ws.append(["Generated:", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
     ws.append([])
-    
+   
     # Summary Statistics (following template format)
     ws.append(["Summary Statistics:"])
     ws['A8'].font = subtitle_font
-    
+   
     # Header Row with 9 columns (E-F merged for "No of lines(LOC)")
     ws.append([
-        "Category", 
-        "No of files", 
-        "% of files", 
+        "Category",
+        "No of files",
+        "% of files",
         "% of files\n(Platform vs Project)",
         "No of lines(LOC)",
         None,  # Merged with E
@@ -108,7 +108,7 @@ def create_overview_sheet(wb, results, folder1, folder2):
         "% of LOC\n(Platform vs Project)",
         "Complexity Level"
     ])
-    
+   
     header_row = 9
     # Format header cells
     for col in range(1, 10):
@@ -118,10 +118,10 @@ def create_overview_sheet(wb, results, folder1, folder2):
         cell.border = thin_border
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     ws.row_dimensions[header_row].height = 30
-    
+   
     # Merge E1:F1 for "No of lines(LOC)" header
     ws.merge_cells(f'E{header_row}:F{header_row}')
-    
+   
     # Determine individual complexity levels
     different_pct_val = (different_count/total_files*100) if total_files > 0 else 0
     complexity_identical = "Minor"
@@ -129,13 +129,13 @@ def create_overview_sheet(wb, results, folder1, folder2):
     complexity_comments = "Minor" if comments_only_count > 0 else "Minor"
     complexity_different = get_complexity(different_pct_val)
     complexity_project_only = "Minor"
-    
+   
     # Check if all complexities are the same
-    all_complexities = [complexity_identical, complexity_platform_only, complexity_comments, 
+    all_complexities = [complexity_identical, complexity_platform_only, complexity_comments,
                         complexity_different, complexity_project_only]
     all_same_complexity = len(set(all_complexities)) == 1
     overall_complexity = all_complexities[0] if all_same_complexity else get_complexity(different_pct_val)
-    
+   
     # Row 2: Total (with Excel formulas)
     row = header_row + 1
     ws.append([
@@ -153,7 +153,7 @@ def create_overview_sheet(wb, results, folder1, folder2):
     for col in range(1, 10):
         ws.cell(row, col).alignment = Alignment(horizontal="center", vertical="center")
         ws.cell(row, col).border = thin_border
-    
+   
     # Row 3: Identical (Files with no differences)
     row += 1
     row_identical = row
@@ -173,7 +173,7 @@ def create_overview_sheet(wb, results, folder1, folder2):
     for col in range(1, 10):
         ws.cell(row, col).alignment = Alignment(horizontal="center", vertical="center")
         ws.cell(row, col).border = thin_border
-    
+   
     # Row 4: Files exist only in platform
     row += 1
     ws.append([
@@ -192,7 +192,7 @@ def create_overview_sheet(wb, results, folder1, folder2):
     for col in range(1, 10):
         ws.cell(row, col).alignment = Alignment(horizontal="center", vertical="center")
         ws.cell(row, col).border = thin_border
-    
+   
     # Row 5: Comments update only
     row += 1
     ws.append([
@@ -211,18 +211,18 @@ def create_overview_sheet(wb, results, folder1, folder2):
     for col in range(1, 10):
         ws.cell(row, col).alignment = Alignment(horizontal="center", vertical="center")
         ws.cell(row, col).border = thin_border
-    
+   
     # Merge D cells for identical, platform, comments (rows 3-5)
     ws.merge_cells(f'D{row_identical}:D{row}')
     ws.merge_cells(f'H{row_identical}:H{row}')
-    
+   
     # Row 6-7: Files with code differences in Project (with Added/Removed sub-rows)
     row += 1
     row_diff_start = row
     # Calculate added and removed lines for different files
     added_lines_diff = sum(get_lines(r)[1] for r in results if r[4] == "Different")
     removed_lines_diff = -sum(get_lines(r)[0] for r in results if r[4] == "Different")
-    
+   
     ws.append([
         "Files with code differences in Project",
         different_count,
@@ -239,7 +239,7 @@ def create_overview_sheet(wb, results, folder1, folder2):
     for col in range(1, 10):
         ws.cell(row, col).alignment = Alignment(horizontal="center", vertical="center")
         ws.cell(row, col).border = thin_border
-    
+   
     # Row 7: Sub-row for Removed lines
     row += 1
     ws.append([
@@ -256,7 +256,7 @@ def create_overview_sheet(wb, results, folder1, folder2):
     for col in range(1, 10):
         ws.cell(row, col).alignment = Alignment(horizontal="center", vertical="center")
         ws.cell(row, col).border = thin_border
-    
+   
     # Row 8: Files exist only in Project
     row += 1
     ws.append([
@@ -275,14 +275,14 @@ def create_overview_sheet(wb, results, folder1, folder2):
     for col in range(1, 10):
         ws.cell(row, col).alignment = Alignment(horizontal="center", vertical="center")
         ws.cell(row, col).border = thin_border
-    
+   
     # Merge cells for "Files with code differences" (A, B, C, D columns across rows 6-7)
     ws.merge_cells(f'A{row_diff_start}:A{row_diff_start+1}')
     ws.merge_cells(f'B{row_diff_start}:B{row_diff_start+1}')
     ws.merge_cells(f'C{row_diff_start}:C{row_diff_start+1}')
     ws.merge_cells(f'D{row_diff_start}:D{row}')
     ws.merge_cells(f'H{row_diff_start}:H{row}')
-    
+   
     # If all complexities are the same, merge the Complexity Level column (I) for all data rows
     if all_same_complexity:
         ws.merge_cells(f'I{header_row+1}:I{row}')
@@ -290,7 +290,7 @@ def create_overview_sheet(wb, results, folder1, folder2):
     else:
         # Merge complexity for sub-rows that don't have individual complexity
         ws.merge_cells(f'I{row_diff_start}:I{row_diff_start+1}')
-    
+   
     # Apply percentage formatting to percentage columns (C, D, G, H)
     from openpyxl.styles import numbers
     for row_num in range(header_row+1, row+1):
@@ -305,39 +305,39 @@ def create_overview_sheet(wb, results, folder1, folder2):
         # Column H: % of LOC (Platform vs Project)
         if ws.cell(row_num, 8).value and ws.cell(row_num, 8).value != "":
             ws.cell(row_num, 8).number_format = numbers.FORMAT_PERCENTAGE_00
-    
+   
     row = ws.max_row
-    
-    
+   
+   
     ws.append([])
-    
+   
     # Color Legend
     legend_row_start = ws.max_row + 1
     ws.append(["Color Coding Legend:"])
     ws.cell(legend_row_start, 1).font = subtitle_font
     ws.append([])
-    
+   
     # List of color descriptions
     row = legend_row_start + 1
     ws.append(["Identical (Files with no differences) -- Green color"])
     ws.cell(row, 1).font = Font(size=10)
-    
+   
     row += 1
     ws.append(["Files exist only in platform -- Blue color"])
     ws.cell(row, 1).font = Font(size=10)
-    
+   
     row += 1
     ws.append(["Comments update only -- Yellow color"])
     ws.cell(row, 1).font = Font(size=10)
-    
+   
     row += 1
     ws.append(["Files with code differences in Project -- Red color"])
     ws.cell(row, 1).font = Font(size=10)
-    
+   
     row += 1
     ws.append(["Files exist only in Project -- Orange color"])
     ws.cell(row, 1).font = Font(size=10)
-    
+   
     # Set column widths to match template + complexity column
     ws.column_dimensions['A'].width = 34
     ws.column_dimensions['B'].width = 11
@@ -348,14 +348,14 @@ def create_overview_sheet(wb, results, folder1, folder2):
     ws.column_dimensions['G'].width = 11
     ws.column_dimensions['H'].width = 22
     ws.column_dimensions['I'].width = 16
-    
+   
     return ws
     ws['A3'].font = subtitle_font
     ws.append(["Platform (Baseline):", folder1])
     ws.append(["Project:", folder2])
     ws.append(["Generated:", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
     ws.append([])
-    
+   
     # Summary Statistics
     ws.append(["Summary Statistics:"])
     ws.append(["Identical Files:", identical_count])
@@ -364,24 +364,24 @@ def create_overview_sheet(wb, results, folder1, folder2):
     ws.append(["Only in Platform:", only_folder1_count])
     ws.append(["Only in Project:", only_folder2_count])
     ws.append(["Total Files:", total_files])
-    
+   
     # Set column widths
     ws.column_dimensions['A'].width = 30
     ws.column_dimensions['B'].width = 40
-    
+   
     return ws
-
-
+ 
+ 
 def write_excel_report(results, output_path, folder1_name, folder2_name):
     """Write comparison results to Excel file with formatting"""
     wb = Workbook()
-    
+   
     # Create overview sheet
     create_overview_sheet(wb, results, folder1_name, folder2_name)
-    
+   
     # Create detailed results sheet
     ws_details = wb.create_sheet(title="Detailed Results")
-    
+   
     # Header row
     headers = [
         "File Path",
@@ -394,25 +394,40 @@ def write_excel_report(results, output_path, folder1_name, folder2_name):
         "ChangeSet & WorkItem from RTC History"
     ]
     ws_details.append(headers)
-    
+   
     # Style header row
     header_fill = PatternFill(start_color="003366", end_color="003366", fill_type="solid")
     header_font = Font(bold=True, color="FFFFFF")
-    
+   
     for col_num, header in enumerate(headers, 1):
         cell = ws_details.cell(row=1, column=col_num)
         cell.font = header_font
         cell.fill = header_fill
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    
+   
     # Data rows with color coding
     for row_idx, row_data in enumerate(results, 2):
         ws_details.append([sanitize_for_excel(str(cell)) for cell in row_data])
-        
+       
+        # Add clickable hyperlink for HTML Diff Report (column F, index 6)
+        if len(row_data) > 5 and row_data[5]:
+            html_path = str(row_data[5])
+            # Check if it's a valid path (not empty or "N/A")
+            if html_path and html_path.lower() not in ['n/a', 'na', '', 'none']:
+                # Verify the file exists
+                if os.path.exists(html_path):
+                    cell_f = ws_details.cell(row=row_idx, column=6)
+                    # Create hyperlink to HTML file
+                    cell_f.hyperlink = html_path
+                    cell_f.value = "View Diff"
+                    # Style the hyperlink
+                    cell_f.font = Font(color="0000FF", underline="single")
+                    cell_f.alignment = Alignment(horizontal="center", vertical="center")
+       
         # Apply color based on status
         status = row_data[4] if len(row_data) > 4 else ""
         fill_color = None
-        
+       
         if status == "Identical":
             fill_color = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
         elif status == "Different":
@@ -423,11 +438,11 @@ def write_excel_report(results, output_path, folder1_name, folder2_name):
             fill_color = PatternFill(start_color="9BC2E6", end_color="9BC2E6", fill_type="solid")
         elif status == "Only in Project":
             fill_color = PatternFill(start_color="F4B084", end_color="F4B084", fill_type="solid")
-        
+       
         if fill_color:
             for col_num in range(1, len(headers) + 1):
                 ws_details.cell(row=row_idx, column=col_num).fill = fill_color
-    
+   
     # Set column widths
     ws_details.column_dimensions['A'].width = 50
     ws_details.column_dimensions['B'].width = 15
@@ -437,7 +452,8 @@ def write_excel_report(results, output_path, folder1_name, folder2_name):
     ws_details.column_dimensions['F'].width = 40
     ws_details.column_dimensions['G'].width = 50
     ws_details.column_dimensions['H'].width = 40
-    
+   
     # Save workbook
     wb.save(output_path)
     print(f"Excel report saved: {output_path}")
+ 

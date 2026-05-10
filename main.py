@@ -10,7 +10,7 @@ import os
 # Load environment variables from .env when running from terminal
 try:
     from dotenv import load_dotenv  # type: ignore
-    load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+    load_dotenv(os.path.join(os.path.dirname(__file__), ".env"), override=True)
 except Exception:
     # .env loading is optional; app can still run with OS-level env vars
     pass
