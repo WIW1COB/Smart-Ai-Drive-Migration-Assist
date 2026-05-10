@@ -1362,7 +1362,7 @@ class MigrationAnalysisGUI:
             
         except Exception as e:
             logger.error(f"Error generating file diffs: {e}", exc_info=True)
-    
+
     def _transform_snapshot_results_for_viewer(self, comparison_results, rtc_conn=None, enable_changesets=False):
         """
         Transform snapshot comparison results into results_viewer format
