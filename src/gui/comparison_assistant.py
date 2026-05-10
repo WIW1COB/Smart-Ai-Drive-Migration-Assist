@@ -199,7 +199,6 @@ class ComparisonAssistantWindow:
             chat_frame,
             wrap="word",
             state="normal",
-            state="normal",
             bg="#FFFFFF",
             fg="#17212B",
             font=("Segoe UI", 10),
