@@ -49,10 +49,11 @@ class MigrationAnalysisGUI:
         # Comparison Mode Selection
         self.create_mode_selection()
         
-        # Input frames (all 3 modes)
+        # Input frames (all modes)
         self.create_folder_input_frame()       # Offline → Offline
         self.create_snapshot_input_frame()     # Online → Online
         self.create_hybrid_input_frame()       # Online → Offline
+        self.create_interface_check_frame()    # Interface List Check
         
         # RTC Integration Section
         self.create_rtc_section()
@@ -156,6 +157,17 @@ class MigrationAnalysisGUI:
             text="🔄 Online → Offline",
             variable=self.comparison_mode,
             value="online_offline",
+            bg="#EAF3FB",
+            font=("Segoe UI", 10),
+            command=self.toggle_input_mode
+        ).pack(side="left", padx=10)
+        
+        # Mode 4: Interface List Check
+        tk.Radiobutton(
+            mode_frame,
+            text="📝 Interface List Check",
+            variable=self.comparison_mode,
+            value="interface_check",
             bg="#EAF3FB",
             font=("Segoe UI", 10),
             command=self.toggle_input_mode
@@ -309,6 +321,129 @@ class MigrationAnalysisGUI:
             command=lambda: self.browse_folder(self.hybrid_folder_entry)
         ).pack(pady=5)
     
+    def create_interface_check_frame(self):
+        """Create interface list check input section"""
+        self.interface_check_frame = tk.Frame(self.root, bg="#EAF3FB")
+        
+        # Info label
+        tk.Label(
+            self.interface_check_frame,
+            text="📝 Interface List Check: Analyze interfaces, switches, and dependencies",
+            bg="#EAF3FB",
+            font=("Segoe UI", 9, "italic"),
+            fg="#666666"
+        ).pack(pady=(5, 10))
+        
+        # Analysis mode selection
+        self.interface_check_mode = tk.StringVar(value="single")
+        
+        mode_selector_frame = tk.Frame(self.interface_check_frame, bg="#EAF3FB")
+        mode_selector_frame.pack(pady=10)
+        
+        tk.Label(
+            mode_selector_frame,
+            text="Analysis Mode:",
+            bg="#EAF3FB",
+            font=("Segoe UI", 10, "bold")
+        ).pack(side="left", padx=5)
+        
+        tk.Radiobutton(
+            mode_selector_frame,
+            text="Option 1: Single Workspace",
+            variable=self.interface_check_mode,
+            value="single",
+            bg="#EAF3FB",
+            font=("Segoe UI", 10),
+            command=self.toggle_interface_check_mode
+        ).pack(side="left", padx=10)
+        
+        tk.Radiobutton(
+            mode_selector_frame,
+            text="Option 2: Compare Two Workspaces",
+            variable=self.interface_check_mode,
+            value="compare",
+            bg="#EAF3FB",
+            font=("Segoe UI", 10),
+            command=self.toggle_interface_check_mode
+        ).pack(side="left", padx=10)
+        
+        # Single workspace input
+        self.single_workspace_frame = tk.Frame(self.interface_check_frame, bg="#EAF3FB")
+        
+        tk.Label(
+            self.single_workspace_frame,
+            text="Workspace Path (Platform or Project):",
+            bg="#EAF3FB",
+            font=("Segoe UI", 11)
+        ).pack(pady=(5, 5))
+        
+        self.single_workspace_entry = tk.Entry(self.single_workspace_frame, width=85)
+        self.single_workspace_entry.pack()
+        
+        tk.Button(
+            self.single_workspace_frame,
+            text="Browse Folder",
+            bg="#007B3E",
+            fg="white",
+            command=lambda: self.browse_folder(self.single_workspace_entry)
+        ).pack(pady=5)
+        
+        # Dual workspace input (hidden by default)
+        self.dual_workspace_frame = tk.Frame(self.interface_check_frame, bg="#EAF3FB")
+        
+        tk.Label(
+            self.dual_workspace_frame,
+            text="Platform Workspace Path:",
+            bg="#EAF3FB",
+            font=("Segoe UI", 11)
+        ).pack(pady=(5, 5))
+        
+        self.platform_workspace_entry = tk.Entry(self.dual_workspace_frame, width=85)
+        self.platform_workspace_entry.pack()
+        
+        tk.Button(
+            self.dual_workspace_frame,
+            text="Browse Platform Folder",
+            bg="#007B3E",
+            fg="white",
+            command=lambda: self.browse_folder(self.platform_workspace_entry)
+        ).pack(pady=5)
+        
+        tk.Label(
+            self.dual_workspace_frame,
+            text="Project Workspace Path:",
+            bg="#EAF3FB",
+            font=("Segoe UI", 11)
+        ).pack(pady=(10, 5))
+        
+        self.project_workspace_entry = tk.Entry(self.dual_workspace_frame, width=85)
+        self.project_workspace_entry.pack()
+        
+        tk.Button(
+            self.dual_workspace_frame,
+            text="Browse Project Folder",
+            bg="#007B3E",
+            fg="white",
+            command=lambda: self.browse_folder(self.project_workspace_entry)
+        ).pack(pady=5)
+        
+        # Initially show single workspace mode
+        self.toggle_interface_check_mode()
+    
+    def toggle_interface_check_mode(self):
+        """Toggle between single and dual workspace analysis"""
+        mode = self.interface_check_mode.get()
+        
+        # Hide both frames first
+        self.single_workspace_frame.pack_forget()
+        self.dual_workspace_frame.pack_forget()
+        
+        # Show the appropriate frame
+        if mode == "single":
+            self.single_workspace_frame.pack(fill="x", pady=10)
+        else:
+            self.dual_workspace_frame.pack(fill="x", pady=10)
+    
     def create_rtc_section(self):
         """Create RTC integration section"""
         self.rtc_frame = tk.Frame(self.root, bg="#EAF3FB")
@@ -368,6 +503,7 @@ class MigrationAnalysisGUI:
         self.folder_input_frame.pack_forget()
         self.snapshot_input_frame.pack_forget()
         self.hybrid_input_frame.pack_forget()
+        self.interface_check_frame.pack_forget()
         
         # Show the appropriate frame
         if mode == "offline_offline":
@@ -376,6 +512,8 @@ class MigrationAnalysisGUI:
             self.snapshot_input_frame.pack(fill="x", before=self.rtc_frame)
         elif mode == "online_offline":
             self.hybrid_input_frame.pack(fill="x", before=self.rtc_frame)
+        elif mode == "interface_check":
+            self.interface_check_frame.pack(fill="x", before=self.rtc_frame)
     
     def browse_folder(self, entry_field):
         """Browse for folder or ZIP file"""
@@ -484,6 +622,229 @@ class MigrationAnalysisGUI:
                 "🔄 Online → Offline Mode\n\n"
                 "Comparing RTC snapshot with local folder will be implemented soon."
             )
+        
+        elif mode == "interface_check":
+            # Interface List Check Mode
+            check_mode = self.interface_check_mode.get()
+            
+            if check_mode == "single":
+                # Single workspace analysis
+                workspace_path = self.single_workspace_entry.get().strip()
+                
+                if not workspace_path:
+                    messagebox.showerror(
+                        "Missing Input",
+                        "Please select a workspace path to analyze."
+                    )
+                    return
+                
+                if not os.path.exists(workspace_path):
+                    messagebox.showerror(
+                        "Invalid Path",
+                        "The workspace path does not exist."
+                    )
+                    return
+                
+                # Start single workspace analysis
+                self.run_interface_analysis_single(workspace_path)
+            
+            else:
+                # Dual workspace comparison
+                platform_path = self.platform_workspace_entry.get().strip()
+                project_path = self.project_workspace_entry.get().strip()
+                
+                if not platform_path or not project_path:
+                    messagebox.showerror(
+                        "Missing Input",
+                        "Please select both platform and project workspace paths."
+                    )
+                    return
+                
+                if not os.path.exists(platform_path) or not os.path.exists(project_path):
+                    messagebox.showerror(
+                        "Invalid Path",
+                        "One or both workspace paths do not exist."
+                    )
+                    return
+                
+                # Start dual workspace comparison
+                self.run_interface_analysis_compare(platform_path, project_path)
+    
+    def run_interface_analysis_single(self, workspace_path):
+        """Run interface analysis on a single workspace"""
+        self.compare_btn.config(state='disabled')
+        self.progress_bar['value'] = 0
+        self.progress_label.config(text="Starting interface analysis...")
+        self.root.update()
+        
+        def analysis_thread():
+            try:
+                from src.utils.interface_list_analyzer import InterfaceListAnalyzer
+                from src.utils.interface_list_reporter import InterfaceListReportGenerator
+                
+                # Update progress
+                self.root.after(0, lambda: self.progress_label.config(
+                    text="Analyzing workspace files..."
+                ))
+                self.root.after(0, lambda: self.progress_bar.config(value=20))
+                
+                # Run analysis
+                analyzer = InterfaceListAnalyzer()
+                analysis = analyzer.analyze_workspace(workspace_path)
+                
+                self.root.after(0, lambda: self.progress_bar.config(value=60))
+                self.root.after(0, lambda: self.progress_label.config(
+                    text="Generating reports..."
+                ))
+                
+                # Generate reports
+                workspace_name = os.path.basename(workspace_path)
+                reporter = InterfaceListReportGenerator()
+                html_path, excel_path = reporter.generate_single_workspace_report(
+                    analysis, workspace_name
+                )
+                
+                self.root.after(0, lambda: self.progress_bar.config(value=100))
+                self.root.after(0, lambda: self.progress_label.config(
+                    text="✓ Analysis complete!"
+                ))
+                
+                # Show results
+                self.root.after(0, lambda: self.show_interface_analysis_results(
+                    html_path, excel_path, analysis
+                ))
+                
+            except Exception as e:
+                logger.error(f"Interface analysis failed: {e}", exc_info=True)
+                self.root.after(0, lambda: messagebox.showerror(
+                    "Analysis Failed",
+                    f"An error occurred during analysis:\n{str(e)}"
+                ))
+            finally:
+                self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+        
+        thread = threading.Thread(target=analysis_thread, daemon=True)
+        thread.start()
+    
+    def run_interface_analysis_compare(self, platform_path, project_path):
+        """Run interface analysis comparing two workspaces"""
+        self.compare_btn.config(state='disabled')
+        self.progress_bar['value'] = 0
+        self.progress_label.config(text="Starting workspace comparison...")
+        self.root.update()
+        
+        def comparison_thread():
+            try:
+                from src.utils.interface_list_analyzer import InterfaceListAnalyzer
+                from src.utils.interface_list_reporter import InterfaceListReportGenerator
+                
+                # Update progress
+                self.root.after(0, lambda: self.progress_label.config(
+                    text="Analyzing platform workspace..."
+                ))
+                self.root.after(0, lambda: self.progress_bar.config(value=15))
+                
+                # Run comparison
+                analyzer = InterfaceListAnalyzer()
+                comparison_data = analyzer.compare_workspaces(platform_path, project_path)
+                
+                self.root.after(0, lambda: self.progress_bar.config(value=60))
+                self.root.after(0, lambda: self.progress_label.config(
+                    text="Generating comparison reports..."
+                ))
+                
+                # Generate reports
+                platform_name = os.path.basename(platform_path)
+                project_name = os.path.basename(project_path)
+                reporter = InterfaceListReportGenerator()
+                html_path, excel_path = reporter.generate_comparison_report(
+                    comparison_data, platform_name, project_name
+                )
+                
+                self.root.after(0, lambda: self.progress_bar.config(value=100))
+                self.root.after(0, lambda: self.progress_label.config(
+                    text="✓ Comparison complete!"
+                ))
+                
+                # Show results
+                self.root.after(0, lambda: self.show_interface_comparison_results(
+                    html_path, excel_path, comparison_data
+                ))
+                
+            except Exception as e:
+                logger.error(f"Interface comparison failed: {e}", exc_info=True)
+                self.root.after(0, lambda: messagebox.showerror(
+                    "Comparison Failed",
+                    f"An error occurred during comparison:\n{str(e)}"
+                ))
+            finally:
+                self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+        
+        thread = threading.Thread(target=comparison_thread, daemon=True)
+        thread.start()
+    
+    def show_interface_analysis_results(self, html_path, excel_path, analysis):
+        """Show interface analysis results dialog"""
+        summary = f"""Interface Analysis Complete!
+
+Workspace: {analysis.workspace_path}
+
+Results:
+• Files Analyzed: {analysis.analyzed_files} / {analysis.total_files}
+• Interfaces Found: {len(analysis.interfaces)}
+• Switches Found: {len(analysis.switches)}
+• Dependencies Tracked: {len(analysis.dependencies)}
+• Data Types Used: {len(analysis.data_types_used)}
+
+Reports generated:
+📄 HTML: {html_path}
+📊 Excel: {excel_path}
+"""
+        
+        result = messagebox.askquestion(
+            "Analysis Complete",
+            summary + "\n\nDo you want to open the HTML report now?"
+        )
+        
+        if result == 'yes':
+            import webbrowser
+            webbrowser.open(html_path)
+    
+    def show_interface_comparison_results(self, html_path, excel_path, comparison_data):
+        """Show interface comparison results dialog"""
+        platform = comparison_data['platform']
+        project = comparison_data['project']
+        differences = comparison_data['differences']
+        
+        summary = f"""Workspace Comparison Complete!
+
+Platform: {platform.workspace_path}
+   • Files: {platform.analyzed_files}
+   • Interfaces: {len(platform.interfaces)}
+
+Project: {project.workspace_path}
+   • Files: {project.analyzed_files}
+   • Interfaces: {len(project.interfaces)}
+
+Differences Found:
+   • Only in Platform: {len(differences['interfaces']['only_in_platform'])}
+   • Only in Project: {len(differences['interfaces']['only_in_project'])}
+   • Modified: {len(differences['interfaces']['modified'])}
+   • Switch Changes: {len(differences['switches']['status_changed'])}
+
+Reports generated:
+📄 HTML: {html_path}
+📊 Excel: {excel_path}
+"""
+        
+        result = messagebox.askquestion(
+            "Comparison Complete",
+            summary + "\n\nDo you want to open the HTML report now?"
+        )
+        
+        if result == 'yes':
+            import webbrowser
+            webbrowser.open(html_path)
     
     def show_credential_dialog(self):
         """Show dialog to input RTC credentials"""
@@ -652,35 +1013,23 @@ class MigrationAnalysisGUI:
     
     def _update_cached_credentials_after_login(self, username, password, server_url):
         """Persist or clear RTC credentials based on the login checkbox."""
-        # CRITICAL FIX: Always check current checkbox value at time of credential save
-        # This ensures credentials are saved even if start_snapshot_comparison wasn't called yet
-        should_save = self.keep_signed_in_var.get()
-        
-        if should_save:
+        if self.save_credentials_on_success:
             saved = CredentialManager.save_credentials(username, password, server_url)
             if saved:
                 self.cached_credentials_loaded = True
-                logger.info("✓ RTC credentials cached after successful login")
+                logger.info("RTC credentials cached after successful login")
             else:
                 self.cached_credentials_loaded = False
-                logger.warning("✗ Failed to save credentials securely")
                 self.root.after(
                     0,
                     lambda: messagebox.showwarning(
-                        "Credential Cache Warning",
-                        "Login succeeded, but credentials could not be saved securely.\n\n" +
-                        "Possible causes:\n" +
-                        "• keyring library not installed (pip install keyring)\n" +
-                        "• cryptography library not installed (pip install cryptography)\n" +
-                        "• File permission issues\n\n" +
-                        "You will need to re-enter credentials on next login."
+                        "Credential Cache",
+                        "Login succeeded, but credentials could not be saved securely."
                     )
                 )
         else:
-            # User unchecked "Keep me signed in" - clear any existing cached credentials
             CredentialManager.clear_credentials(server_url)
             self.cached_credentials_loaded = False
-            logger.info("Credentials not saved (Keep me signed in unchecked)")
         
         self.root.after(0, self._refresh_auth_status)
     
@@ -819,49 +1168,13 @@ class MigrationAnalysisGUI:
                 "Snapshot 2": uuid2,
             }
             fetched_components = {}
-            
-            # Progress tracking for both snapshots
-            import threading
-            progress_lock = threading.Lock()
-            snapshot_progress = {
-                "Snapshot 1": {"current": 0, "total": 0, "message": "Starting..."},
-                "Snapshot 2": {"current": 0, "total": 0, "message": "Starting..."}
-            }
-            
-            def create_progress_callback(snap_name):
-                """Create a progress callback for a specific snapshot"""
-                def callback(current, total, message):
-                    with progress_lock:
-                        snapshot_progress[snap_name] = {
-                            "current": current,
-                            "total": total,
-                            "message": message
-                        }
-                        # Calculate overall progress
-                        snap1_prog = snapshot_progress["Snapshot 1"]
-                        snap2_prog = snapshot_progress["Snapshot 2"]
-                        
-                        # Calculate percentage for each snapshot
-                        snap1_pct = (snap1_prog["current"] / snap1_prog["total"] * 100) if snap1_prog["total"] > 0 else 0
-                        snap2_pct = (snap2_prog["current"] / snap2_prog["total"] * 100) if snap2_prog["total"] > 0 else 0
-                        
-                        # Overall progress (20-50 range for fetching)
-                        overall_pct = 20 + ((snap1_pct + snap2_pct) / 2) * 0.3  # 30% of progress bar for fetching
-                        
-                        # Create combined status message
-                        status_msg = f"⬇️ Snap1: {snap1_prog['current']}/{snap1_prog['total']} | Snap2: {snap2_prog['current']}/{snap2_prog['total']}"
-                        
-                        # Update GUI from main thread
-                        self.root.after(0, lambda p=overall_pct, m=status_msg: self._update_progress(p, m))
-                return callback
 
             with ThreadPoolExecutor(max_workers=2) as executor:
                 future_to_name = {
                     executor.submit(
                         rtc_conn.fetch_snapshot_components,
                         snapshot_uuid,
-                        snapshot_name=snapshot_name,
-                        progress_callback=create_progress_callback(snapshot_name)
+                        snapshot_name=snapshot_name
                     ): snapshot_name
                     for snapshot_name, snapshot_uuid in snapshot_fetches.items()
                 }
@@ -869,24 +1182,12 @@ class MigrationAnalysisGUI:
                 for future in as_completed(future_to_name):
                     snapshot_name = future_to_name[future]
                     try:
-                        result = future.result()
-                        # Handle dict return format with name and components
-                        if isinstance(result, dict):
-                            components = result.get('components', [])
-                            snap_name = result.get('name')
-                        else:
-                            # Fallback for old format
-                            components = result if isinstance(result, list) else []
-                            snap_name = None
+                        components = future.result()
                     except Exception as fetch_err:
                         logger.error(f"{snapshot_name}: fetch failed: {fetch_err}", exc_info=True)
                         components = []
-                        snap_name = None
 
-                    fetched_components[snapshot_name] = {
-                        'components': components,
-                        'name': snap_name
-                    }
+                    fetched_components[snapshot_name] = components
                     completed = len(fetched_components)
                     progress = 20 + (completed * 15)
                     self.root.after(
@@ -896,10 +1197,8 @@ class MigrationAnalysisGUI:
                     )
                     logger.info(f"✓ {snapshot_name}: Found {len(components)} components")
 
-            snap1_components = fetched_components.get("Snapshot 1", {}).get('components', [])
-            snap2_components = fetched_components.get("Snapshot 2", {}).get('components', [])
-            snap1_actual_name = fetched_components.get("Snapshot 1", {}).get('name')
-            snap2_actual_name = fetched_components.get("Snapshot 2", {}).get('name')
+            snap1_components = fetched_components.get("Snapshot 1", [])
+            snap2_components = fetched_components.get("Snapshot 2", [])
 
             if not snap1_components:
                 error_msg = "❌ No components found in Snapshot 1\n\nPossible reasons:\n" \
@@ -985,31 +1284,11 @@ class MigrationAnalysisGUI:
             logger.info(f"Filtered: {len(snap1_filtered)} from Snapshot 1, {len(snap2_filtered)} from Snapshot 2")
             logger.info(f"Excluded: {len(selection_result['only_in_snap1'])} only in Snap1, {len(selection_result['only_in_snap2'])} only in Snap2")
             
-            # Compare snapshots (only selected components) - OPTIMIZED with parallel processing
+            # Compare snapshots (only selected components)
             self.root.after(0, lambda: self._update_progress(70, f"🔍 Comparing {len(snap1_filtered)} selected components..."))
-            logger.info(f"Comparing {len(snap1_filtered)} vs {len(snap2_filtered)} selected components (PARALLEL MODE)...")
+            logger.info(f"Comparing {len(snap1_filtered)} vs {len(snap2_filtered)} selected components...")
             
-            # Progress callback for comparison
-            def comparison_progress(current, total, message):
-                if total > 0:
-                    progress_pct = 70 + int((current / total) * 10)  # 70-80% range
-                    self.root.after(0, lambda: self._update_progress(progress_pct, f"🔍 {message}"))
-            
-            comparison_results = rtc_conn.compare_snapshots(snap1_filtered, snap2_filtered, progress_callback=comparison_progress)
-            
-            # Create output directory for this comparison
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_dir = os.path.join(
-                os.getcwd(),
-                "Snapshot_Comparison_Results",
-                f"selected_components_{timestamp}"
-            )
-            os.makedirs(output_dir, exist_ok=True)
-            logger.info(f"✓ Created output directory: {output_dir}")
-            
-            # Generate HTML diffs for modified files
-            self.root.after(0, lambda: self._update_progress(75, "📄 Generating file-level diffs..."))
-            self._generate_file_diffs_for_comparison(comparison_results, rtc_conn, output_dir)
+            comparison_results = rtc_conn.compare_snapshots(snap1_filtered, snap2_filtered)
             
             # Calculate statistics
             modified = sum(1 for r in comparison_results if r['status'] == 'Modified')
@@ -1027,36 +1306,18 @@ class MigrationAnalysisGUI:
             # Prepare results for viewer
             self.root.after(0, lambda: self._update_progress(85, "📊 Preparing results viewer..."))
             
-            # Enable changeset fetching for modified components
-            # IMPORTANT: Changeset fetching requires LSCM/SCM CLI to be installed and configured
-            # Set to True to fetch changeset information (adds comprehensive change tracking to reports)
-            # Set to False for faster comparisons without changeset details
-            enable_changesets = True  # ENABLED: Fetch changeset information for modified files
-            
-            # Transform snapshot results into results_viewer format (with changeset fetching)
-            if enable_changesets:
-                logger.info("Changeset fetching ENABLED - fetching changesets for modified files...")
-                self.root.after(0, lambda: self._update_progress(87, "🔍 Fetching changesets..."))
-            else:
-                logger.info("Changeset fetching DISABLED for faster performance")
-            viewer_results = self._transform_snapshot_results_for_viewer(
-                comparison_results,
-                rtc_conn=rtc_conn,
-                enable_changesets=enable_changesets
-            )
+            # Transform snapshot results into results_viewer format
+            viewer_results = self._transform_snapshot_results_for_viewer(comparison_results)
             
             # Store comparison metadata for viewer
             comparison_metadata = {
                 'snap1_url': url1,
                 'snap2_url': url2,
-                'snap1_name': snap1_actual_name,  # Actual snapshot name from API
-                'snap2_name': snap2_actual_name,  # Actual snapshot name from API
                 'snap1_components': snap1_filtered,
                 'snap2_components': snap2_filtered,
                 'selected_components': sorted(selected_comp_names),
                 'total_common_components': len(selection_result['common']),
-                'comparison_results': comparison_results,
-                'output_dir': output_dir  # Pass output_dir to viewer
+                'comparison_results': comparison_results
             }
             
             # Display results using enhanced viewer
@@ -1119,251 +1380,7 @@ class MigrationAnalysisGUI:
         self.progress_label.config(text=message)
         self.root.update_idletasks()
     
-    def _generate_file_diffs_for_comparison(self, comparison_results, rtc_conn, output_dir):
-        """
-        Generate HTML diffs for modified files in component comparisons (OPTIMIZED)
-        
-        Args:
-            comparison_results: List of component comparison results
-            rtc_conn: RTCConnection instance
-            output_dir: Directory to save diff HTML files
-        """
-        try:
-            import tempfile
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            
-            total_diffs = 0
-            total_files_to_diff = 0
-            max_diffs_per_component = 50  # Process up to 50 files per component
-            max_file_size_kb = 500  # Skip files larger than 500KB for diff (still compare)
-            max_workers = 10  # Parallel diff generation
-            
-            # Create diffs subdirectory
-            diffs_dir = os.path.join(output_dir, "file_diffs")
-            os.makedirs(diffs_dir, exist_ok=True)
-            logger.info(f"Created diffs directory: {diffs_dir}")
-            
-            # Count modified components
-            modified_components = [r for r in comparison_results if r.get('file_comparison')]
-            logger.info(f"Found {len(modified_components)} components with file comparison data")
-            
-            if not modified_components:
-                logger.warning("No components have file comparison data - cannot generate diffs")
-                return
-            
-            # Collect all file diff tasks
-            all_tasks = []
-            component_task_mapping = {}
-            
-            for comp_result in comparison_results:
-                comp_name = comp_result.get('name', 'Unknown')
-                file_comparison = comp_result.get('file_comparison')
-                
-                if not file_comparison:
-                    continue
-                
-                modified_files = file_comparison.get('modified', [])
-                if not modified_files:
-                    continue
-                
-                logger.info(f"{comp_name}: Found {len(modified_files)} modified files")
-                total_files_to_diff += len(modified_files)
-                
-                # Limit files to diff
-                files_to_diff = modified_files[:max_diffs_per_component]
-                if len(modified_files) > max_diffs_per_component:
-                    logger.warning(f"{comp_name}: Limiting to {max_diffs_per_component} of {len(modified_files)} modified files")
-                
-                comp_result['file_diffs'] = []
-                component_task_mapping[comp_name] = comp_result
-                
-                baseline1_uuid = comp_result.get('baseline1_uuid')
-                baseline2_uuid = comp_result.get('baseline2_uuid')
-                
-                if not baseline1_uuid or not baseline2_uuid:
-                    logger.warning(f"{comp_name}: Missing baseline UUIDs")
-                    continue
-                
-                # Create tasks for parallel processing
-                for file_path in files_to_diff:
-                    all_tasks.append({
-                        'comp_name': comp_name,
-                        'file_path': file_path,
-                        'baseline1_uuid': baseline1_uuid,
-                        'baseline2_uuid': baseline2_uuid,
-                        'comp_result': comp_result
-                    })
-            
-            if not all_tasks:
-                logger.warning("No files to generate diffs for")
-                return
-            
-            logger.info(f"Starting parallel diff generation for {len(all_tasks)} files (workers={max_workers})...")
-            
-            def generate_single_diff(task):
-                """Generate diff for a single file (runs in thread pool)"""
-                comp_name = task['comp_name']
-                file_path = task['file_path']
-                baseline1_uuid = task['baseline1_uuid']
-                baseline2_uuid = task['baseline2_uuid']
-                
-                try:
-                    # Download both versions
-                    content1 = rtc_conn.fetch_file_content_from_baseline(baseline1_uuid, file_path, comp_name)
-                    if content1 is None:
-                        return {'success': False, 'reason': 'download1_failed'}
-                    
-                    content2 = rtc_conn.fetch_file_content_from_baseline(baseline2_uuid, file_path, comp_name)
-                    if content2 is None:
-                        return {'success': False, 'reason': 'download2_failed'}
-                    
-                    # Check file size (skip very large files for HTML diff)
-                    size1_kb = len(content1) / 1024
-                    size2_kb = len(content2) / 1024
-                    max_size = max(size1_kb, size2_kb)
-                    
-                    if max_size > max_file_size_kb:
-                        logger.info(f"{comp_name}: Skipping HTML diff for {file_path} (size: {max_size:.1f}KB > {max_file_size_kb}KB)")
-                        return {'success': False, 'reason': 'too_large', 'size': max_size}
-                    
-                    # Generate diff in memory (no temp files)
-                    import difflib
-                    lines1 = content1.splitlines(keepends=True)
-                    lines2 = content2.splitlines(keepends=True)
-                    
-                    differ = difflib.HtmlDiff(wrapcolumn=120)
-                    html_diff = differ.make_file(
-                        lines1, lines2,
-                        fromdesc=f"Baseline 1: {file_path}",
-                        todesc=f"Baseline 2: {file_path}"
-                    )
-                    
-                    # Count differences for summary
-                    added_count = html_diff.count('class="diff_add"')
-                    deleted_count = html_diff.count('class="diff_sub"')
-                    changed_count = html_diff.count('class="diff_chg"')
-                    total_diffs = added_count + deleted_count + changed_count
-                    
-                    # Add navigation summary at top of HTML
-                    summary_html = f'''
-<div style="background-color: #e8f4f8; border: 2px solid #1976d2; padding: 20px; margin: 20px; border-radius: 8px; font-family: Arial, sans-serif;">
-    <h2 style="margin-top: 0; color: #1976d2;">📊 File Comparison Summary</h2>
-    <p><strong>File:</strong> {file_path}</p>
-    <p><strong>Component:</strong> {comp_name}</p>
-    <table style="margin-top: 15px; border-collapse: collapse;">
-        <tr>
-            <td style="padding: 8px; background-color: palegreen; border: 1px solid #ccc;"><strong>Added Lines:</strong></td>
-            <td style="padding: 8px; border: 1px solid #ccc;">{added_count}</td>
-        </tr>
-        <tr>
-            <td style="padding: 8px; background-color: #ffaaaa; border: 1px solid #ccc;"><strong>Deleted Lines:</strong></td>
-            <td style="padding: 8px; border: 1px solid #ccc;">{deleted_count}</td>
-        </tr>
-        <tr>
-            <td style="padding: 8px; background-color: #ffff77; border: 1px solid #ccc;"><strong>Changed Lines:</strong></td>
-            <td style="padding: 8px; border: 1px solid #ccc;">{changed_count}</td>
-        </tr>
-        <tr style="font-weight: bold; background-color: #f0f0f0;">
-            <td style="padding: 8px; border: 1px solid #ccc;"><strong>Total Differences:</strong></td>
-            <td style="padding: 8px; border: 1px solid #ccc;">{total_diffs}</td>
-        </tr>
-    </table>
-    <p style="margin-top: 15px; font-size: 14px; color: #666;">
-        💡 <strong>Tip:</strong> Click the "f" or "t" links in the first column to jump to the next difference.
-        Differences are highlighted in <span style="background-color: palegreen; padding: 2px 4px;">green</span> (added),
-        <span style="background-color: #ffaaaa; padding: 2px 4px;">red</span> (deleted), or
-        <span style="background-color: #ffff77; padding: 2px 4px;">yellow</span> (changed).
-    </p>
-    {f'<p style="margin-top: 10px; padding: 10px; background-color: #fff3cd; border-left: 4px solid #ffc107;"><strong>⚠️ Warning:</strong> Files are identical - no differences found. The metadata may have changed but content is the same.</p>' if total_diffs == 0 else ''}
-</div>
-'''
-                    
-                    # Insert summary after <body> tag
-                    html_diff = html_diff.replace('<body>', '<body>' + summary_html, 1)
-                    
-                    # Write to output
-                    safe_filename = file_path.replace('/', '_').replace('\\', '_').replace(':', '_')
-                    diff_path = os.path.join(diffs_dir, f"{safe_filename}_diff.html")
-                    
-                    with open(diff_path, 'w', encoding='utf-8') as f:
-                        f.write(html_diff)
-                    
-                    logger.debug(f"{comp_name}: ✓ Generated diff for {file_path} ({total_diffs} differences)")
-                    
-                    return {
-                        'success': True,
-                        'comp_name': comp_name,
-                        'file_path': file_path,
-                        'diff_path': diff_path,
-                        'size': max_size,
-                        'diff_count': total_diffs
-                    }
-                    
-                except Exception as e:
-                    logger.warning(f"{comp_name}: ✗ Error generating diff for {file_path}: {e}", exc_info=True)
-                    return {'success': False, 'comp_name': comp_name, 'file_path': file_path, 'reason': str(e)[:100]}
-            
-            # Process diffs in parallel
-            completed_count = 0
-            success_count = 0
-            failed_count = 0
-            failed_details = []  # Track failures for debugging
-            
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_task = {executor.submit(generate_single_diff, task): task for task in all_tasks}
-                
-                for future in as_completed(future_to_task):
-                    completed_count += 1
-                    result = future.result()
-                    
-                    # Update progress every 5 files
-                    if completed_count % 5 == 0 or completed_count == len(all_tasks):
-                        progress_pct = 75 + (completed_count / len(all_tasks)) * 10  # 75-85% range
-                        self.root.after(
-                            0,
-                            lambda p=progress_pct, c=completed_count, t=len(all_tasks):
-                                self._update_progress(p, f"📄 Generating diffs: {c}/{t} files")
-                        )
-                    
-                    if result['success']:
-                        success_count += 1
-                        comp_name = result['comp_name']
-                        comp_result = component_task_mapping[comp_name]
-                        
-                        relative_diff_path = os.path.relpath(result['diff_path'], output_dir)
-                        comp_result['file_diffs'].append({
-                            'file_path': result['file_path'],
-                            'diff_html': relative_diff_path.replace('\\', '/'),
-                            'diff_html_abs': result['diff_path']
-                        })
-                    else:
-                        failed_count += 1
-                        # Track failure details for logging
-                        comp_name = result.get('comp_name', 'Unknown')
-                        file_path = result.get('file_path', 'Unknown')
-                        reason = result.get('reason', 'Unknown')
-                        failed_details.append(f"{comp_name}: {file_path} ({reason})")
-            
-            logger.info("=" * 80)
-            logger.info(f"✓ FILE DIFF GENERATION COMPLETE (PARALLEL):")
-            logger.info(f"  Total files processed: {len(all_tasks)}")
-            logger.info(f"  Successfully generated diffs: {success_count}")
-            logger.info(f"  Failed: {failed_count}")
-            logger.info(f"  Diffs saved to: {diffs_dir}")
-            
-            if failed_count > 0 and failed_details:
-                logger.warning(f"Failed diffs (showing first 10):")
-                for detail in failed_details[:10]:
-                    logger.warning(f"  - {detail}")
-                if len(failed_details) > 10:
-                    logger.warning(f"  ... and {len(failed_details) - 10} more")
-            
-            logger.info("=" * 80)
-            
-        except Exception as e:
-            logger.error(f"Error generating file diffs: {e}", exc_info=True)
-
-    def _transform_snapshot_results_for_viewer(self, comparison_results, rtc_conn=None, enable_changesets=False):
+    def _transform_snapshot_results_for_viewer(self, comparison_results):
         """
         Transform snapshot comparison results into results_viewer format
         
@@ -1379,14 +1396,8 @@ class MigrationAnalysisGUI:
         - index[5] = html_link (N/A for snapshot components)
         - index[6] = purpose
         - index[7] = changeset_info
-        
-        Args:
-            comparison_results: Results from compare_snapshots
-            rtc_conn: RTCConnection object (optional, for changeset fetching)
-            enable_changesets: Whether to fetch changeset information (default: False for performance)
         """
         viewer_results = []
-        changeset_stats = {'total_modified': 0, 'changesets_found': 0, 'changesets_failed': 0}
         
         for result in comparison_results:
             comp_name = result['name']
@@ -1417,84 +1428,6 @@ class MigrationAnalysisGUI:
             else:
                 status_type = status
             
-            # Generate purpose/description based on status
-            if status == 'Modified':
-                # Show file change details in purpose
-                file_comparison = result.get('file_comparison', {})
-                if file_comparison:
-                    added_count = len(file_comparison.get('added', []))
-                    modified_count = len(file_comparison.get('modified', []))
-                    removed_count = len(file_comparison.get('removed', []))
-                    purpose = f"Component baseline changed: {baseline1_uuid[:12]}... → {baseline2_uuid[:12]}... " \
-                             f"(+{added_count} added, ~{modified_count} modified, -{removed_count} removed)"
-                else:
-                    purpose = f"Component baseline changed: {baseline1_uuid[:12]}... → {baseline2_uuid[:12]}..."
-            elif status == 'Unchanged':
-                purpose = f"Component baseline unchanged: {baseline1_uuid[:12]}..."
-            elif status == 'Added in Snapshot 2':
-                purpose = f"Component added in snapshot 2: {baseline2_uuid[:12]}..."
-            elif status == 'Removed in Snapshot 2':
-                purpose = f"Component removed from snapshot 2 (was: {baseline1_uuid[:12]}...)"
-            else:
-                purpose = "Component comparison"
-            
-            # Check if file-level diffs were generated
-            file_diffs = result.get('file_diffs', [])
-            if file_diffs and len(file_diffs) > 0:
-                # Use first diff file as the html_link
-                html_link = file_diffs[0].get('diff_html', 'N/A')
-            else:
-                html_link = "Component-level (no file diff)"
-            
-            # Fetch changeset information if enabled and component was modified
-            changeset_info = ""
-            if enable_changesets and rtc_conn and status == 'Modified':
-                changeset_stats['total_modified'] += 1
-                try:
-                    # Get file comparison data
-                    file_comparison = result.get('file_comparison', {})
-                    if file_comparison:
-                        # Get modified files (limit to first few for performance)
-                        modified_files = file_comparison.get('modified', [])[:5]
-                        if modified_files:
-                            logger.info(f"📋 {comp_name}: Fetching changesets for {len(modified_files)} modified files...")
-                            changeset_map = rtc_conn.fetch_changesets_for_files(
-                                modified_files,
-                                baseline2_uuid,  # Use baseline2 (newer version)
-                                comp_name
-                            )
-                            
-                            if changeset_map:
-                                # Summarize changeset info
-                                changeset_count = len(changeset_map)
-                                first_file = list(changeset_map.keys())[0]
-                                first_cs = changeset_map[first_file]
-                                changeset_uuid = first_cs.get('uuid', 'N/A')[:10]
-                                changeset_info = f"Changeset: {changeset_uuid}... ({changeset_count} file(s))"
-                                changeset_stats['changesets_found'] += 1
-                                logger.info(f"   ✓ {comp_name}: Found changesets for {changeset_count} files - {changeset_info}")
-                            elif not settings.LSCM_PATH:
-                                changeset_info = "LSCM not configured - Install RTC SCM CLI for changeset details"
-                                changeset_stats['changesets_failed'] += 1
-                                logger.warning(f"   ⚠ {comp_name}: LSCM not available")
-                            elif changeset_map is not None and len(changeset_map) == 0:
-                                changeset_info = "No changesets found (LSCM may not be configured correctly)"
-                                changeset_stats['changesets_failed'] += 1
-                                logger.warning(f"   ⚠ {comp_name}: No changesets found")
-                            else:
-                                changeset_info = "Changeset fetch failed"
-                                changeset_stats['changesets_failed'] += 1
-                        else:
-                            logger.debug(f"{comp_name}: No modified files to fetch changesets for")
-                            changeset_info = "No modified files"
-                    else:
-                        logger.debug(f"{comp_name}: No file comparison data available")
-                        changeset_info = "No file comparison data"
-                except Exception as e:
-                    logger.warning(f"{comp_name}: Failed to fetch changesets: {e}", exc_info=True)
-                    changeset_info = f"Changeset fetch error: {str(e)[:50]}"
-                    changeset_stats['changesets_failed'] += 1
-            
             # Create result list matching offline format
             result_list = [
                 comp_name,                              # index[0]: component name
@@ -1502,31 +1435,19 @@ class MigrationAnalysisGUI:
                 metric2,                                # index[2]: metric2 (baseline2 uuid length)
                 line_status,                            # index[3]: line_status
                 status_type,                            # index[4]: status
-                html_link,                              # index[5]: html_link (first file diff or component-level)
-                purpose,                                # index[6]: purpose with baseline info
-                changeset_info                          # index[7]: changeset_info (fetched if enabled)
+                "N/A",                                  # index[5]: html_link (N/A for components)
+                f"Component comparison",                # index[6]: purpose
+                ""                                      # index[7]: changeset_info (empty for snapshots)
             ]
             
             viewer_results.append(result_list)
         
-        # Log changeset fetching statistics
-        if enable_changesets:
-            logger.info("=" * 80)
-            logger.info("CHANGESET FETCHING SUMMARY:")
-            logger.info(f"  Total modified components: {changeset_stats['total_modified']}")
-            logger.info(f"  Components with changesets found: {changeset_stats['changesets_found']}")
-            logger.info(f"  Components with no changesets: {changeset_stats['changesets_failed']}")
-            if changeset_stats['changesets_found'] > 0:
-                success_rate = (changeset_stats['changesets_found'] / changeset_stats['total_modified']) * 100 if changeset_stats['total_modified'] > 0 else 0
-                logger.info(f"  Success rate: {success_rate:.1f}%")
-            logger.info("=" * 80)
-        
         logger.info(f"Transformed {len(viewer_results)} results for viewer (format: 8-element list)")
         return viewer_results
     
-    def _export_snapshot_results_to_reports(self, viewer_results, csv_path, excel_path, snap1_name, snap2_name, comparison_results=None):
+    def _export_snapshot_results_to_reports(self, viewer_results, csv_path, excel_path, snap1_name, snap2_name):
         """
-        Export snapshot comparison results to CSV and Excel files with file-level details
+        Export snapshot comparison results to CSV and Excel files
         
         Args:
             viewer_results: List of 8-element result lists from viewer format
@@ -1534,63 +1455,15 @@ class MigrationAnalysisGUI:
             excel_path: Path to save Excel file
             snap1_name: Display name for snapshot 1
             snap2_name: Display name for snapshot 2
-            comparison_results: Original comparison results with file diff info
         """
         try:
             import csv
             
-            # Calculate summary statistics
-            total_components = len(viewer_results)
-            modified_count = sum(1 for r in viewer_results if r[4] == 'Different')
-            unchanged_count = sum(1 for r in viewer_results if r[4] == 'Identical')
-            added_count = sum(1 for r in viewer_results if 'Snapshot 2' in r[4])
-            removed_count = sum(1 for r in viewer_results if 'Snapshot 1' in r[4])
-            
-            # Count file-level changes
-            total_files_modified = 0
-            total_files_added = 0
-            total_files_removed = 0
-            total_files_unchanged = 0
-            
-            if comparison_results:
-                for comp in comparison_results:
-                    file_comp = comp.get('file_comparison', {})
-                    if file_comp:
-                        total_files_modified += len(file_comp.get('modified', []))
-                        total_files_added += len(file_comp.get('added', []))
-                        total_files_removed += len(file_comp.get('removed', []))
-                        total_files_unchanged += len(file_comp.get('unchanged', []))
-            
-            # Write MAIN CSV report (component-level)
+            # Write CSV report
             logger.info(f"Exporting snapshot comparison to CSV: {csv_path}")
             with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
                 writer = csv.writer(csvfile)
-                
-                # Write summary section
-                writer.writerow(["SNAPSHOT COMPARISON SUMMARY"])
-                writer.writerow(["Snapshot 1", snap1_name])
-                writer.writerow(["Snapshot 2", snap2_name])
-                writer.writerow(["Date", datetime.now().strftime('%Y-%m-%d %H:%M:%S')])
-                writer.writerow([])
-                
-                writer.writerow(["COMPONENT-LEVEL STATISTICS"])
-                writer.writerow(["Total Components", total_components])
-                writer.writerow(["Modified Components", modified_count])
-                writer.writerow(["Unchanged Components", unchanged_count])
-                writer.writerow(["Added Components", added_count])
-                writer.writerow(["Removed Components", removed_count])
-                writer.writerow([])
-                
-                if comparison_results:
-                    writer.writerow(["FILE-LEVEL STATISTICS"])
-                    writer.writerow(["Total Modified Files", total_files_modified])
-                    writer.writerow(["Total Added Files", total_files_added])
-                    writer.writerow(["Total Removed Files", total_files_removed])
-                    writer.writerow(["Total Unchanged Files", total_files_unchanged])
-                    writer.writerow([])
-                
-                # Write component headers
-                writer.writerow(["COMPONENT-LEVEL DETAILS"])
+                # Write headers
                 writer.writerow([
                     "Component Name",
                     f"Snapshot 1 Metric ({snap1_name})",
@@ -1599,7 +1472,7 @@ class MigrationAnalysisGUI:
                     "Status",
                     "Details",
                     "Type",
-                    "Changeset Info"  # Column 8: Changeset information
+                    "Notes"
                 ])
                 # Write data rows
                 for row in viewer_results:
@@ -1610,218 +1483,48 @@ class MigrationAnalysisGUI:
             
             logger.info(f"✓ CSV report exported: {csv_path}")
             
-            # Write FILE-LEVEL CSV report
-            if comparison_results:
-                file_csv_path = csv_path.replace('.csv', '_FileDetails.csv')
-                logger.info(f"Exporting file-level details to CSV: {file_csv_path}")
-                
-                with open(file_csv_path, 'w', newline='', encoding='utf-8') as csvfile:
-                    writer = csv.writer(csvfile)
-                    writer.writerow([
-                        "Component Name",
-                        "File Path",
-                        "Change Type",
-                        "HTML Diff Link"
-                    ])
-                    
-                    for comp in comparison_results:
-                        comp_name = comp.get('name', 'Unknown')
-                        file_comp = comp.get('file_comparison', {})
-                        file_diffs = comp.get('file_diffs', [])
-                        
-                        # Create lookup for diff links
-                        diff_lookup = {fd['file_path']: fd['diff_html'] for fd in file_diffs}
-                        
-                        if file_comp:
-                            # Modified files
-                            for file_path in file_comp.get('modified', []):
-                                diff_link = diff_lookup.get(file_path, 'N/A')
-                                writer.writerow([comp_name, file_path, 'Modified', diff_link])
-                            
-                            # Added files
-                            for file_path in file_comp.get('added', []):
-                                writer.writerow([comp_name, file_path, 'Added', 'N/A'])
-                            
-                            # Removed files
-                            for file_path in file_comp.get('removed', []):
-                                writer.writerow([comp_name, file_path, 'Removed', 'N/A'])
-                
-                logger.info(f"✓ File-level CSV exported: {file_csv_path}")
-            
-            # Write HTML summary report
-            html_path = csv_path.replace('.csv', '.html')
-            logger.info(f"Exporting snapshot comparison to HTML: {html_path}")
-            try:
-                self._generate_snapshot_html_report(viewer_results, html_path, snap1_name, snap2_name, comparison_results)
-                logger.info(f"✓ HTML report exported: {html_path}")
-            except Exception as html_err:
-                logger.error(f"Error generating HTML report: {html_err}")
-            
-            # Write Excel report with MULTIPLE SHEETS
+            # Write Excel report
             logger.info(f"Exporting snapshot comparison to Excel: {excel_path}")
             try:
                 from openpyxl import Workbook
-                from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+                from openpyxl.styles import PatternFill, Font, Alignment
                 
                 wb = Workbook()
+                ws = wb.active
+                ws.title = "Snapshot Comparison"
                 
-                # Remove default sheet
-                if 'Sheet' in wb.sheetnames:
-                    del wb['Sheet']
-                
-                # ========== SHEET 1: SUMMARY ==========
-                ws_summary = wb.create_sheet("Summary", 0)
-                
-                # Title
-                title_font = Font(bold=True, size=16, color="FFFFFF")
-                title_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
-                
-                ws_summary['A1'] = "SNAPSHOT COMPARISON SUMMARY"
-                ws_summary['A1'].font = title_font
-                ws_summary['A1'].fill = title_fill
-                ws_summary.merge_cells('A1:B1')
-                
-                # Snapshot info
-                ws_summary['A3'] = "Snapshot 1:"
-                ws_summary['B3'] = snap1_name
-                ws_summary['A4'] = "Snapshot 2:"
-                ws_summary['B4'] = snap2_name
-                ws_summary['A5'] = "Comparison Date:"
-                ws_summary['B5'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                
-                # Component statistics
-                ws_summary['A7'] = "COMPONENT-LEVEL STATISTICS"
-                ws_summary['A7'].font = Font(bold=True, size=12)
-                ws_summary['A8'] = "Total Components"
-                ws_summary['B8'] = total_components
-                ws_summary['A9'] = "Modified Components"
-                ws_summary['B9'] = modified_count
-                ws_summary['A10'] = "Unchanged Components"
-                ws_summary['B10'] = unchanged_count
-                ws_summary['A11'] = "Added Components"
-                ws_summary['B11'] = added_count
-                ws_summary['A12'] = "Removed Components"
-                ws_summary['B12'] = removed_count
-                
-                # File statistics
-                if comparison_results:
-                    ws_summary['A14'] = "FILE-LEVEL STATISTICS"
-                    ws_summary['A14'].font = Font(bold=True, size=12)
-                    ws_summary['A15'] = "Total Modified Files"
-                    ws_summary['B15'] = total_files_modified
-                    ws_summary['A16'] = "Total Added Files"
-                    ws_summary['B16'] = total_files_added
-                    ws_summary['A17'] = "Total Removed Files"
-                    ws_summary['B17'] = total_files_removed
-                    ws_summary['A18'] = "Total Unchanged Files"
-                    ws_summary['B18'] = total_files_unchanged
-                
-                # Column widths
-                ws_summary.column_dimensions['A'].width = 30
-                ws_summary.column_dimensions['B'].width = 50
-                
-                # ========== SHEET 2: COMPONENT DETAILS ==========
-                ws_components = wb.create_sheet("Component Details", 1)
-                
-                # Headers
+                # Write headers with formatting
                 headers = [
                     "Component Name",
-                    f"Snapshot 1 Metric",
-                    f"Snapshot 2 Metric",
+                    f"Snapshot 1 Metric ({snap1_name})",
+                    f"Snapshot 2 Metric ({snap2_name})",
                     "Baseline Comparison",
                     "Status",
                     "Details",
                     "Type",
-                    "Changeset Info"  # Column 8: Changeset information
+                    "Notes"
                 ]
                 
                 header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
                 header_font = Font(bold=True, color="FFFFFF")
                 
                 for col_idx, header in enumerate(headers, 1):
-                    cell = ws_components.cell(row=1, column=col_idx, value=header)
+                    cell = ws.cell(row=1, column=col_idx, value=header)
                     cell.fill = header_fill
                     cell.font = header_font
-                    cell.alignment = Alignment(horizontal='center', vertical='center')
                 
-                # Data rows
+                # Write data rows
                 for row_idx, row in enumerate(viewer_results, 2):
                     for col_idx, cell_value in enumerate(row, 1):
-                        cell = ws_components.cell(row=row_idx, column=col_idx, value=str(cell_value) if cell_value else '')
+                        cell = ws.cell(row=row_idx, column=col_idx, value=str(cell_value) if cell_value else '')
                         cell.alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
-                        
-                        # Color code by status
-                        if col_idx == 5:  # Status column
-                            if cell_value == 'Different':
-                                cell.fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
-                            elif cell_value == 'Identical':
-                                cell.fill = PatternFill(start_color="D4EDDA", end_color="D4EDDA", fill_type="solid")
                 
                 # Auto-adjust column widths
                 for col_idx in range(1, len(headers) + 1):
-                    ws_components.column_dimensions[chr(64 + col_idx)].width = 25
-                
-                # ========== SHEET 3: FILE-LEVEL DETAILS ==========
-                if comparison_results:
-                    ws_files = wb.create_sheet("File Details", 2)
-                    
-                    # Headers
-                    file_headers = ["Component Name", "File Path", "Change Type", "HTML Diff Link"]
-                    for col_idx, header in enumerate(file_headers, 1):
-                        cell = ws_files.cell(row=1, column=col_idx, value=header)
-                        cell.fill = header_fill
-                        cell.font = header_font
-                        cell.alignment = Alignment(horizontal='center', vertical='center')
-                    
-                    # Data rows
-                    file_row = 2
-                    for comp in comparison_results:
-                        comp_name = comp.get('name', 'Unknown')
-                        file_comp = comp.get('file_comparison', {})
-                        file_diffs = comp.get('file_diffs', [])
-                        
-                        # Create lookup for diff links
-                        diff_lookup = {fd['file_path']: fd['diff_html'] for fd in file_diffs}
-                        
-                        if file_comp:
-                            # Modified files
-                            for file_path in file_comp.get('modified', []):
-                                diff_link = diff_lookup.get(file_path, 'N/A')
-                                ws_files.cell(row=file_row, column=1, value=comp_name)
-                                ws_files.cell(row=file_row, column=2, value=file_path)
-                                cell_type = ws_files.cell(row=file_row, column=3, value='Modified')
-                                cell_type.fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
-                                ws_files.cell(row=file_row, column=4, value=diff_link)
-                                file_row += 1
-                            
-                            # Added files
-                            for file_path in file_comp.get('added', []):
-                                ws_files.cell(row=file_row, column=1, value=comp_name)
-                                ws_files.cell(row=file_row, column=2, value=file_path)
-                                cell_type = ws_files.cell(row=file_row, column=3, value='Added')
-                                cell_type.fill = PatternFill(start_color="D4EDDA", end_color="D4EDDA", fill_type="solid")
-                                ws_files.cell(row=file_row, column=4, value='N/A')
-                                file_row += 1
-                            
-                            # Removed files
-                            for file_path in file_comp.get('removed', []):
-                                ws_files.cell(row=file_row, column=1, value=comp_name)
-                                ws_files.cell(row=file_row, column=2, value=file_path)
-                                cell_type = ws_files.cell(row=file_row, column=3, value='Removed')
-                                cell_type.fill = PatternFill(start_color="F8D7DA", end_color="F8D7DA", fill_type="solid")
-                                ws_files.cell(row=file_row, column=4, value='N/A')
-                                file_row += 1
-                    
-                    # Column widths
-                    ws_files.column_dimensions['A'].width = 30
-                    ws_files.column_dimensions['B'].width = 50
-                    ws_files.column_dimensions['C'].width = 15
-                    ws_files.column_dimensions['D'].width = 60
-                    
-                    logger.info(f"Added {file_row - 2} file-level entries to Excel")                
+                    ws.column_dimensions[chr(64 + col_idx)].width = 25
                 
                 wb.save(excel_path)
-                logger.info(f"✓ Excel report exported with {len(wb.sheetnames)} sheets: {excel_path}")
+                logger.info(f"✓ Excel report exported: {excel_path}")
             
             except ImportError:
                 logger.warning("openpyxl not installed - skipping Excel export")
@@ -1843,24 +1546,14 @@ class MigrationAnalysisGUI:
             # Extract metadata
             snap1_url = comparison_metadata['snap1_url']
             snap2_url = comparison_metadata['snap2_url']
-            snap1_actual_name = comparison_metadata.get('snap1_name')
-            snap2_actual_name = comparison_metadata.get('snap2_name')
             snap1_components = comparison_metadata['snap1_components']
             snap2_components = comparison_metadata['snap2_components']
             selected_components = comparison_metadata.get('selected_components', [])
             total_common_components = comparison_metadata.get('total_common_components', len(selected_components))
-            output_dir = comparison_metadata.get('output_dir')  # Get output_dir from metadata
             
-            # Create display names for snapshots - use actual names if available
-            if snap1_actual_name:
-                snap1_name = snap1_actual_name
-            else:
-                snap1_name = f"Snapshot 1: {snap1_url[:50]}..."
-            
-            if snap2_actual_name:
-                snap2_name = snap2_actual_name
-            else:
-                snap2_name = f"Snapshot 2: {snap2_url[:50]}..."
+            # Create display names for snapshots
+            snap1_name = f"Snapshot 1: {snap1_url[:16]}..."
+            snap2_name = f"Snapshot 2: {snap2_url[:16]}..."
             
             # Create component name mappings (like file dictionaries for offline mode)
             files1 = {}  # {component_name: component_uuid}
@@ -1874,19 +1567,24 @@ class MigrationAnalysisGUI:
                 comp_name = comp.get('name', 'Unknown')
                 files2[comp_name] = comp.get('uuid', '')
             
-            # Use the output directory already created during comparison
-            # (output_dir was created earlier in run_snapshot_comparison_analysis)
+            # Create output directory for this selected snapshot comparison run.
+            # Keeping each run separate avoids overwriting previous selected reports.
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_dir = os.path.join(
+                os.getcwd(),
+                "Snapshot_Comparison_Results",
+                f"selected_components_{timestamp}"
+            )
+            os.makedirs(output_dir, exist_ok=True)
             
             # Create report paths with absolute paths (consistent with offline mode)
             csv_report = os.path.join(output_dir, "Selected_Snapshot_Comparison.csv")
             excel_report = os.path.join(output_dir, "Selected_Snapshot_Comparison.xlsx")
-            html_report = os.path.join(output_dir, "Selected_Snapshot_Comparison.html")
             
             report_paths = {
                 'csv': csv_report,
                 'output_dir': output_dir,
                 'excel': excel_report,
-                'html': html_report,
                 'online_context': {
                     'mode': 'online_online',
                     'server_url': self.rtc_server_url.get(),
@@ -1903,22 +1601,20 @@ class MigrationAnalysisGUI:
             manifest_path = os.path.join(output_dir, "selected_components.txt")
             with open(manifest_path, 'w', encoding='utf-8') as manifest:
                 manifest.write("Selected Online-Online Snapshot Components\n")
-                manifest.write(f"Snapshot 1: {snap1_name}\n")
-                manifest.write(f"Snapshot 2: {snap2_name}\n")
+                manifest.write(f"Snapshot 1: {snap1_url}\n")
+                manifest.write(f"Snapshot 2: {snap2_url}\n")
                 manifest.write(f"Selected: {len(selected_components)} of {total_common_components} common components\n\n")
                 for component_name in selected_components:
                     manifest.write(f"{component_name}\n")
             logger.info(f"✓ Selected component manifest exported: {manifest_path}")
             
-            # Export snapshot comparison results to CSV, Excel, and HTML
-            comparison_results = comparison_metadata.get('comparison_results', [])
+            # Export snapshot comparison results to CSV and Excel
             self._export_snapshot_results_to_reports(
                 viewer_results, 
                 csv_report, 
                 excel_report,
                 snap1_name,
-                snap2_name,
-                comparison_results  # Pass comparison results for file diff links
+                snap2_name
             )
             
             # Log transformation details
@@ -1953,145 +1649,6 @@ class MigrationAnalysisGUI:
                 "Error",
                 f"Error displaying results in enhanced viewer:\n\n{str(e)[:200]}"
             )
-    
-    def _generate_snapshot_html_report(self, viewer_results, html_path, snap1_name, snap2_name, comparison_results=None):
-        """Generate HTML summary report for snapshot comparison"""
-        try:
-            from datetime import datetime
-            
-            # Count statistics
-            modified = sum(1 for r in viewer_results if r[4] == 'Different')
-            added = sum(1 for r in viewer_results if 'Only in Snapshot 2' in r[4])
-            removed = sum(1 for r in viewer_results if 'Only in Snapshot 1' in r[4])
-            unchanged = sum(1 for r in viewer_results if r[4] == 'Identical')
-            
-            # Create a mapping from component name to comparison result for file diff links
-            comp_results_map = {}
-            if comparison_results:
-                comp_results_map = {r['name']: r for r in comparison_results}
-            
-            html_content = f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Snapshot Comparison Report</title>
-    <style>
-        body {{ font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }}
-        .header {{ background-color: #003366; color: white; padding: 20px; border-radius: 5px; }}
-        .header h1 {{ margin: 0; }}
-        .header p {{ margin: 5px 0; opacity: 0.9; }}
-        .summary {{ background-color: white; padding: 20px; margin: 20px 0; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
-        .stats {{ display: flex; gap: 20px; margin: 20px 0; }}
-        .stat-box {{ flex: 1; padding: 15px; border-radius: 5px; text-align: center; }}
-        .stat-box h3 {{ margin: 0 0 10px 0; font-size: 32px; }}
-        .stat-box p {{ margin: 0; color: #666; }}
-        .modified {{ background-color: #fff3cd; border-left: 4px solid #ffc107; }}
-        .added {{ background-color: #d4edda; border-left: 4px solid #28a745; }}
-        .removed {{ background-color: #f8d7da; border-left: 4px solid #dc3545; }}
-        .unchanged {{ background-color: #d1ecf1; border-left: 4px solid #17a2b8; }}
-        table {{ width: 100%; border-collapse: collapse; background-color: white; border-radius: 5px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
-        th {{ background-color: #003366; color: white; padding: 12px; text-align: left; font-weight: bold; }}
-        td {{ padding: 10px; border-bottom: 1px solid #ddd; }}
-        tr:hover {{ background-color: #f8f9fa; }}
-        .status-Different {{ color: #ffc107; font-weight: bold; }}
-        .status-Identical {{ color: #17a2b8; }}
-        .status-added {{ color: #28a745; font-weight: bold; }}
-        .status-removed {{ color: #dc3545; font-weight: bold; }}
-        .file-diffs {{ margin-top: 10px; padding: 10px; background-color: #f8f9fa; border-radius: 3px; }}
-        .file-diffs-header {{ font-weight: bold; margin-bottom: 5px; color: #666; font-size: 12px; }}
-        .file-diff-link {{ display: inline-block; margin: 2px 5px; padding: 2px 8px; background-color: #007bff; color: white; text-decoration: none; border-radius: 3px; font-size: 11px; }}
-        .file-diff-link:hover {{ background-color: #0056b3; }}
-        .footer {{ text-align: center; margin-top: 30px; color: #666; font-size: 12px; }}
-    </style>
-</head>
-<body>
-    <div class="header">
-        <h1>📊 Snapshot Comparison Report</h1>
-        <p><strong>Snapshot 1:</strong> {snap1_name}</p>
-        <p><strong>Snapshot 2:</strong> {snap2_name}</p>
-        <p><strong>Generated:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-    </div>
-    
-    <div class="summary">
-        <h2>Summary</h2>
-        <div class="stats">
-            <div class="stat-box modified">
-                <h3>{modified}</h3>
-                <p>Modified Components</p>
-            </div>
-            <div class="stat-box added">
-                <h3>{added}</h3>
-                <p>Added Components</p>
-            </div>
-            <div class="stat-box removed">
-                <h3>{removed}</h3>
-                <p>Removed Components</p>
-            </div>
-            <div class="stat-box unchanged">
-                <h3>{unchanged}</h3>
-                <p>Unchanged Components</p>
-            </div>
-        </div>
-    </div>
-    
-    <table>
-        <thead>
-            <tr>
-                <th>Component Name</th>
-                <th>Baseline Comparison</th>
-                <th>Status</th>
-                <th>Description & File Diffs</th>
-            </tr>
-        </thead>
-        <tbody>
-"""
-            
-            for row in viewer_results:
-                comp_name = row[0]
-                line_status = row[3]
-                status = row[4]
-                purpose = row[6]
-                
-                status_class = status.replace(' ', '-').replace('Snapshot', '')
-                
-                # Check for file diffs
-                file_diffs_html = ""
-                if comp_name in comp_results_map:
-                    comp_result = comp_results_map[comp_name]
-                    file_diffs = comp_result.get('file_diffs', [])
-                    if file_diffs:
-                        file_diffs_html = '<div class="file-diffs"><div class="file-diffs-header">📄 File-Level Diffs:</div>'
-                        for diff_info in file_diffs:
-                            file_name = os.path.basename(diff_info['file_path'])
-                            diff_link = diff_info['diff_html']
-                            file_diffs_html += f'<a href="{diff_link}" class="file-diff-link" target="_blank">{file_name}</a>'
-                        file_diffs_html += '</div>'
-                
-                html_content += f"""            <tr>
-                <td><strong>{comp_name}</strong></td>
-                <td><code>{line_status}</code></td>
-                <td class="status-{status_class}">{status}</td>
-                <td>{purpose}{file_diffs_html}</td>
-            </tr>
-"""
-            
-            html_content += f"""        </tbody>
-    </table>
-    
-    <div class="footer">
-        <p>Migration Analysis Tool - Bosch Engineering</p>
-        <p>Online-Online Snapshot Comparison (Component + File Level)</p>
-    </div>
-</body>
-</html>
-"""
-            
-            with open(html_path, 'w', encoding='utf-8') as f:
-                f.write(html_content)
-                
-        except Exception as e:
-            logger.error(f"Error generating HTML report: {e}", exc_info=True)
-            raise
     
     def _display_snapshot_results(self, comparison_results):
         """Display snapshot comparison results"""
