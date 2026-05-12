@@ -21,7 +21,7 @@ RTC_CLIENT_LIB_PATH = r"C:\Users\WIW1COB\Desktop\TOOL_Developed\Migration_Analys
 # The tool will automatically fall back to REST API if lscm is not available or fails
 # Using scm.exe directly instead of lscm.bat to bypass Java environment issues
 # Example: r"C:\Program Files\IBM\RTC-SCM-CLI\scmtools\eclipse\scm.exe"
-LSCM_PATH = r"C:\toolbase\lscm\7.0.3\jazz\scmtools\eclipse\scm.exe"  # BOSCH STEPS ALM SCM installation
+LSCM_PATH = r"C:\Users\yyy1cob\Desktop\598_Kit_Download_Fail\Migration_Assist\EWM-scmTools-Win64-7.0.3\jazz\scmtools\eclipse\scm.exe"  # EWM SCM CLI
 
 # Global variables for RTC authentication
 RTC_USERNAME = None
@@ -114,14 +114,16 @@ _proxy_cred_cache = {}
 # ---------------------------------------------------------------------------
 # Performance Optimization Configuration
 # ---------------------------------------------------------------------------
-# Maximum number of concurrent threads for parallel processing
-# Increase for faster baseline comparison (50 workers = near-instant)
-MAX_WORKERS = 50
+# Maximum number of concurrent threads for parallel baseline fetching.
+# Each thread reuses a persistent HTTP connection (requests Session pool),
+# so raising this is safe and directly reduces fetch time.
+# Rule of thumb: 20 is fast without overloading RTC; raise to 30 if VPN is stable.
+# Hard cap in code: 30 (to avoid RTC throttling).
+MAX_WORKERS = 20
 
-# Skip SCM CLI and use REST API directly for better performance
-# SCM CLI often times out (300s) on large snapshots
-# REST API is faster and more reliable
-SKIP_SCM_CLI = True
+# Use SCM CLI (scm.exe) to list files in baselines — more reliable than /service/ REST endpoints
+# which require Jazz Form Authentication session cookies that can be difficult to obtain.
+SKIP_SCM_CLI = False
 
 # Enable lazy loading for tree views
 # Load tree children on-demand instead of all at once

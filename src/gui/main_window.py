@@ -797,44 +797,39 @@ class MigrationAnalysisGUI:
                 self.root.after(0, lambda: self._update_progress(0, "Ready"))
                 return
             
-            # Fetch both snapshots in parallel. Each fetch also parallelizes baseline
-            # detail requests internally, so keep the top-level fan-out to two tasks.
-            self.root.after(0, lambda: self._update_progress(20, "⬇️ Fetching both snapshots in parallel..."))
-            logger.info("Fetching Snapshot 1 and Snapshot 2 components in parallel...")
+            # Fetch snapshots sequentially: Snapshot 1 first, then Snapshot 2.
+            # Fetching in parallel caused Snapshot 1 to time out because Snapshot 2
+            # immediately spawns 20 workers for its 422 baseline detail requests,
+            # saturating the server before Snapshot 1's initial request completes.
+            self.root.after(0, lambda: self._update_progress(20, "⬇️ Fetching Snapshot 1 components..."))
+            logger.info("Fetching Snapshot 1 and Snapshot 2 components sequentially...")
 
-            snapshot_fetches = {
-                "Snapshot 1": uuid1,
-                "Snapshot 2": uuid2,
-            }
             fetched_components = {}
 
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                future_to_name = {
-                    executor.submit(
-                        rtc_conn.fetch_snapshot_components,
-                        snapshot_uuid,
-                        snapshot_name=snapshot_name
-                    ): snapshot_name
-                    for snapshot_name, snapshot_uuid in snapshot_fetches.items()
-                }
-
-                for future in as_completed(future_to_name):
-                    snapshot_name = future_to_name[future]
-                    try:
-                        components = future.result()
-                    except Exception as fetch_err:
-                        logger.error(f"{snapshot_name}: fetch failed: {fetch_err}", exc_info=True)
-                        components = []
-
-                    fetched_components[snapshot_name] = components
-                    completed = len(fetched_components)
-                    progress = 20 + (completed * 15)
-                    self.root.after(
-                        0,
-                        lambda name=snapshot_name, count=len(components), value=progress:
-                            self._update_progress(value, f"✓ {name}: fetched {count} components")
+            for snapshot_name, snapshot_uuid in [("Snapshot 1", uuid1), ("Snapshot 2", uuid2)]:
+                self.root.after(
+                    0,
+                    lambda name=snapshot_name: self._update_progress(
+                        20, f"⬇️ Fetching {name} components..."
                     )
-                    logger.info(f"✓ {snapshot_name}: Found {len(components)} components")
+                )
+                try:
+                    components = rtc_conn.fetch_snapshot_components(
+                        snapshot_uuid, snapshot_name=snapshot_name
+                    )
+                except Exception as fetch_err:
+                    logger.error(f"{snapshot_name}: fetch failed: {fetch_err}", exc_info=True)
+                    components = []
+
+                fetched_components[snapshot_name] = components
+                completed = len(fetched_components)
+                progress = 20 + (completed * 15)
+                self.root.after(
+                    0,
+                    lambda name=snapshot_name, count=len(components), value=progress:
+                        self._update_progress(value, f"✓ {name}: fetched {count} components")
+                )
+                logger.info(f"✓ {snapshot_name}: Found {len(components)} components")
 
             snap1_components = fetched_components.get("Snapshot 1", [])
             snap2_components = fetched_components.get("Snapshot 2", [])
@@ -923,27 +918,207 @@ class MigrationAnalysisGUI:
             logger.info(f"Filtered: {len(snap1_filtered)} from Snapshot 1, {len(snap2_filtered)} from Snapshot 2")
             logger.info(f"Excluded: {len(selection_result['only_in_snap1'])} only in Snap1, {len(selection_result['only_in_snap2'])} only in Snap2")
             
-            # Compare snapshots (only selected components)
+            # Compare snapshots (only selected components) with progress tracking
             self.root.after(0, lambda: self._update_progress(70, f"🔍 Comparing {len(snap1_filtered)} selected components..."))
             logger.info(f"Comparing {len(snap1_filtered)} vs {len(snap2_filtered)} selected components...")
             
-            comparison_results = rtc_conn.compare_snapshots(snap1_filtered, snap2_filtered)
+            # Create progress callback for component comparison
+            def comparison_progress_callback(current, total, message):
+                # Calculate progress percentage (70-90% range for comparison phase)
+                progress_pct = 70 + int((current / total) * 20)
+                self.root.after(0, lambda p=progress_pct, m=message: self._update_progress(p, m))
+            
+            comparison_results = rtc_conn.compare_snapshots(
+                snap1_filtered, 
+                snap2_filtered, 
+                progress_callback=comparison_progress_callback
+            )
             
             # Calculate statistics
-            modified = sum(1 for r in comparison_results if r['status'] == 'Modified')
-            added = sum(1 for r in comparison_results if 'Added' in r['status'])
-            removed = sum(1 for r in comparison_results if 'Removed' in r['status'])
-            unchanged = sum(1 for r in comparison_results if r['status'] == 'Unchanged')
-            
+            different = sum(1 for r in comparison_results if r['status'] == 'Different')
+            identical = sum(1 for r in comparison_results if r['status'] == 'Identical')
+            added     = sum(1 for r in comparison_results if 'Added'   in r['status'])
+            removed   = sum(1 for r in comparison_results if 'Removed' in r['status'])
+
             logger.info(f"Comparison results:")
-            logger.info(f"  Modified: {modified}")
-            logger.info(f"  Added: {added}")
-            logger.info(f"  Removed: {removed}")
-            logger.info(f"  Unchanged: {unchanged}")
-            logger.info(f"  Total: {len(comparison_results)}")
+            logger.info(f"  Different: {different}")
+            logger.info(f"  Identical: {identical}")
+            logger.info(f"  Added:     {added}")
+            logger.info(f"  Removed:   {removed}")
+            logger.info(f"  Total:     {len(comparison_results)}")
             
+            # ── Fetch file content for inline HTML diffs ─────────────────────────
+            # Strategy (per file):
+            #   1. scm get file <baseline_uuid> -b -f <full_repo_path> -o <out>
+            #      — mirrors results_viewer._get_baseline_file which is proven to work.
+            #      Uses full_path from fi['path'] (e.g. 'src/foo.c'), NOT the
+            #      filename-only key used in 'details' (e.g. 'foo.c').
+            #   2. scm get file <item_id> <state_id> <out>
+            #      — if item-id/state-id are populated in the folder structure.
+            self.root.after(0, lambda: self._update_progress(88, "📥 Fetching modified file content for diffs..."))
+            logger.info("Fetching file content for modified files...")
+
+            from src.rtc.connection import RTCConnection as _RTCConn
+
+            _BINARY_EXTS = {
+                '.xls', '.xlsx', '.zip', '.exe', '.dll', '.so', '.a', '.o',
+                '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.pdf', '.doc', '.docx',
+                '.ppt', '.pptx', '.bin', '.lib', '.obj', '.jar', '.class', '.pyc',
+            }
+            MAX_FILES_PER_COMP   = 15
+            MAX_TOTAL_FETCH_JOBS = 80
+            TOTAL_BUDGET_SECS    = 600
+
+            # Each task: (cname, fpath_key, full_path, item_id, state_id, baseline_uuid, snap_key)
+            #   fpath_key   — key in details dict (just filename in flat SCM structure)
+            #   full_path   — fi['path'] = full repo path (e.g. 'src/comp/foo.c')
+            #   item_id     — from fi['uuid'] if populated
+            #   state_id    — from fi['state-id'] if populated
+            #   baseline_uuid — comp's baseline_uuid (for -b -f form)
+            fetch_tasks = []
+            for comp in comparison_results:
+                if comp.get('status') != 'Different':
+                    continue
+                if len(fetch_tasks) >= MAX_TOTAL_FETCH_JOBS:
+                    break
+
+                cname  = comp.get('name', '')
+                b1uuid = comp.get('baseline1_uuid', '')
+                b2uuid = comp.get('baseline2_uuid', '')
+                fcmp   = comp.get('file_comparison') or {}
+                details = fcmp.get('details', {})
+
+                struct1 = comp.get('folder_structure1') or {}
+                struct2 = comp.get('folder_structure2') or {}
+                files1_map = _RTCConn._get_all_files_from_structure(struct1)
+                files2_map = _RTCConn._get_all_files_from_structure(struct2)
+
+                comp_jobs = 0
+                for fpath_key, fstatus in sorted(details.items()):
+                    if fstatus not in ('modified', 'added', 'removed'):
+                        continue
+                    if os.path.splitext(fpath_key.lower())[1] in _BINARY_EXTS:
+                        continue
+                    if comp_jobs >= MAX_FILES_PER_COMP:
+                        break
+                    if len(fetch_tasks) >= MAX_TOTAL_FETCH_JOBS:
+                        break
+
+                    if fstatus in ('modified', 'removed') and b1uuid:
+                        fi1 = files1_map.get(fpath_key, {})
+                        full_path1 = fi1.get('path', fpath_key)   # full repo path
+                        iid1 = fi1.get('uuid', '')
+                        sid1 = fi1.get('state-id', '')
+                        fetch_tasks.append((cname, fpath_key, full_path1, iid1, sid1, b1uuid, 'snap1'))
+
+                    if fstatus in ('modified', 'added') and b2uuid:
+                        fi2 = files2_map.get(fpath_key, {})
+                        full_path2 = fi2.get('path', fpath_key)
+                        iid2 = fi2.get('uuid', '')
+                        sid2 = fi2.get('state-id', '')
+                        fetch_tasks.append((cname, fpath_key, full_path2, iid2, sid2, b2uuid, 'snap2'))
+
+                    comp_jobs += 1
+
+            logger.info(f"Prepared {len(fetch_tasks)} file-content fetch tasks")
+            if fetch_tasks:
+                sample = fetch_tasks[0]
+                logger.info(
+                    f"Sample task: cname={sample[0]!r} key={sample[1]!r} "
+                    f"full_path={sample[2]!r} item_id={sample[3]!r} "
+                    f"state_id={sample[4]!r} baseline={sample[5]!r} snap={sample[6]!r}"
+                )
+            else:
+                for comp in comparison_results:
+                    if comp.get('status') == 'Different':
+                        struct1 = comp.get('folder_structure1') or {}
+                        fi_map = _RTCConn._get_all_files_from_structure(struct1)
+                        if fi_map:
+                            k = next(iter(fi_map))
+                            logger.info(
+                                f"Zero tasks — sample fi from {comp.get('name')!r}/{k!r}: {fi_map[k]}"
+                            )
+                        else:
+                            logger.info(f"Zero tasks — folder_structure1 empty for {comp.get('name')!r}")
+                        break
+
+            file_contents_by_component = {}
+
+            if fetch_tasks:
+                def _fetch_one(task):
+                    cname, fpath_key, full_path, item_id, state_id, baseline_uuid, snap_key = task
+                    # Strategy 1: baseline UUID + full repo path (proven form)
+                    content = rtc_conn.fetch_file_content_from_baseline(
+                        baseline_uuid, full_path, cname)
+                    # Strategy 2: item-id + state-id (if available and strategy 1 failed)
+                    if content is None and item_id and state_id:
+                        content = rtc_conn.fetch_file_content_by_item_state(
+                            item_id, state_id, fpath_key)
+                    return (cname, fpath_key, snap_key, content)
+
+                import time as _time
+                deadline = _time.time() + TOTAL_BUDGET_SECS
+
+                with ThreadPoolExecutor(max_workers=4) as fetch_ex:
+                    futures = {fetch_ex.submit(_fetch_one, t): t for t in fetch_tasks}
+                    for fut in as_completed(futures):
+                        if _time.time() > deadline:
+                            logger.warning("File content fetch budget exceeded — stopping early")
+                            break
+                        try:
+                            cname, fpath_key, snap_key, content = fut.result(timeout=90)
+                            if content is not None:
+                                file_contents_by_component.setdefault(
+                                    cname, {}).setdefault(fpath_key, {})[snap_key] = content
+                        except Exception as _fe:
+                            logger.debug(f"Content fetch error: {_fe}")
+
+                fetched_files = sum(len(v) for v in file_contents_by_component.values())
+                logger.info(
+                    f"✓ File content fetched for {fetched_files} files "
+                    f"in {len(file_contents_by_component)} components"
+                )
+
+            # ── Fetch baseline info (name, comment, author, timestamp) ──────────
+            # Used for the Changeset section in per-component HTML reports.
+            self.root.after(0, lambda: self._update_progress(89, "📋 Fetching baseline/changeset metadata..."))
+            logger.info("Fetching baseline metadata and changeset info for Different components...")
+
+            baseline_info_cache = {}  # {baseline_uuid: {name, comment, author, timestamp}}
+            changeset_by_component = {}  # {comp_name: {'baseline1': info, 'baseline2': info, 'changesets': []}}
+
+            def _fetch_baseline_meta(bid):
+                if bid in baseline_info_cache:
+                    return baseline_info_cache[bid]
+                info = rtc_conn.fetch_baseline_info(bid)
+                baseline_info_cache[bid] = info
+                return info
+
+            for comp in comparison_results:
+                if comp.get('status') != 'Different':
+                    continue
+                cname  = comp.get('name', '')
+                b1uuid = comp.get('baseline1_uuid', '')
+                b2uuid = comp.get('baseline2_uuid', '')
+
+                b1info = _fetch_baseline_meta(b1uuid) if b1uuid and b1uuid != 'N/A' else {}
+                b2info = _fetch_baseline_meta(b2uuid) if b2uuid and b2uuid != 'N/A' else {}
+
+                # Fetch changeset list from baseline2 (the newer one) via SCM CLI
+                changesets = rtc_conn.fetch_baseline_changesets_scm(b2uuid, cname) if b2uuid and b2uuid != 'N/A' else []
+
+                changeset_by_component[cname] = {
+                    'baseline1': b1info,
+                    'baseline2': b2info,
+                    'changesets': changesets,
+                }
+
+            logger.info(
+                f"✓ Baseline metadata fetched for {len(changeset_by_component)} components"
+            )
+
             # Prepare results for viewer
-            self.root.after(0, lambda: self._update_progress(85, "📊 Preparing results viewer..."))
+            self.root.after(0, lambda: self._update_progress(90, "📊 Preparing results viewer..."))
             
             # Transform snapshot results into results_viewer format
             viewer_results = self._transform_snapshot_results_for_viewer(comparison_results)
@@ -956,7 +1131,10 @@ class MigrationAnalysisGUI:
                 'snap2_components': snap2_filtered,
                 'selected_components': sorted(selected_comp_names),
                 'total_common_components': len(selection_result['common']),
-                'comparison_results': comparison_results
+                'comparison_results': comparison_results,
+                'file_contents_by_component': file_contents_by_component,
+                'changeset_by_component': changeset_by_component,
+                'rtc_server_url': server_url,
             }
             
             # Display results using enhanced viewer
@@ -966,8 +1144,8 @@ class MigrationAnalysisGUI:
             
             self.root.after(0, lambda: self._update_progress(
                 100,
-                f"✅ Selected comparison complete: {len(comparison_results)} components" \
-                f" ({modified} modified, {added} added, {removed} removed)"
+                f"✅ Comparison complete: {len(comparison_results)} components analyzed "
+                f"({different} different, {identical} identical, {added} added, {removed} removed)"
             ))
             
             logger.info("=" * 80)
@@ -1056,16 +1234,13 @@ class MigrationAnalysisGUI:
             line_status = f"Baseline: {baseline1_uuid[:8]}... → {baseline2_uuid[:8]}..."
             
             # Map status to results_viewer format
-            if status == 'Unchanged':
-                status_type = 'Identical'
-            elif status == 'Modified':
-                status_type = 'Different'
-            elif status == 'Added in Snapshot 2':
+            # _compare_one_component already uses 'Identical' and 'Different' directly.
+            if status == 'Added in Snapshot 2':
                 status_type = 'Only in Snapshot 2'
             elif status == 'Removed in Snapshot 2':
                 status_type = 'Only in Snapshot 1'
             else:
-                status_type = status
+                status_type = status  # 'Identical' or 'Different' passed through unchanged
             
             # Create result list matching offline format
             result_list = [
@@ -1255,6 +1430,57 @@ class MigrationAnalysisGUI:
                 snap1_name,
                 snap2_name
             )
+
+            # ── Generate per-component HTML diff reports ─────────────────────
+            # For every "Different" component, write a self-contained HTML report
+            # and store its absolute path in viewer_results[idx][5] so the
+            # results-viewer "View Diff" button can open it.
+            try:
+                from src.utils.diff_utils import generate_snapshot_component_html
+                full_comparison_results = comparison_metadata.get('comparison_results', [])
+                html_dir = os.path.join(output_dir, "html_diffs")
+                os.makedirs(html_dir, exist_ok=True)
+
+                # Pre-fetched file contents and RTC server URL (from comparison thread)
+                file_contents_by_comp = comparison_metadata.get('file_contents_by_component', {})
+                rtc_srv_url           = comparison_metadata.get('rtc_server_url', '')
+
+                # Build a quick lookup: component_name → viewer_results index
+                name_to_idx = {vr[0]: i for i, vr in enumerate(viewer_results)}
+
+                for comp_result in full_comparison_results:
+                    if comp_result.get('status') != 'Different':
+                        continue
+                    cname  = comp_result['name']
+                    b1uuid = comp_result.get('baseline1_uuid', '')
+                    b2uuid = comp_result.get('baseline2_uuid', '')
+                    fcmp   = comp_result.get('file_comparison')
+
+                    # Per-component changeset metadata passed into HTML generator
+                    csdata = comparison_metadata.get('changeset_by_component', {}).get(cname, {})
+
+                    html_path = generate_snapshot_component_html(
+                        component_name=cname,
+                        baseline1_uuid=b1uuid,
+                        baseline2_uuid=b2uuid,
+                        file_comparison=fcmp,
+                        output_dir=html_dir,
+                        snap1_label=snap1_name,
+                        snap2_label=snap2_name,
+                        file_contents=file_contents_by_comp.get(cname),
+                        changeset_data=csdata,
+                        server_url=rtc_srv_url,
+                    )
+                    if html_path and cname in name_to_idx:
+                        viewer_results[name_to_idx[cname]][5] = html_path
+
+                logger.info(
+                    f"✓ HTML diff reports generated for "
+                    f"{sum(1 for vr in viewer_results if vr[5] not in ['N/A', '', None])} "
+                    f"Different components in: {html_dir}"
+                )
+            except Exception as html_err:
+                logger.warning(f"HTML diff generation failed (non-fatal): {html_err}")
             
             # Log transformation details
             logger.info(f"Displaying {len(viewer_results)} snapshots results in viewer")

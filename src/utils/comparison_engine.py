@@ -273,8 +273,8 @@ def compare_folders(folder1, folder2, progress_callback=None, custom_mappings=No
     results = []
    
     # Use ThreadPoolExecutor for parallel processing
-    max_workers = getattr(settings, 'MAX_WORKERS', 8)
-    max_workers = min(max_workers, os.cpu_count() or 4)
+    # File comparison is I/O-bound, so use MAX_WORKERS directly (no cpu_count cap).
+    max_workers = max(1, getattr(settings, 'MAX_WORKERS', 8))
    
     if progress_callback:
         progress_callback(0, total_files, f"Starting parallel comparison with {max_workers} workers...")

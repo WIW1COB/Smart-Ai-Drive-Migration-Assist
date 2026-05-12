@@ -855,9 +855,15 @@ class ComparisonResultsDialog:
                 break
         
         if html_link and html_link not in ["N/A", "N/A (Identical)", ""]:
-            html_full_path = os.path.join(self.report_paths['output_dir'], html_link)
+            # html_link may be an absolute path (online snapshot reports) or a
+            # relative path (offline reports).  os.path.join returns the absolute
+            # argument unchanged on both Windows and POSIX, so this handles both.
+            html_full_path = (
+                html_link if os.path.isabs(html_link)
+                else os.path.join(self.report_paths.get('output_dir', ''), html_link)
+            )
             if os.path.exists(html_full_path):
-                webbrowser.open(f'file://{os.path.abspath(html_full_path)}')
+                webbrowser.open(f'file:///{os.path.abspath(html_full_path).replace(os.sep, "/")}')
             else:
                 messagebox.showwarning("File Not Found", f"HTML diff file not found:\n{html_full_path}")
         else:
