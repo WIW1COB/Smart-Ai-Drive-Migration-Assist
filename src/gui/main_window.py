@@ -15,8 +15,22 @@ from src.gui.results_viewer import show_results_dialog
 from src.rtc.connection import RTCConnection, get_rtc_connection
 from src.config import settings
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging — write INFO+ to both console and a rotating log file
+_log_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "rtc_comparison.log")
+_file_handler = logging.FileHandler(_log_file, mode='w', encoding='utf-8')
+_file_handler.setLevel(logging.DEBUG)
+_file_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
+_console_handler = logging.StreamHandler()
+_console_handler.setLevel(logging.INFO)
+_console_handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
+
+_root_logger = logging.getLogger()
+_root_logger.setLevel(logging.DEBUG)
+# Clear any existing handlers set by basicConfig before adding ours
+_root_logger.handlers.clear()
+_root_logger.addHandler(_file_handler)
+_root_logger.addHandler(_console_handler)
+
 logger = logging.getLogger(__name__)
 
 
@@ -836,7 +850,11 @@ class MigrationAnalysisGUI:
             logger.info("Fetching Snapshot 1 and Snapshot 2 components sequentially...")
 
             fetched_components = {}
-            
+            snapshot_fetches = {
+                "Snapshot 1": uuid1,
+                "Snapshot 2": uuid2
+            }
+
             # Progress tracking for both snapshots
             import threading
             progress_lock = threading.Lock()
@@ -1221,6 +1239,17 @@ class MigrationAnalysisGUI:
                 enable_changesets=enable_changesets
             )
             
+            # Create timestamped output directory for this comparison run
+            from datetime import datetime as _dt
+            timestamp = _dt.now().strftime("%Y%m%d_%H%M%S")
+            base_results_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                "Snapshot_Comparison_Results"
+            )
+            output_dir = os.path.join(base_results_dir, f"selected_components_{timestamp}")
+            os.makedirs(output_dir, exist_ok=True)
+            logger.info(f"Created output directory: {output_dir}")
+
             # Store comparison metadata for viewer
             comparison_metadata = {
                 'snap1_url': url1,
@@ -1235,6 +1264,7 @@ class MigrationAnalysisGUI:
                 'file_contents_by_component': file_contents_by_component,
                 'changeset_by_component': changeset_by_component,
                 'rtc_server_url': server_url,
+                'output_dir': output_dir,
             }
             
             # Display results using enhanced viewer

@@ -398,6 +398,7 @@ class RTCConnection:
             # Syntax: scm get file <baseline_uuid> -b -f <filepath> -o <output>
             # where -o = overwrite flag (bool), <output> = positional path-on-disk
             # Matches results_viewer._get_baseline_file exactly.
+            # -c (component) is required by EWM scm get file -b
             cmd = [
                 scm_path, 'get', 'file', buuid, '-b',
                 '-f', clean_path,
@@ -405,7 +406,7 @@ class RTCConnection:
                 '-o', tmp_path,
             ]
             if component_name:
-                cmd += ['-C', component_name]
+                cmd += ['-c', component_name]  # lowercase -c is required
 
             logger.info(
                 f"[scm get file -b] baseline={buuid[:16]!r} path={clean_path!r} "
@@ -424,29 +425,6 @@ class RTCConnection:
             if result.returncode == 0 and size > 0:
                 with open(tmp_path, 'r', encoding='utf-8', errors='replace') as f:
                     return f.read()
-
-            # Retry without -C component name if it failed (component hint may be wrong)
-            if component_name and result.returncode != 0:
-                cmd_no_comp = [
-                    scm_path, 'get', 'file', buuid, '-b',
-                    '-f', clean_path,
-                    '-r', self.server_url, '-u', self.username, '-P', self.password,
-                    '-o', tmp_path,
-                ]
-                logger.info(f"[scm get file -b] retrying without -C flag...")
-                with _scm_semaphore:
-                    result2 = subprocess.run(
-                        cmd_no_comp, capture_output=True, text=True, timeout=60, env=env,
-                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
-                    )
-                size2 = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
-                logger.info(
-                    f"[scm get file -b] (no -C) rc={result2.returncode} size={size2} "
-                    f"stderr={result2.stderr[:300]!r}"
-                )
-                if result2.returncode == 0 and size2 > 0:
-                    with open(tmp_path, 'r', encoding='utf-8', errors='replace') as f:
-                        return f.read()
 
         except subprocess.TimeoutExpired:
             logger.warning(f"[scm get file -b] Timeout for {clean_path!r}")
@@ -861,7 +839,7 @@ class RTCConnection:
         except Exception:
             return None
 
-    def fetch_snapshot_components(self, snapshot_url, username=None, password=None, snapshot_name='Snapshot'):
+    def fetch_snapshot_components(self, snapshot_url, username=None, password=None, snapshot_name='Snapshot', progress_callback=None):
         """
         Fetch all components from a snapshot URL
         
@@ -1174,6 +1152,12 @@ class RTCConnection:
                                     components.append(component)
                             except Exception as e:
                                 logger.debug(f'{snapshot_name}: Baseline processing error: {e}')
+
+                        if progress_callback:
+                            try:
+                                progress_callback(processed, total_baselines, f'{len(components)} components found')
+                            except Exception:
+                                pass
 
                         now = _time.time()
                         if (processed % 20 == 0 and processed > 0) or processed == total_baselines:
