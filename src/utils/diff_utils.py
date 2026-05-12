@@ -212,10 +212,49 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
       {cs_table_html}
     </div>'''
 
+    # ── Binary content detection ───────────────────────────────────────────
+    _BINARY_SIGNATURES = (b'PK', b'\x7fELF', b'\x89PNG', b'%PDF',
+                          b'\xff\xd8', b'GIF8', b'BM', b'\xd0\xcf')
+
+    def _is_binary_content(text):
+        """Return True if the text string appears to be decoded binary data."""
+        if not text:
+            return False
+        # High ratio of unicode replacement chars (\ufffd) → binary decoded as utf-8
+        replacement_ratio = text.count('\ufffd') / max(len(text), 1)
+        if replacement_ratio > 0.02:   # >2 % replacement chars → binary
+            return True
+        # Null bytes are a strong indicator of binary
+        if '\x00' in text:
+            return True
+        # Low printable ratio
+        sample = text[:2000]
+        printable = sum(c.isprintable() or c in '\t\n\r' for c in sample)
+        if len(sample) > 0 and (printable / len(sample)) < 0.70:
+            return True
+        # Known binary file signatures at start of content
+        raw_start = text[:8].encode('utf-8', errors='replace')
+        if any(raw_start.startswith(sig) for sig in _BINARY_SIGNATURES):
+            return True
+        return False
+
     # ── Build inline diff HTML for a pair of text contents ────────────────
     def _make_inline_diff(snap1_text, snap2_text, fpath, fstatus):
         """Generate a side-by-side diff table embedded in the HTML report."""
         try:
+            # Detect binary content before attempting text diff
+            s1_binary = _is_binary_content(snap1_text)
+            s2_binary = _is_binary_content(snap2_text)
+            if s1_binary or s2_binary:
+                return (
+                    '<div style="padding:12px 16px;background:#fff8c5;border-radius:4px;'
+                    'color:#9a6700;font-size:13px;">'
+                    '⚠️ <strong>Binary file</strong> — line-by-line diff is not available '
+                    'for binary/non-text files. The file has changed (different baseline UUIDs) '
+                    'but its content cannot be displayed as text.'
+                    '</div>'
+                )
+
             lines1 = (snap1_text or '').splitlines(keepends=True)
             lines2 = (snap2_text or '').splitlines(keepends=True)
 
@@ -263,7 +302,9 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
             content_pair = fc_map.get(fpath) or {}
             snap1_text   = content_pair.get('snap1')
             snap2_text   = content_pair.get('snap2')
+            is_binary    = _is_binary_content(snap1_text) or _is_binary_content(snap2_text)
             has_diff     = (fstatus in ('modified', 'added', 'removed')
+                            and not is_binary
                             and (snap1_text is not None or snap2_text is not None))
 
             if has_diff and fstatus != 'unchanged':
@@ -299,14 +340,19 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
                   </div>
                 </details>'''
             else:
+                no_diff_label = ''
+                if fstatus != 'unchanged':
+                    if is_binary:
+                        no_diff_label = '<span style="color:#9a6700;font-size:11px;">⊘ binary</span>'
+                    elif snap1_text is None and snap2_text is None:
+                        no_diff_label = '<span style="color:#aaa;font-size:11px;">no content fetched</span>'
                 file_rows_html += (
                     f'<tr style="background:{bg};">'
                     f'<td style="padding:5px 10px;color:{color};font-size:18px;text-align:center;">{icon}</td>'
                     f'<td style="padding:5px 12px;font-family:monospace;font-size:12px;">{esc_path}</td>'
                     f'<td style="padding:5px 10px;color:{color};font-weight:600;font-size:12px;">'
                     f'{fstatus.capitalize()}</td>'
-                    f'<td style="padding:5px 6px;color:#aaa;font-size:11px;">'
-                    f'{"(binary)" if fstatus != "unchanged" else ""}</td>'
+                    f'<td style="padding:5px 6px;">{no_diff_label}</td>'
                     f'</tr>'
                 )
 
