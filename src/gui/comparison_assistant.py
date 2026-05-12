@@ -1,11 +1,12 @@
 """Comparison-aware chatbot for offline and online results."""
 
 import ast
-import ast
 import difflib
 import json
 import os
 import re
+import shutil
+import subprocess
 import threading
 import tkinter as tk
 import xml.etree.ElementTree as ET
@@ -32,14 +33,7 @@ class ComparisonAssistantWindow:
     MAX_FILE_READ_CHARS = 60_000
     MAX_DIFF_LINES = 220
 
-    MAX_CHAT_COPY_CHARS = 200_000
-    MAX_FILE_READ_CHARS = 60_000
-    MAX_DIFF_LINES = 220
-
     OUT_OF_SCOPE_REPLY = (
-        "I'm specialized in migration analysis, code comparison, and RTC integration. "
-        "This question is outside my focus area. Please ask about file differences, "
-        "component analysis, migration risks, or code quality insights for this tool."
         "I'm specialized in migration analysis, code comparison, and RTC integration. "
         "This question is outside my focus area. Please ask about file differences, "
         "component analysis, migration risks, or code quality insights for this tool."
@@ -56,7 +50,75 @@ class ComparisonAssistantWindow:
         "dependency", "dependencies", "depend", "depends", "dependent", "dependents",
         "include", "includes", "included", "header", "headers", "impact", "affects",
         "affected", "chain", "connection", "connections", "linked", "uses", "used",
-        "relationship", "relationships", "require", "requires", "required"
+        "relationship", "relationships", "require", "requires", "required",
+        # Agentic action terms
+        "open", "export", "navigate", "vscode", "filter", "search", "find", "show",
+        "statistics", "stats", "count", "high", "risky"
+    }
+    
+    # =========================================================================
+    # AGENT TOOL DEFINITIONS - Enterprise Agentic Actions
+    # =========================================================================
+    AGENT_TOOLS = {
+        "open_file": {
+            "description": "Open a source file in the default editor",
+            "triggers": ["open", "launch"],
+            "requires_file": True,
+        },
+        "open_in_vscode": {
+            "description": "Open a file in VS Code editor",
+            "triggers": ["vscode", "code"],
+            "requires_file": True,
+        },
+        "view_diff": {
+            "description": "Open the HTML diff viewer for selected file",
+            "triggers": ["diff", "html"],
+            "requires_selection": True,
+        },
+        "export_report": {
+            "description": "Export comparison results to CSV/Excel/HTML",
+            "triggers": ["export", "save report", "generate report"],
+            "formats": ["csv", "excel", "html"],
+        },
+        "navigate_to_file": {
+            "description": "Select and highlight a file in the results table",
+            "triggers": ["navigate", "go to", "select", "find"],
+            "requires_file": True,
+        },
+        "open_dependency_viewer": {
+            "description": "Open dependency analysis for a file",
+            "triggers": ["dependency", "dependencies", "impact"],
+            "requires_file": True,
+        },
+        "show_change_summary": {
+            "description": "Display quick statistics about changes",
+            "triggers": ["stats", "statistics", "count", "how many"],
+        },
+        "filter_results": {
+            "description": "Filter comparison results by status or pattern",
+            "triggers": ["filter", "show only"],
+            "filters": ["modified", "added", "removed", "identical"],
+        },
+        "search_in_results": {
+            "description": "Search for files matching a pattern",
+            "triggers": ["search", "find", "look for"],
+        },
+        "open_reports": {
+            "description": "Open the reports folder",
+            "triggers": ["reports folder", "open reports"],
+        },
+        "run_interface_analysis": {
+            "description": "Start interface analysis on selected components",
+            "triggers": ["interface analysis", "analyze interface"],
+        },
+        "copy_file": {
+            "description": "Copy file between source 1 and source 2",
+            "triggers": ["copy", "sync"],
+        },
+        "show_high_impact_files": {
+            "description": "Show files that affect many other files if changed",
+            "triggers": ["high impact", "risky files", "critical files"],
+        },
     }
 
     def __init__(self, parent, viewer):
@@ -69,16 +131,24 @@ class ComparisonAssistantWindow:
         self.conversation_history = []  # List of {"role": "user"|"assistant", "content": "..."}
         self.max_history_turns = 10  # Keep last 10 turns for context
         
-        
-        # Conversation history & memory
-        self.conversation_history = []  # List of {"role": "user"|"assistant", "content": "..."}
-        self.max_history_turns = 10  # Keep last 10 turns for context
-        
         self.last_question = ""
         self.last_context = ""
         self.last_reply = ""
         self.engine_tested = False  # Track if we've tested the engine
         self.engine_working = False  # Track if engine is actually working
+        
+        # Session context memory for agentic behavior
+        self.session_context = {
+            "last_file_discussed": None,
+            "last_action_performed": None,
+            "files_opened": [],  # Track which files user has opened
+            "analysis_history": [],  # Track what analyses were run
+            "user_preferences": {
+                "preferred_editor": "notepad",  # or "vscode"
+                "auto_navigate": True,  # Auto-select files when mentioned
+            },
+            "current_filter": None,  # Current filter applied to results
+        }
         
         # Dependency graph for chain connection and interface dependency analysis
         self.dependency_graph_source1 = None
@@ -102,8 +172,6 @@ class ComparisonAssistantWindow:
         self._build_ui()
         self._show_startup_message()
         self.entry.focus_set()
-        self._show_startup_message()
-        self.entry.focus_set()
 
     def _build_ui(self):
         header = tk.Frame(self.window, bg="#003366", height=78)
@@ -122,10 +190,6 @@ class ComparisonAssistantWindow:
         ai_state = self._get_ai_state_label()
         badge = tk.Label(header, text=ai_state, font=("Segoe UI", 11, "bold"),
                          bg="#0F5C8C", fg="white", padx=14, pady=8)
-        # Show only AI state in badge (cleaner display)
-        ai_state = self._get_ai_state_label()
-        badge = tk.Label(header, text=ai_state, font=("Segoe UI", 11, "bold"),
-                         bg="#0F5C8C", fg="white", padx=14, pady=8)
         badge.pack(side="right", padx=18)
 
         body = tk.Frame(self.window, bg="#ECF2F6")
@@ -137,7 +201,6 @@ class ComparisonAssistantWindow:
         sidebar.grid(row=0, column=0, sticky="ns", padx=(0, 10))
         sidebar.grid_propagate(False)
 
-        mode = "Online-Online" if self.viewer.online_context else "Offline"
         mode = "Online-Online" if self.viewer.online_context else "Offline"
         context_text = self._context_card_text(mode)
         tk.Label(sidebar, text=context_text, font=("Segoe UI", 9), bg="#CFE0EC",
@@ -341,8 +404,6 @@ class ComparisonAssistantWindow:
 
         intent = self._classify_intent(question)
         local_context = self._build_context(question, intent=intent)
-        intent = self._classify_intent(question)
-        local_context = self._build_context(question, intent=intent)
         self.last_context = local_context
         if not self.engine or self._should_answer_locally(intent):
             self._append_bot(local_context)
@@ -354,7 +415,6 @@ class ComparisonAssistantWindow:
         def worker():
             try:
                 reply = self._ask_model(question, local_context, intent=intent)
-                reply = self._ask_model(question, local_context, intent=intent)
             except Exception as exc:
                 reply = local_context + f"\n\nAI polish unavailable: {exc}"
             self.window.after(0, lambda: self._finish_reply(reply))
@@ -362,24 +422,88 @@ class ComparisonAssistantWindow:
         threading.Thread(target=worker, daemon=True).start()
 
     def _maybe_run_action(self, question):
+        """Handle direct action commands without LLM involvement for speed."""
         q = question.lower()
-        if "open" in q and "report" in q:
+        
+        # === REPORT ACTIONS ===
+        if "open" in q and "report" in q and "folder" in q:
             self.viewer.open_reports_folder()
-            return "Opened the reports folder."
+            return "✓ Opened the reports folder."
+        
+        if "export" in q and ("excel" in q or "xlsx" in q):
+            return self._action_export_report("excel")
+        
+        if "export" in q and "csv" in q:
+            return self._action_export_report("csv")
+        
+        if "export" in q and "html" in q:
+            return self._action_export_report("html")
+        
+        # === COPY/SAVE ACTIONS ===
         if "copy" in q and ("last" in q or "answer" in q):
             return self._copy_last_answer()
-        if "copy" in q and ("last" in q or "answer" in q):
-            return self._copy_last_answer()
+        
         if "save" in q and ("answer" in q or "chat" in q):
             return self._save_last_answer()
+        
+        # === FILE ACTIONS ===
+        if "vscode" in q or ("code" in q and "open" in q):
+            filename = self._extract_single_path_or_name(question)
+            return self._action_open_in_vscode(filename)
+        
         if ("run" in q or "open" in q or "start" in q) and "interface" in q:
             self.window.after(100, self.viewer.open_interface_analysis_tool)
-            return "Starting interface analysis. For online results, I will extract the selected RTC components first."
+            return "✓ Starting interface analysis. For online results, I will extract the selected RTC components first."
+        
         if "open" in q and "diff" in q:
             self.viewer.open_diff()
-            return "Opened the selected row's HTML diff if one is available."
+            return "✓ Opened the selected row's HTML diff if one is available."
+        
+        # === NAVIGATION ACTIONS ===
         if "select" in q and ("changed" in q or "modified" in q or "different" in q):
             return self._select_first_changed_row()
+        
+        if ("navigate" in q or "go to" in q) and any(w in q for w in ["file", "row"]):
+            filename = self._extract_single_path_or_name(question)
+            if filename:
+                return self._action_navigate_to_file(filename)
+        
+        # === ANALYSIS ACTIONS (Direct without LLM) ===
+        if "show" in q and ("stats" in q or "statistics" in q or "change summary" in q):
+            return self._action_show_change_summary()
+        
+        if "high impact" in q or ("show" in q and "risky" in q):
+            return self._action_show_high_impact_files()
+        
+        # === FILTER/SEARCH ACTIONS ===
+        if "filter" in q and "modified" in q:
+            return self._action_filter_results("modified")
+        
+        if "filter" in q and ("added" in q or "new" in q):
+            return self._action_filter_results("added")
+        
+        if "filter" in q and ("removed" in q or "deleted" in q):
+            return self._action_filter_results("removed")
+        
+        if "search" in q or ("find" in q and "file" in q):
+            # Extract search pattern
+            pattern = self._extract_search_pattern(question)
+            if pattern:
+                return self._action_search_in_results(pattern)
+        
+        return None
+    
+    def _extract_search_pattern(self, question: str) -> str | None:
+        """Extract search pattern from user question."""
+        import re
+        # Try to extract quoted pattern
+        m = re.search(r"['\"]([^'\"]+)['\"]", question)
+        if m:
+            return m.group(1)
+        # Try to extract pattern after 'for' or 'search'
+        m = re.search(r"(?:for|search|find)\s+(\S+)", question, re.IGNORECASE)
+        if m:
+            return m.group(1).strip(".,;:")
         return None
 
     def _is_explicit_action_request(self, question: str) -> bool:
@@ -387,11 +511,12 @@ class ComparisonAssistantWindow:
         q = (question or "").lower()
         action_words = (
             "open", "launch", "start", "run", "execute", "save", "copy",
-            "select", "choose", "export"
+            "select", "choose", "export", "navigate", "go to", "find",
+            "filter", "search", "show stats", "statistics", "vscode", "code"
         )
         if any(word in q for word in action_words):
             return True
-        return q.strip().startswith(("/open", "/run", "/save", "/copy", "/select"))
+        return q.strip().startswith(("/open", "/run", "/save", "/copy", "/select", "/export", "/navigate", "/filter", "/search"))
 
     def _should_execute_model_action(self, action_name: str, question: str) -> bool:
         """Gate model-suggested actions so explanation prompts do not open files."""
@@ -399,49 +524,28 @@ class ComparisonAssistantWindow:
             return False
 
         q = (question or "").lower()
-        if action_name == "open_file":
-            return any(word in q for word in ("open", "launch"))
-        if action_name == "view_diff":
-            return "open" in q and ("diff" in q or "html" in q or "report" in q)
-        if action_name == "open_reports":
-            return "open" in q and "report" in q
-        if action_name == "run_interface_analysis":
-            return any(word in q for word in ("run", "start", "launch", "execute")) and "interface" in q
-        if action_name == "select_changed_file":
-            return any(word in q for word in ("select", "choose"))
-        if action_name == "copy_file":
-            return "copy" in q
-        return False
-
-    def _is_explicit_action_request(self, question: str) -> bool:
-        """Return True only when the user is asking the tool to do something."""
-        q = (question or "").lower()
-        action_words = (
-            "open", "launch", "start", "run", "execute", "save", "copy",
-            "select", "choose", "export"
-        )
-        if any(word in q for word in action_words):
-            return True
-        return q.strip().startswith(("/open", "/run", "/save", "/copy", "/select"))
-
-    def _should_execute_model_action(self, action_name: str, question: str) -> bool:
-        """Gate model-suggested actions so explanation prompts do not open files."""
-        if not self._is_explicit_action_request(question):
-            return False
-
-        q = (question or "").lower()
-        if action_name == "open_file":
-            return any(word in q for word in ("open", "launch"))
-        if action_name == "view_diff":
-            return "open" in q and ("diff" in q or "html" in q or "report" in q)
-        if action_name == "open_reports":
-            return "open" in q and "report" in q
-        if action_name == "run_interface_analysis":
-            return any(word in q for word in ("run", "start", "launch", "execute")) and "interface" in q
-        if action_name == "select_changed_file":
-            return any(word in q for word in ("select", "choose"))
-        if action_name == "copy_file":
-            return "copy" in q
+        
+        # Map actions to their trigger conditions
+        action_triggers = {
+            "open_file": lambda: any(word in q for word in ("open", "launch")) and "vscode" not in q,
+            "open_in_vscode": lambda: "vscode" in q or ("code" in q and "open" in q),
+            "view_diff": lambda: "open" in q and ("diff" in q or "html" in q),
+            "open_reports": lambda: "open" in q and "report" in q and "folder" in q,
+            "run_interface_analysis": lambda: any(word in q for word in ("run", "start", "launch", "execute")) and "interface" in q,
+            "select_changed_file": lambda: any(word in q for word in ("select", "choose")) and any(word in q for word in ("changed", "modified")),
+            "copy_file": lambda: "copy" in q and "file" in q,
+            "export_report": lambda: "export" in q or ("save" in q and "report" in q),
+            "navigate_to_file": lambda: any(word in q for word in ("navigate", "go to", "find", "select")),
+            "open_dependency_viewer": lambda: any(word in q for word in ("dependency", "dependencies", "impact")),
+            "show_change_summary": lambda: any(word in q for word in ("stats", "statistics", "count", "how many")),
+            "filter_results": lambda: "filter" in q or "show only" in q,
+            "search_in_results": lambda: "search" in q or "find" in q,
+            "show_high_impact_files": lambda: "high impact" in q or "risky" in q or "critical" in q,
+        }
+        
+        trigger_fn = action_triggers.get(action_name)
+        if trigger_fn:
+            return trigger_fn()
         return False
 
     def _is_in_scope_question(self, question):
@@ -1026,30 +1130,37 @@ class ComparisonAssistantWindow:
         if self.engine:
             greeting = (
                 f"{ai_status}\n\n"
-                "I'm ready to help with your code migration analysis.\n\n"
-                "I can:\n"
+                "I'm your enterprise migration assistant with agentic capabilities.\n\n"
+                "📋 ANALYSIS:\n"
                 "• Explain file differences and migration risks\n"
-                "• Analyze file dependencies and chain connections\n"
-                "• Show impact of changes (what files are affected)\n"
-                "• Trace #include relationships for headers\n"
-                "• Open files and generate diffs\n"
-                "• Remember our conversation for follow-ups\n\n"
+                "• Analyze dependencies and show impact chains\n"
+                "• Identify high-risk files that affect many others\n"
+                "• Trace #include relationships for headers\n\n"
+                "🔧 ACTIONS I CAN PERFORM:\n"
+                "• Open files (in Notepad or VS Code)\n"
+                "• Navigate to files in results table\n"
+                "• Export reports (CSV, Excel, HTML)\n"
+                "• Filter and search comparison results\n"
+                "• Show change statistics and summaries\n\n"
                 f"Dependency Analysis: {dep_status} {'Available' if DEPENDENCY_GRAPH_AVAILABLE else 'Not available'}\n\n"
-                "Try asking:\n"
-                "- Summarize this comparison\n"
-                "- What depends on <file name>?\n"
-                "- What is the connection between file A and file B?\n"
-                "- Which files are affected if I change <file>?"
+                "Try commands like:\n"
+                "• \"Show change statistics\"\n"
+                "• \"Open app_main.c in VS Code\"\n"
+                "• \"Show high impact files\"\n"
+                "• \"Export report to Excel\"\n"
+                "• \"Filter modified files\"\n"
+                "• \"What depends on config.h?\""
             )
         else:
             greeting = (
                 "⚫ Local agent (offline mode)\n\n"
-                "AI engine unavailable. I'm running in local mode.\n"
+                "AI engine unavailable. Running in local mode with agentic features.\n\n"
                 "I can still help with:\n"
-                "• File operations (open, copy, diff)\n"
+                "• Open files (Notepad/VS Code)\n"
+                "• Export reports (CSV/Excel)\n"
+                "• Navigate and filter results\n"
                 "• Dependency and impact analysis\n"
-                "• Include chain tracing\n"
-                "• Local syntax review\n\n"
+                "• Show change statistics\n\n"
                 f"Dependency Analysis: {dep_status} {'Available' if DEPENDENCY_GRAPH_AVAILABLE else 'Not available'}\n\n"
                 "To enable Groq AI:\n"
                 "1. Set GROQ_API_KEY in your .env file\n"
@@ -1212,76 +1323,182 @@ class ComparisonAssistantWindow:
         if not self._ensure_dependency_graphs():
             return ""
         
-        lines = ["Dependency Analysis:"]
+        lines = []
+        found_in_any_graph = False
         
         # Find file in graphs
         rel_path = self._find_rel_path_in_graph(file_name)
         
-        if self.dependency_graph_source1 and rel_path:
+        # Check file extension - dependency analysis only works for C/C++ files
+        file_ext = os.path.splitext(file_name)[1].lower()
+        is_c_cpp = file_ext in ('.c', '.h', '.cpp', '.hpp', '.cc', '.hh', '.cxx', '.hxx')
+        
+        if not rel_path:
+            # File not found in dependency graph
+            if not is_c_cpp:
+                return (
+                    f"Dependency analysis is only available for C/C++ files.\n"
+                    f"'{file_name}' is a {file_ext or 'non-source'} file.\n"
+                    f"Try selecting a .c, .h, .cpp, or .hpp file."
+                )
+            
+            # Check if graphs have any nodes at all
+            graph1_count = len(self.dependency_graph_source1.nodes) if self.dependency_graph_source1 else 0
+            graph2_count = len(self.dependency_graph_source2.nodes) if self.dependency_graph_source2 else 0
+            
+            if graph1_count == 0 and graph2_count == 0:
+                return (
+                    f"Dependency graphs are empty - no C/C++ files found in the compared folders.\n"
+                    f"Make sure the folders contain .c, .h, .cpp files."
+                )
+            
+            return (
+                f"File '{file_name}' not found in dependency graph.\n\n"
+                f"Graph contains {graph1_count} files from Source 1, {graph2_count} from Source 2.\n"
+                f"The file may not have #include relationships or is outside the scanned folders."
+            )
+        
+        lines.append(f"Dependency Analysis for: {file_name}")
+        lines.append(f"(Matched to: {rel_path})")
+        
+        if self.dependency_graph_source1:
             node = self.dependency_graph_source1.get_node(rel_path)
             if node:
-                lines.append(f"\nSource 1 (Platform) dependencies for {file_name}:")
+                found_in_any_graph = True
+                lines.append(f"\n📁 Source 1 (Platform):")
                 
                 # What this file includes
                 if node.resolved_includes:
-                    lines.append(f"  Files it includes ({len(node.resolved_includes)}):")
+                    lines.append(f"  Includes ({len(node.resolved_includes)} files):")
                     for inc in sorted(node.resolved_includes)[:10]:
-                        lines.append(f"    - {inc}")
+                        lines.append(f"    → {inc}")
                     if len(node.resolved_includes) > 10:
                         lines.append(f"    ... and {len(node.resolved_includes) - 10} more")
+                else:
+                    lines.append(f"  Includes: none")
                 
                 # What includes this file
                 if node.included_by:
-                    lines.append(f"  Files that include it ({len(node.included_by)}):")
+                    lines.append(f"  Included by ({len(node.included_by)} files):")
                     for dep in sorted(node.included_by)[:10]:
-                        lines.append(f"    - {dep}")
+                        lines.append(f"    ← {dep}")
                     if len(node.included_by) > 10:
                         lines.append(f"    ... and {len(node.included_by) - 10} more")
+                else:
+                    lines.append(f"  Included by: none (leaf node)")
                 
                 # Impact radius
                 if self.impact_analyzer_source1:
-                    impact = self.dependency_graph_source1.get_impact_radius(rel_path)
-                    if impact > 0:
-                        lines.append(f"  Impact radius: {impact} files affected if this changes")
+                    try:
+                        impact = self.dependency_graph_source1.get_impact_radius(rel_path)
+                        if impact > 0:
+                            lines.append(f"  ⚠️ Impact radius: {impact} files affected if changed")
+                    except Exception:
+                        pass
         
-        if self.dependency_graph_source2 and rel_path:
+        if self.dependency_graph_source2:
             node = self.dependency_graph_source2.get_node(rel_path)
             if node:
-                lines.append(f"\nSource 2 (Project) dependencies for {file_name}:")
+                found_in_any_graph = True
+                lines.append(f"\n📁 Source 2 (Project):")
                 
                 if node.resolved_includes:
-                    lines.append(f"  Files it includes ({len(node.resolved_includes)}):")
+                    lines.append(f"  Includes ({len(node.resolved_includes)} files):")
                     for inc in sorted(node.resolved_includes)[:10]:
-                        lines.append(f"    - {inc}")
+                        lines.append(f"    → {inc}")
                     if len(node.resolved_includes) > 10:
                         lines.append(f"    ... and {len(node.resolved_includes) - 10} more")
+                else:
+                    lines.append(f"  Includes: none")
                 
                 if node.included_by:
-                    lines.append(f"  Files that include it ({len(node.included_by)}):")
+                    lines.append(f"  Included by ({len(node.included_by)} files):")
                     for dep in sorted(node.included_by)[:10]:
-                        lines.append(f"    - {dep}")
+                        lines.append(f"    ← {dep}")
                     if len(node.included_by) > 10:
                         lines.append(f"    ... and {len(node.included_by) - 10} more")
+                else:
+                    lines.append(f"  Included by: none (leaf node)")
                 
                 if self.impact_analyzer_source2:
-                    impact = self.dependency_graph_source2.get_impact_radius(rel_path)
-                    if impact > 0:
-                        lines.append(f"  Impact radius: {impact} files affected if this changes")
+                    try:
+                        impact = self.dependency_graph_source2.get_impact_radius(rel_path)
+                        if impact > 0:
+                            lines.append(f"  ⚠️ Impact radius: {impact} files affected if changed")
+                    except Exception:
+                        pass
         
-        return "\n".join(lines) if len(lines) > 1 else ""
+        if not found_in_any_graph:
+            lines.append(f"\nFile path matched but no dependency data found.")
+            lines.append(f"The file may not contain or be included by any other files.")
+        
+        return "\n".join(lines)
 
     def _find_rel_path_in_graph(self, file_name: str) -> str | None:
-        """Find relative path matching file_name in dependency graphs."""
-        file_base = os.path.basename(file_name).lower()
+        """Find relative path matching file_name in dependency graphs.
         
+        Tries multiple matching strategies:
+        1. Exact match on basename
+        2. Path ends with the provided file_name
+        3. Compute relative path from source folder using viewer's current_path1/2
+        4. Partial path match (any part of path contains file_name)
+        """
+        if not file_name:
+            return None
+            
+        file_base = os.path.basename(file_name).lower()
+        file_name_lower = file_name.lower().replace("\\", "/")
+        
+        # Strategy 1 & 2: Try basename and endswith match
         for graph in [self.dependency_graph_source1, self.dependency_graph_source2]:
             if not graph:
                 continue
             for rel_path in graph.nodes:
+                rel_path_normalized = rel_path.lower().replace("\\", "/")
+                # Exact basename match
                 if os.path.basename(rel_path).lower() == file_base:
                     return rel_path
-                if rel_path.lower().endswith(file_name.lower()):
+                # Path ends with file_name
+                if rel_path_normalized.endswith(file_name_lower):
                     return rel_path
+        
+        # Strategy 3: Compute relative path from source folder
+        # If viewer has current_path1/2, derive relative path from folder1_actual/folder2_actual
+        folder1 = getattr(self.viewer, "folder1_actual", None)
+        folder2 = getattr(self.viewer, "folder2_actual", None)
+        current_path1 = getattr(self.viewer, "current_path1", None)
+        current_path2 = getattr(self.viewer, "current_path2", None)
+        
+        for folder, current_path, graph in [
+            (folder1, current_path1, self.dependency_graph_source1),
+            (folder2, current_path2, self.dependency_graph_source2)
+        ]:
+            if folder and current_path and graph:
+                try:
+                    # Compute relative path from source folder
+                    abs_folder = os.path.abspath(folder).replace("\\", "/")
+                    abs_path = os.path.abspath(current_path).replace("\\", "/")
+                    if abs_path.startswith(abs_folder):
+                        derived_rel = abs_path[len(abs_folder):].lstrip("/")
+                        # Check if this exists in graph
+                        for rel_path in graph.nodes:
+                            if rel_path.replace("\\", "/") == derived_rel:
+                                return rel_path
+                            if rel_path.replace("\\", "/").endswith(derived_rel):
+                                return rel_path
+                except Exception:
+                    pass
+        
+        # Strategy 4: Partial path match (file_name appears anywhere in path)
+        for graph in [self.dependency_graph_source1, self.dependency_graph_source2]:
+            if not graph:
+                continue
+            for rel_path in graph.nodes:
+                rel_path_normalized = rel_path.lower().replace("\\", "/")
+                # Check if any part of the path matches
+                if file_base in rel_path_normalized:
+                    return rel_path
+        
         return None
 
     def _context_dependency_analysis(self, question: str) -> str | None:
@@ -1825,14 +2042,10 @@ class ComparisonAssistantWindow:
 
     def _build_chat_engine(self):
         """Build chat engine: tries Groq first, then AOAI (if available)."""
-        """Build chat engine: tries Groq first, then AOAI (if available)."""
         try:
             from src.config import settings
             print("Starting AI engine initialization")
 
-        # existing code...
-
-            print("Engine initialized successfully")
             # ========== Try Groq (Primary) ==========
             groq_key = os.environ.get("GROQ_API_KEY", "")
             print("API Key Exists:", bool(groq_key))
@@ -1840,7 +2053,7 @@ class ComparisonAssistantWindow:
             if groq_key and groq_key.strip():
                 try:
                     from src.chatbot.chatbot import GroqChatEngine
-                    groq_model = os.environ.get("GROQ_API_KEY", "GROQ_MODEL")
+                    groq_model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
                     
                     # Get proxy configuration (if corporate network). Prefer
                     groq_proxy_url = (
@@ -1944,25 +2157,51 @@ class ComparisonAssistantWindow:
         """Execute an agentic action (tool call). Called when the model requests an action."""
         args = args or {}
         
+        # Update session context
+        self.session_context["last_action_performed"] = action_name
+        
         try:
             if action_name == "open_file":
                 filename = args.get("filename", None)
                 file_ref = args.get("file_ref", None)
                 return self._action_open_file(filename=filename, file_ref=file_ref)
+            elif action_name == "open_in_vscode":
+                filename = args.get("filename", None)
+                return self._action_open_in_vscode(filename=filename)
             elif action_name == "view_diff":
                 return self._action_view_diff()
             elif action_name == "open_reports":
                 self.viewer.open_reports_folder()
-                return "Opened reports folder."
+                return "✓ Opened reports folder."
             elif action_name == "run_interface_analysis":
                 self.window.after(100, self.viewer.open_interface_analysis_tool)
-                return "Starting interface analysis..."
+                return "✓ Starting interface analysis..."
             elif action_name == "select_changed_file":
                 return self._select_first_changed_row()
             elif action_name == "copy_file":
                 src = args.get("source", "1")
                 dst = args.get("destination", "2")
                 return self._action_copy_file(src, dst)
+            elif action_name == "export_report":
+                fmt = args.get("format", "excel")
+                return self._action_export_report(fmt)
+            elif action_name == "navigate_to_file":
+                filename = args.get("filename", None)
+                return self._action_navigate_to_file(filename)
+            elif action_name == "open_dependency_viewer":
+                filename = args.get("filename", None)
+                return self._action_open_dependency_viewer(filename)
+            elif action_name == "show_change_summary":
+                return self._action_show_change_summary()
+            elif action_name == "filter_results":
+                status = args.get("status", None)
+                pattern = args.get("pattern", None)
+                return self._action_filter_results(status, pattern)
+            elif action_name == "search_in_results":
+                pattern = args.get("pattern", None)
+                return self._action_search_in_results(pattern)
+            elif action_name == "show_high_impact_files":
+                return self._action_show_high_impact_files()
             else:
                 return f"Unknown action: {action_name}"
         except Exception as exc:
@@ -2075,9 +2314,282 @@ class ComparisonAssistantWindow:
             if src_num == dst_num:
                 return "Source and destination must be different."
             self.viewer.copy_file(src_num, dst_num)
-            return f"Copied file from source {src_num} to source {dst_num}: {self.viewer.current_file}"
+            return f"✓ Copied file from source {src_num} to source {dst_num}: {self.viewer.current_file}"
         except Exception as e:
             return f"Copy failed: {e}"
+
+    # =========================================================================
+    # NEW ENTERPRISE AGENTIC ACTIONS
+    # =========================================================================
+
+    def _action_open_in_vscode(self, filename: str = None) -> str:
+        """Open a file in VS Code editor."""
+        import subprocess
+        import shutil
+        
+        # Check if VS Code is available
+        vscode_path = shutil.which("code")
+        if not vscode_path:
+            return "VS Code ('code' command) not found in PATH. Please install VS Code or use 'open file' instead."
+        
+        path_to_open = None
+        file_name_display = None
+        
+        if filename:
+            filename_clean = filename.strip("'\"")
+            basename_clean = os.path.basename(filename_clean).lower()
+            
+            # Search in files1 and files2
+            for mapping, label in [(self.viewer.files1, "Source 1"), (self.viewer.files2, "Source 2")]:
+                for rel_path, abs_path in (mapping or {}).items():
+                    if os.path.basename(rel_path).lower() == basename_clean:
+                        if os.path.exists(abs_path):
+                            path_to_open = abs_path
+                            file_name_display = rel_path
+                            break
+                if path_to_open:
+                    break
+        elif self.viewer.current_path1:
+            path_to_open = self.viewer.current_path1
+            file_name_display = self.viewer.current_file
+        
+        if not path_to_open:
+            return "Could not find file to open. Specify a filename or select a row first."
+        
+        try:
+            subprocess.Popen(["code", path_to_open], shell=True)
+            # Update session context
+            self.session_context["files_opened"].append(file_name_display)
+            self.session_context["user_preferences"]["preferred_editor"] = "vscode"
+            return f"✓ Opened in VS Code: {file_name_display}"
+        except Exception as e:
+            return f"Failed to open VS Code: {e}"
+
+    def _action_export_report(self, fmt: str = "excel") -> str:
+        """Export comparison results to specified format."""
+        fmt = fmt.lower().strip()
+        
+        try:
+            if fmt == "csv":
+                # Use viewer's CSV export
+                if hasattr(self.viewer, 'open_csv_report'):
+                    self.viewer.open_csv_report()
+                    return "✓ Exported and opened CSV report"
+                else:
+                    return "CSV export not available"
+            elif fmt in ("excel", "xlsx"):
+                if hasattr(self.viewer, 'open_excel_report'):
+                    self.viewer.open_excel_report()
+                    return "✓ Exported and opened Excel report"
+                else:
+                    return "Excel export not available"
+            elif fmt == "html":
+                if hasattr(self.viewer, 'open_diff'):
+                    self.viewer.open_diff()
+                    return "✓ Opened HTML diff report"
+                else:
+                    return "HTML export not available"
+            else:
+                return f"Unknown format: {fmt}. Use 'csv', 'excel', or 'html'."
+        except Exception as e:
+            return f"Export failed: {e}"
+
+    def _action_navigate_to_file(self, filename: str = None) -> str:
+        """Navigate to and select a file in the results table."""
+        if not filename:
+            return "Please specify a filename to navigate to."
+        
+        filename_clean = filename.strip("'\"").lower()
+        basename_clean = os.path.basename(filename_clean).lower()
+        
+        # Search in tree items
+        for item in self.viewer.tree.get_children():
+            values = self.viewer.tree.item(item, 'values')
+            if values:
+                item_name = str(values[0]).lower()
+                item_basename = os.path.basename(item_name).lower()
+                if item_basename == basename_clean or filename_clean in item_name:
+                    self.viewer.tree.selection_set(item)
+                    self.viewer.tree.see(item)
+                    self.viewer.tree.focus(item)
+                    self.viewer.on_file_select()
+                    # Update session context
+                    self.session_context["last_file_discussed"] = values[0]
+                    return f"✓ Navigated to: {values[0]}"
+        
+        return f"File '{filename}' not found in comparison results."
+
+    def _action_open_dependency_viewer(self, filename: str = None) -> str:
+        """Show dependency analysis for a file."""
+        if not self._ensure_dependency_graphs():
+            return "Dependency analysis not available. Ensure C/C++ source files are present in compared folders."
+        
+        target_file = filename
+        if not target_file and self.viewer.current_file:
+            target_file = self.viewer.current_file
+        
+        if not target_file:
+            return "Please specify a file or select one from the results."
+        
+        # Get dependency info - this now returns helpful messages even when file not found
+        dep_info = self._get_file_dependency_info(target_file)
+        if dep_info:
+            self.session_context["analysis_history"].append({
+                "type": "dependency",
+                "file": target_file,
+            })
+            return f"📊 {dep_info}"
+        else:
+            # This shouldn't happen now since _get_file_dependency_info always returns something
+            return f"Could not analyze dependencies for '{target_file}'."
+
+    def _action_show_change_summary(self) -> str:
+        """Display quick statistics about changes."""
+        counts = {}
+        for row in self.viewer.results:
+            status = str(row[4])
+            counts[status] = counts.get(status, 0) + 1
+        
+        total = len(self.viewer.results)
+        modified = counts.get("Different", 0) + counts.get("Modified", 0)
+        comments_only = counts.get("Comments update only", 0)
+        only_source1 = counts.get("Only in Platform", 0) + counts.get("Only in Snapshot 1", 0)
+        only_source2 = counts.get("Only in Project", 0) + counts.get("Only in Snapshot 2", 0)
+        identical = counts.get("Identical", 0)
+        
+        summary = f"""📊 Change Statistics:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Total files:        {total}
+Modified:           {modified} ({(modified/total*100):.1f}% if total else 0)
+Comments only:      {comments_only}
+Only in Source 1:   {only_source1}
+Only in Source 2:   {only_source2}
+Identical:          {identical}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Risk Assessment:
+• High risk: {modified} files need code review
+• Medium risk: {only_source2} files are new additions
+• Low risk: {comments_only} files have comment changes only"""
+        
+        return summary
+
+    def _action_filter_results(self, status: str = None, pattern: str = None) -> str:
+        """Filter comparison results by status or pattern."""
+        if not status and not pattern:
+            return "Please specify a status (modified, added, removed, identical) or pattern to filter."
+        
+        status_map = {
+            "modified": ("Different", "Modified"),
+            "changed": ("Different", "Modified", "Comments update only"),
+            "added": ("Only in Project", "Only in Snapshot 2"),
+            "removed": ("Only in Platform", "Only in Snapshot 1"),
+            "identical": ("Identical",),
+        }
+        
+        filtered = []
+        filter_desc = ""
+        
+        if status:
+            status_key = status.lower().strip()
+            target_statuses = status_map.get(status_key, (status,))
+            filtered = [r for r in self.viewer.results if str(r[4]) in target_statuses]
+            filter_desc = f"status='{status}'"
+        
+        if pattern:
+            pattern_lower = pattern.lower()
+            if filtered:
+                filtered = [r for r in filtered if pattern_lower in str(r[0]).lower()]
+            else:
+                filtered = [r for r in self.viewer.results if pattern_lower in str(r[0]).lower()]
+            filter_desc += f" pattern='{pattern}'" if filter_desc else f"pattern='{pattern}'"
+        
+        if not filtered:
+            return f"No files match filter: {filter_desc}"
+        
+        # Update session context
+        self.session_context["current_filter"] = {"status": status, "pattern": pattern}
+        
+        lines = [f"📋 Filtered results ({filter_desc}): {len(filtered)} files"]
+        for row in filtered[:20]:
+            lines.append(f"  • {row[0]} ({row[4]})")
+        if len(filtered) > 20:
+            lines.append(f"  ... and {len(filtered) - 20} more")
+        
+        return "\n".join(lines)
+
+    def _action_search_in_results(self, pattern: str = None) -> str:
+        """Search for files matching a pattern in results."""
+        if not pattern:
+            return "Please specify a search pattern."
+        
+        pattern_lower = pattern.lower().strip()
+        matches = []
+        
+        for row in self.viewer.results:
+            name = str(row[0]).lower()
+            if pattern_lower in name:
+                matches.append(row)
+        
+        if not matches:
+            return f"🔍 No files matching '{pattern}' found."
+        
+        lines = [f"🔍 Search results for '{pattern}': {len(matches)} files"]
+        for row in matches[:15]:
+            lines.append(f"  • {row[0]} ({row[4]})")
+        if len(matches) > 15:
+            lines.append(f"  ... and {len(matches) - 15} more")
+        
+        # Auto-navigate to first match if preference is set
+        if self.session_context["user_preferences"].get("auto_navigate") and matches:
+            first_match = str(matches[0][0])
+            self._action_navigate_to_file(first_match)
+            lines.append(f"\n✓ Auto-navigated to first match: {first_match}")
+        
+        return "\n".join(lines)
+
+    def _action_show_high_impact_files(self) -> str:
+        """Show files that have high impact (many dependents)."""
+        if not self._ensure_dependency_graphs():
+            return "Dependency analysis not available for impact assessment."
+        
+        high_impact = []
+        
+        # Analyze both source graphs
+        for graph, label in [(self.dependency_graph_source1, "Source 1"), 
+                             (self.dependency_graph_source2, "Source 2")]:
+            if not graph:
+                continue
+            for rel_path, node in graph.nodes.items():
+                if hasattr(node, 'included_by') and len(node.included_by) >= 3:
+                    # Also check if file is in our comparison results
+                    basename = os.path.basename(rel_path).lower()
+                    for row in self.viewer.results:
+                        if os.path.basename(str(row[0])).lower() == basename:
+                            high_impact.append({
+                                "file": rel_path,
+                                "dependents": len(node.included_by),
+                                "status": str(row[4]),
+                                "source": label,
+                            })
+                            break
+        
+        if not high_impact:
+            return "No high-impact files found (files with 3+ dependents)."
+        
+        # Sort by number of dependents
+        high_impact.sort(key=lambda x: x["dependents"], reverse=True)
+        
+        lines = ["🔥 High Impact Files (changes affect many other files):"]
+        for item in high_impact[:10]:
+            risk = "⚠️" if item["status"] in ("Different", "Modified") else "✓"
+            lines.append(f"  {risk} {item['file']} - {item['dependents']} dependents ({item['status']})")
+        
+        modified_high_impact = [f for f in high_impact if f["status"] in ("Different", "Modified")]
+        if modified_high_impact:
+            lines.append(f"\n⚠️ WARNING: {len(modified_high_impact)} high-impact files are modified!")
+        
+        return "\n".join(lines)
 
     def _extract_and_execute_actions(self, reply: str, question: str = "") -> list[str]:
         """Extract [ACTION: ...] patterns from the reply and execute them."""
@@ -2154,24 +2666,36 @@ class ComparisonAssistantWindow:
             "- The ripple effect of modifications\n\n"
             
             "AVAILABLE TOOLS (Agentic Actions):\n"
-            "You can suggest or request these actions when appropriate:\n"
-            "• open_file(filename='app_main.c') — Opens the specified file in an editor\n"
-            "  OR: open_file(file_ref='f1'|'f2') — Opens source 1 or source 2 of selected file\n"
-            "• view_diff() — Opens the HTML diff viewer for the selected file\n"
-            "• open_reports() — Opens the reports folder\n"
-            "• run_interface_analysis() — Starts interface analysis on selected components\n"
-            "• select_changed_file() — Auto-selects the first changed row\n"
-            "• copy_file(source='1'|'2', destination='1'|'2') — Copies file between sources\n\n"
+            "You can suggest these actions when the user explicitly asks to perform them:\n\n"
+            "FILE OPERATIONS:\n"
+            "• open_file(filename='app_main.c') — Opens file in default editor\n"
+            "• open_in_vscode(filename='app_main.c') — Opens file in VS Code\n"
+            "• view_diff() — Opens HTML diff viewer for selected file\n"
+            "• copy_file(source='1', destination='2') — Copies file between sources\n\n"
+            "NAVIGATION:\n"
+            "• navigate_to_file(filename='app_main.c') — Selects file in results table\n"
+            "• select_changed_file() — Auto-selects first changed row\n"
+            "• search_in_results(pattern='main') — Search files by pattern\n"
+            "• filter_results(status='modified') — Filter by status (modified/added/removed/identical)\n\n"
+            "ANALYSIS:\n"
+            "• open_dependency_viewer(filename='header.h') — Show dependency analysis\n"
+            "• show_high_impact_files() — List files that affect many others\n"
+            "• show_change_summary() — Display change statistics\n"
+            "• run_interface_analysis() — Start interface analysis on components\n\n"
+            "REPORTS:\n"
+            "• export_report(format='excel') — Export to CSV/Excel/HTML\n"
+            "• open_reports() — Open the reports folder\n\n"
             
             "TO SUGGEST AN ACTION:\n"
-            "Only include an [ACTION: ...] tag when the user explicitly asks to open, run, copy, save, or select something.\n"
-            "If the user asks to explain, summarize, tell differences, assess risk, or say why something changed, answer in text only and do not include an action tag.\n"
-            "Respond naturally and end your message with a line like:\n"
-            "[ACTION: open_file(filename='app_main.c')]\n"
-            "[ACTION: view_diff()]\n"
-            "[ACTION: copy_file(source='1', destination='2')]\n\n"
-            "TIP: When opening a file, use the actual filename (e.g., 'app_main.c') not the reference.\n"
-            "The tool will find the correct file in the comparison results.\n\n"
+            "Only include an [ACTION: ...] tag when the user explicitly asks to open, run, export, navigate, filter, search, or select something.\n"
+            "If the user asks to explain, summarize, tell differences, assess risk, or say why something changed, answer in text only—do NOT include an action tag.\n"
+            "Format: [ACTION: action_name(param='value')]\n"
+            "Examples:\n"
+            "  [ACTION: open_file(filename='app_main.c')]\n"
+            "  [ACTION: export_report(format='excel')]\n"
+            "  [ACTION: navigate_to_file(filename='config.h')]\n"
+            "  [ACTION: filter_results(status='modified')]\n"
+            "  [ACTION: show_high_impact_files()]\n\n"
             
             "Authoritative knowledge sources (in priority order):\n"
             "1) The comparison/tool context provided in the user message (statuses, paths, counts).\n"
@@ -2184,7 +2708,7 @@ class ComparisonAssistantWindow:
             "- If a diff/excerpt is truncated, acknowledge it and suggest viewing the full HTML diff.\n"
             "- Prefer short, structured answers with bullet points and concrete next actions.\n"
             "- When proposing code changes, give precise edits (function/section names).\n"
-            "- If you suggest an action, make it clear and place it at the end in [ACTION: ...] format.\n\n"
+            "- If you suggest an action, place it at the END of your message in [ACTION: ...] format.\n\n"
             f"Intent guidance: {intent_hint}"
         )
 
@@ -2215,45 +2739,86 @@ class ComparisonAssistantWindow:
                 self._append_system("\nActions not run:\n" + "\n".join(skipped))
         
         self._after_reply(display_reply, self.last_question)
-        
-        # Extract and execute suggested actions
-        action_results = self._extract_and_execute_actions(reply, self.last_question)
-        display_reply = self._strip_action_tags(reply)
-        
-        # Display reply
-        self._append_bot(display_reply)
-        
-        # Display action results if any
-        if action_results:
-            executed = [item for item in action_results if not item.startswith("Skipped ")]
-            skipped = [item for item in action_results if item.startswith("Skipped ")]
-            if executed:
-                self._append_system("\nActions executed:\n" + "\n".join(executed))
-            if skipped and self._is_explicit_action_request(self.last_question):
-                self._append_system("\nActions not run:\n" + "\n".join(skipped))
-        
-        self._after_reply(display_reply, self.last_question)
 
     def _after_reply(self, reply, question):
         self.last_reply = reply
+        # Update session context with discussed file if any
+        mentioned_file = self._extract_single_path_or_name(question)
+        if mentioned_file:
+            self.session_context["last_file_discussed"] = mentioned_file
         self._render_suggestions(self._suggest_followups(question, reply))
         self.status_var.set("Ready")
 
     def _suggest_followups(self, question, reply):
+        """Generate context-aware follow-up suggestions."""
         q = question.lower()
         suggestions = []
+        
+        # Context-aware suggestions based on question type
         if "summary" in q or "overview" in q:
-            suggestions.extend(["What should I inspect next?", "Show high impact files", "List modified files"])
+            suggestions.extend([
+                "Show change statistics",
+                "Show high impact files",
+                "Export report to Excel",
+                "List modified files"
+            ])
         elif "depend" in q or "include" in q or "impact" in q or "chain" in q:
-            suggestions.extend(["Show high impact files", "List modified files", "What files are affected?"])
+            suggestions.extend([
+                "Show high impact files",
+                "Open dependency viewer",
+                "Filter modified files",
+                "What files are affected?"
+            ])
+        elif "open" in q or "vscode" in q:
+            suggestions.extend([
+                "View diff for this file",
+                "What depends on this file?",
+                "Show change statistics",
+                "Navigate to next file"
+            ])
+        elif "export" in q or "report" in q:
+            suggestions.extend([
+                "Export to CSV",
+                "Export to Excel",
+                "Open reports folder",
+                "Show change statistics"
+            ])
+        elif "filter" in q or "search" in q:
+            suggestions.extend([
+                "Filter modified files",
+                "Search for headers",
+                "Show high impact files",
+                "Clear filter"
+            ])
         elif "selected" in q or self._find_best_result(question):
-            suggestions.extend(["What depends on this file?", "Show include chain", "What is the risk?"])
+            suggestions.extend([
+                "Open in VS Code",
+                "What depends on this?",
+                "View diff",
+                "Show impact analysis"
+            ])
         elif "modified" in q or "changed" in q:
-            suggestions.extend(["Show dependencies for changed files", "Which files are risky?", "Show impact analysis"])
+            suggestions.extend([
+                "Show high impact files",
+                "Export modified to Excel",
+                "Open first modified file",
+                "Show dependencies"
+            ])
         elif self.viewer.online_context:
-            suggestions.extend(["Run interface analysis", "Explain selected component", "List selected components"])
+            suggestions.extend([
+                "Run interface analysis",
+                "Show change statistics",
+                "List selected components",
+                "Export comparison"
+            ])
         else:
-            suggestions.extend(["Summarize this comparison", "Show file dependencies", "What should I inspect next?"])
+            suggestions.extend([
+                "Summarize this comparison",
+                "Show change statistics",
+                "Show high impact files",
+                "List modified files"
+            ])
+        
         return suggestions[:4]
 
     def _render_suggestions(self, suggestions):
@@ -2341,7 +2906,6 @@ class ComparisonAssistantWindow:
     def _append_bot(self, text):
         self._write("\nAssistant\n", "bot_label")
         self._write_with_code_blocks(text + "\n", base_tag="bot")
-        self._write_with_code_blocks(text + "\n", base_tag="bot")
 
     def _append_system(self, text):
         self._write("\n" + text + "\n", "system")
@@ -2356,93 +2920,9 @@ class ComparisonAssistantWindow:
                 continue
             self._write(line, "code" if in_code else base_tag)
 
-    def _write_with_code_blocks(self, text: str, base_tag: str) -> None:
-        """Render simple fenced code blocks (```...```) using the `code` tag."""
-        in_code = False
-        for line in text.splitlines(keepends=True):
-            if line.lstrip().startswith("```"):
-                in_code = not in_code
-                self._write(line, "system" if base_tag == "system" else base_tag)
-                continue
-            self._write(line, "code" if in_code else base_tag)
-
     def _write(self, text, tag):
         self.chat.insert("end", text, tag)
         self.chat.see("end")
-
-    def _show_chat_menu(self, event=None):
-        try:
-            self._chat_menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            self._chat_menu.grab_release()
-
-    def _copy_chat_selection(self, _event=None):
-        try:
-            selection = self.chat.get("sel.first", "sel.last")
-        except Exception:
-            selection = ""
-        if not selection.strip():
-            self.status_var.set("No selection to copy")
-            return "break"
-        if len(selection) > self.MAX_CHAT_COPY_CHARS:
-            selection = selection[: self.MAX_CHAT_COPY_CHARS] + "\n...[truncated for clipboard]...\n"
-        self.window.clipboard_clear()
-        self.window.clipboard_append(selection)
-        self.status_var.set("Copied selection")
-        return "break"
-
-    def _copy_all_chat(self):
-        content = self.chat.get("1.0", "end-1c")
-        if len(content) > self.MAX_CHAT_COPY_CHARS:
-            content = content[: self.MAX_CHAT_COPY_CHARS] + "\n...[truncated for clipboard]...\n"
-        self.window.clipboard_clear()
-        self.window.clipboard_append(content)
-        self.status_var.set("Copied full transcript")
-        return "Copied the full transcript to clipboard."
-
-    def _copy_last_answer(self):
-        if not self.last_reply:
-            self.status_var.set("No answer to copy")
-            return "There is no assistant answer to copy yet."
-        text = self.last_reply
-        if len(text) > self.MAX_CHAT_COPY_CHARS:
-            text = text[: self.MAX_CHAT_COPY_CHARS] + "\n...[truncated for clipboard]...\n"
-        self.window.clipboard_clear()
-        self.window.clipboard_append(text)
-        self.status_var.set("Copied last answer")
-        return "Copied the last answer to clipboard."
-
-    def _select_all_chat(self, _event=None):
-        self.chat.tag_add("sel", "1.0", "end-1c")
-        self.status_var.set("Selected all text")
-        return "break"
-
-    def _on_chat_key(self, event=None):
-        """Handle key events: block editing but allow selection."""
-        if not event:
-            return None
-        
-        # Allow arrow keys, page up/down, shift for selection
-        if event.keysym in ("Up", "Down", "Left", "Right", "Prior", "Next", "Home", "End"):
-            return None  # Allow these
-        
-        # Block Delete, Backspace, and other editing keys
-        if event.keysym in ("Delete", "BackSpace"):
-            return "break"
-        
-        # Block any regular character input (text editing)
-        if event.state & 0x0004:  # Control key pressed
-            # Allow Ctrl+A, Ctrl+C (handled by their own bindings)
-            return None
-        if event.state & 0x0001:  # Shift key pressed
-            # Allow Shift+Arrow for selection
-            return None
-        
-        # Block regular character input
-        if len(event.char) > 0 and event.char.isprintable():
-            return "break"
-        
-        return None
 
     def _show_chat_menu(self, event=None):
         try:
