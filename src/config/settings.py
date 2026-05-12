@@ -1,6 +1,7 @@
 """Configuration settings for Migration Analysis Tool"""
 
 import os
+import sys
 
 try:
     from dotenv import load_dotenv  # type: ignore
@@ -26,7 +27,7 @@ LSCM_PATH = r"C:\Users\yyy1cob\Desktop\598_Kit_Download_Fail\Migration_Assist\EW
 # Global variables for RTC authentication
 RTC_USERNAME = None
 RTC_PASSWORD = None
-RTC_ENABLED = False
+RTC_ENABLED = True  # Enable RTC integration for changeset fetching
 
 # Global variables for RTC workspace/stream detection
 RTC_WORKSPACE_NAME = None
