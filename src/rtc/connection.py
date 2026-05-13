@@ -442,14 +442,11 @@ class RTCConnection:
     def fetch_file_content_by_content_id(self, content_id, file_path=''):
         """
         Fetch text content of a file from RTC via the Content item REST API.
-
-        Uses the content-id (already fetched as part of scm list files / folder
-        structure fetch) so no additional CLI calls are required.
-
-        Endpoint: GET /resource/itemOid/com.ibm.team.scm.Content/{content_id}
-
-        Returns: file text as str, or None on binary / error.
+        Uses content-id from 'scm list files' output.
+        Returns file text (str) or None if binary / unavailable.
         """
+        if not content_id:
+            return None
         BINARY_EXTS = {
             '.xls', '.xlsx', '.zip', '.exe', '.dll', '.so', '.a', '.o',
             '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.pdf', '.doc', '.docx',
@@ -460,68 +457,25 @@ class RTCConnection:
             if ext in BINARY_EXTS:
                 return None
 
-        if not content_id:
-            return None
-        if not content_id.startswith('_'):
-            content_id = '_' + content_id
-
-        MAX_BYTES = 3 * 1024 * 1024  # 3 MB ΓÇö anything larger is likely binary
-        url = f'{self.server_url}/resource/itemOid/com.ibm.team.scm.Content/{content_id}'
-
-        env = os.environ.copy()
-        for pv in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy',
-                   'NO_PROXY', 'no_proxy'):
-            env.pop(pv, None)
-
+        sid = content_id if content_id.startswith('_') else '_' + content_id
         try:
-            if _requests_available:
-                session = self._make_session()
-                if session:
-                    r = session.get(url, timeout=30, stream=True)
-                    if r.status_code != 200:
-                        logger.debug(f"content fetch HTTP {r.status_code} for {content_id[:12]}")
-                        return None
+            MAX_BYTES = 3 * 1024 * 1024
+            url = f'{self.server_url}/resource/itemOid/com.ibm.team.scm.FileContent/{sid}'
+            session = self._make_session()
+            if session:
+                r = session.get(url, timeout=30, stream=True,
+                                headers={'Accept': 'application/octet-stream'})
+                if r.status_code == 200:
                     raw = b''
                     for chunk in r.iter_content(8192):
                         raw += chunk
                         if len(raw) > MAX_BYTES:
-                            return None  # too large / binary
-                    try:
-                        return raw.decode('utf-8', errors='replace')
-                    except Exception:
-                        return None
-
-            # curl fallback
-            result = subprocess.run(
-                ['curl.exe', '-k', '-L', '--noproxy', '*',
-                 '-u', f'{self.username}:{self.password}',
-                 '-X', 'GET', url,
-                 '--max-filesize', str(MAX_BYTES)],
-                capture_output=True, timeout=30, env=env,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
-            )
-            if result.returncode == 0 and result.stdout:
-                raw = result.stdout
-                if len(raw) > MAX_BYTES:
-                    return None
-                text = raw.decode('utf-8', errors='replace')
-                # If the server returned a JSON error body, discard it
-                stripped = text.strip()
-                if (stripped.startswith('{') or stripped.startswith('[')) and len(text) < 8000:
-                    try:
-                        parsed = json.loads(text)
-                        if isinstance(parsed, dict) and (
-                            'error' in parsed or 'Reason' in parsed or 'errorCode' in parsed
-                        ):
                             return None
-                    except Exception:
-                        pass
-                return text
-            return None
-
+                    if raw:
+                        return raw.decode('utf-8', errors='replace')
         except Exception as e:
             logger.debug(f"fetch_file_content_by_content_id error ({content_id[:12]}): {e}")
-            return None
+        return None
 
     def fetch_baseline_info(self, baseline_uuid):
         """

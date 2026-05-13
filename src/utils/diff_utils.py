@@ -169,15 +169,52 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
         cs_rows = ''
         for i, cs in enumerate(cs_list):
             bg = '#f6f8fa' if i % 2 else '#fff'
-            uuid_str  = html_mod.escape(str(cs.get('uuid', '')))
+            cs_uuid   = str(cs.get('uuid', ''))
             author    = html_mod.escape(str(cs.get('author', '—')))
             comment   = html_mod.escape(str(cs.get('comment', '')))
             ts        = html_mod.escape(str(cs.get('timestamp', '')))
+
+            # Build clickable changeset link
+            if server_url and cs_uuid:
+                cs_href = f'{server_url}/resource/itemOid/com.ibm.team.scm.ChangeSet/{cs_uuid}'
+                cs_cell = (f'<a href="{html_mod.escape(cs_href)}" target="_blank" '
+                           f'style="font-family:monospace;font-size:11px;color:#0969da;" '
+                           f'title="Open changeset in EWM">{html_mod.escape(cs_uuid[:24])}</a>')
+            else:
+                cs_cell = f'<span style="font-family:monospace;font-size:11px;color:#57606a;">{html_mod.escape(cs_uuid[:24])}</span>'
+
+            # Extract work-item/task numbers from comment (e.g. #12345, WI 12345, Task: 12345)
+            import re as _re
+            wi_matches = _re.findall(
+                r'(?:Work\s*Item|Task|WI|Defect|Bug|Story)\s*[:#]?\s*(\d{3,7})'
+                r'|#(\d{3,7})',
+                str(cs.get('comment', '')), _re.IGNORECASE
+            )
+            wi_numbers = list(dict.fromkeys(
+                n for pair in wi_matches for n in pair if n
+            ))
+            task_cell = ''
+            if wi_numbers and server_url:
+                links = []
+                for wn in wi_numbers[:5]:
+                    wi_href = f'{server_url}/resource/itemName/com.ibm.team.workitem.WorkItem/{wn}'
+                    links.append(
+                        f'<a href="{html_mod.escape(wi_href)}" target="_blank" '
+                        f'style="color:#0969da;font-weight:600;font-size:12px;" '
+                        f'title="Open work item {wn}">#{wn}</a>'
+                    )
+                task_cell = ' &nbsp;'.join(links)
+            elif wi_numbers:
+                task_cell = ' '.join(f'<span style="font-weight:600;">#{n}</span>' for n in wi_numbers[:5])
+            else:
+                task_cell = '<span style="color:#aaa;font-size:11px;">—</span>'
+
             cs_rows += (
                 f'<tr style="background:{bg};">'
-                f'<td style="padding:5px 10px;font-family:monospace;font-size:11px;color:#57606a;">{uuid_str[:24]}</td>'
+                f'<td style="padding:5px 10px;">{cs_cell}</td>'
                 f'<td style="padding:5px 10px;font-size:12px;color:#0d1117;">{author}</td>'
                 f'<td style="padding:5px 10px;font-size:12px;white-space:pre-wrap;">{comment}</td>'
+                f'<td style="padding:5px 10px;">{task_cell}</td>'
                 f'<td style="padding:5px 10px;font-size:11px;color:#57606a;white-space:nowrap;">{ts}</td>'
                 f'</tr>'
             )
@@ -186,10 +223,11 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
       <table style="width:100%;border-collapse:collapse;font-size:13px;">
         <thead>
           <tr style="background:#24292f;color:#fff;">
-            <th style="padding:6px 10px;text-align:left;width:160px;">Changeset UUID</th>
+            <th style="padding:6px 10px;text-align:left;width:140px;">Changeset</th>
             <th style="padding:6px 10px;text-align:left;width:140px;">Author</th>
             <th style="padding:6px 10px;text-align:left;">Comment</th>
-            <th style="padding:6px 10px;text-align:left;width:160px;">Timestamp</th>
+            <th style="padding:6px 10px;text-align:left;width:100px;">Task(s)</th>
+            <th style="padding:6px 10px;text-align:left;width:150px;">Timestamp</th>
           </tr>
         </thead>
         <tbody>{cs_rows}</tbody>
@@ -276,30 +314,63 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
         except Exception as _ex:
             return f'<p style="color:#cf222e;">Could not generate diff: {_ex}</p>'
 
-    # ── Build the collapsible file list with optional inline diffs ─────────
-    file_rows_html = ''
-    inline_diffs_html = ''
+    # ── Folder-tree builder with per-file inline diff toggles ────────────
+    def _build_path_tree(pairs):
+        """Build a nested dict: folders have __children__, files have string status."""
+        tree = {}
+        for fpath, fstatus in pairs:
+            parts = fpath.replace('\\', '/').split('/')
+            node = tree
+            for part in parts[:-1]:
+                if part not in node:
+                    node[part] = {'__children__': {}}
+                node = node[part]['__children__']
+            node[parts[-1]] = fstatus
+        return tree
 
-    if details:
-        sorted_files = sorted(details.items(), key=lambda x: (
-            x[1] == 'unchanged',
-            x[1] != 'modified',
-            x[1] != 'added',
-            x[1] != 'removed',
-            x[0]
-        ))
+    def _count_changes_in_node(node):
+        count = 0
+        for v in node.values():
+            if isinstance(v, dict):
+                count += _count_changes_in_node(v.get('__children__', {}))
+            elif v in ('modified', 'added', 'removed'):
+                count += 1
+        return count
 
-        diff_css_needed = False
+    _diff_active = [False]  # mutable flag: True once any text diff is generated
 
-        for fpath, fstatus in sorted_files:
-            icon  = STATUS_ICON.get(fstatus, '?')
-            color = STATUS_COLOR.get(fstatus, '#000')
-            bg    = STATUS_BG.get(fstatus, '#fff')
-            esc_path = html_mod.escape(fpath)
-            file_id  = html_mod.escape(fpath.replace('/', '_').replace('.', '_').replace(' ', '_'))
+    def _render_tree_html(node, path_prefix=''):
+        parts_html = []
+        folders = sorted((k, v) for k, v in node.items() if isinstance(v, dict))
+        files   = sorted((k, v) for k, v in node.items() if isinstance(v, str))
 
-            # Check if we have content for this file to generate a diff
-            content_pair = fc_map.get(fpath) or {}
+        for fname, folder_node in folders:
+            folder_path = f'{path_prefix}{fname}/'
+            children    = folder_node.get('__children__', {})
+            n_changes   = _count_changes_in_node(children)
+            badge_html  = (
+                f' <span style="background:#cf222e;color:#fff;font-size:10px;'
+                f'padding:1px 7px;border-radius:10px;vertical-align:middle;'
+                f'font-weight:600;">{n_changes} change{"s" if n_changes != 1 else ""}</span>'
+            ) if n_changes else ''
+            child_html  = _render_tree_html(children, folder_path)
+            parts_html.append(
+                f'<details class="rtc-folder" open>'
+                f'<summary class="rtc-folder-sum">'
+                f'<span style="color:#0550ae;font-weight:600;">📁 {html_mod.escape(fname)}</span>'
+                f'{badge_html}</summary>'
+                f'<div class="rtc-folder-body">{child_html}</div>'
+                f'</details>'
+            )
+
+        for fname, fstatus in files:
+            full_path = f'{path_prefix}{fname}'
+            color     = STATUS_COLOR.get(fstatus, '#57606a')
+            bg_row    = STATUS_BG.get(fstatus, 'transparent') if fstatus != 'unchanged' else 'transparent'
+            icon      = STATUS_ICON.get(fstatus, '○')
+            esc_name  = html_mod.escape(fname)
+
+            content_pair = fc_map.get(full_path) or {}
             snap1_text   = content_pair.get('snap1')
             snap2_text   = content_pair.get('snap2')
             is_binary    = _is_binary_content(snap1_text) or _is_binary_content(snap2_text)
@@ -307,75 +378,55 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
                             and not is_binary
                             and (snap1_text is not None or snap2_text is not None))
 
-            if has_diff and fstatus != 'unchanged':
-                diff_css_needed = True
-                diff_anchor = f'diff_{file_id}'
-                file_rows_html += (
-                    f'<tr style="background:{bg};">'
-                    f'<td style="padding:5px 10px;color:{color};font-size:18px;text-align:center;">{icon}</td>'
-                    f'<td style="padding:5px 12px;font-family:monospace;font-size:12px;">'
-                    f'<a href="#{diff_anchor}" style="color:{color};text-decoration:none;"'
-                    f' title="Click to jump to inline diff">{esc_path}</a></td>'
-                    f'<td style="padding:5px 10px;color:{color};font-weight:600;font-size:12px;">'
-                    f'{fstatus.capitalize()}</td>'
-                    f'<td style="padding:5px 6px;">'
-                    f'<a href="#{diff_anchor}" style="font-size:11px;color:{color};">▼ View diff</a></td>'
-                    f'</tr>'
-                )
+            extra_badge = ''
+            diff_toggle = ''
+            if fstatus in ('modified', 'added', 'removed'):
+                if has_diff:
+                    _diff_active[0] = True
+                    diff_table = _make_inline_diff(snap1_text, snap2_text, full_path, fstatus)
+                    s1_display = html_mod.escape(b1info.get('name') or snap1_label)
+                    s2_display = html_mod.escape(b2info.get('name') or snap2_label)
+                    diff_toggle = (
+                        f'<details class="file-diff-details">'
+                        f'<summary class="view-diff-btn" style="background:{color};">'
+                        f'▶ View Diff</summary>'
+                        f'<div class="diff-panel">'
+                        f'<div class="diff-snap-bar">'
+                        f'<span>&#8592; {s1_display}</span>'
+                        f'<span>{s2_display} &#8594;</span>'
+                        f'</div>{diff_table}</div></details>'
+                    )
+                elif is_binary:
+                    extra_badge = '<span class="file-badge file-badge-bin">⊘ binary</span>'
+                else:
+                    extra_badge = '<span class="file-badge file-badge-nc">no content</span>'
 
-                # Generate the inline diff section for this file
-                diff_table = _make_inline_diff(snap1_text, snap2_text, fpath, fstatus)
-                inline_diffs_html += f'''
-                <details id="{diff_anchor}" style="margin-bottom:12px;" open>
-                  <summary style="cursor:pointer;padding:8px 12px;background:{bg};
-                           border:1px solid {color}33;border-radius:6px;
-                           font-family:monospace;font-size:13px;color:{color};font-weight:600;">
-                    {icon} {esc_path}
-                    <span style="font-weight:normal;font-size:11px;margin-left:8px;">
-                      ({fstatus.capitalize()}) — line-by-line comparison
-                    </span>
-                  </summary>
-                  <div style="overflow-x:auto;margin-top:6px;border:1px solid #d0d7de;border-radius:4px;">
-                    {diff_table}
-                  </div>
-                </details>'''
-            else:
-                no_diff_label = ''
-                if fstatus != 'unchanged':
-                    if is_binary:
-                        no_diff_label = '<span style="color:#9a6700;font-size:11px;">⊘ binary</span>'
-                    elif snap1_text is None and snap2_text is None:
-                        no_diff_label = '<span style="color:#aaa;font-size:11px;">no content fetched</span>'
-                file_rows_html += (
-                    f'<tr style="background:{bg};">'
-                    f'<td style="padding:5px 10px;color:{color};font-size:18px;text-align:center;">{icon}</td>'
-                    f'<td style="padding:5px 12px;font-family:monospace;font-size:12px;">{esc_path}</td>'
-                    f'<td style="padding:5px 10px;color:{color};font-weight:600;font-size:12px;">'
-                    f'{fstatus.capitalize()}</td>'
-                    f'<td style="padding:5px 6px;">{no_diff_label}</td>'
-                    f'</tr>'
-                )
+            parts_html.append(
+                f'<div class="rtc-file" style="background:{bg_row};">'
+                f'<span class="file-icon" style="color:{color};">{icon}</span>'
+                f'<span class="file-name" style="color:{color if fstatus != "unchanged" else "#57606a"};">'
+                f'{esc_name}</span>'
+                f'<span class="file-status" style="color:{color};">{fstatus.capitalize()}</span>'
+                f'{extra_badge}{diff_toggle}'
+                f'</div>'
+            )
 
-    # ── File change table ──────────────────────────────────────────────────
+        return ''.join(parts_html)
+
+    # ── Build the file tree / file table ──────────────────────────────────
     file_table = ''
-    if file_rows_html:
-        has_diff_col = bool(inline_diffs_html)
-        diff_col_header = '<th style="padding:7px 8px;text-align:left;width:80px;">Diff</th>' if has_diff_col else ''
-        file_table = f'''
-        <h3 style="margin-top:28px;">File-Level Changes</h3>
-        <table style="width:100%;border-collapse:collapse;font-size:13px;">
-          <thead>
-            <tr style="background:#0d1117;color:#fff;">
-              <th style="padding:7px 10px;width:36px;"></th>
-              <th style="padding:7px 12px;text-align:left;">File Path</th>
-              <th style="padding:7px 10px;text-align:left;width:110px;">Status</th>
-              {diff_col_header}
-            </tr>
-          </thead>
-          <tbody>{file_rows_html}</tbody>
-        </table>'''
+    if details:
+        sorted_all = sorted(details.items(), key=lambda x: (
+            x[1] == 'unchanged', x[1] != 'modified', x[0]
+        ))
+        tree     = _build_path_tree(sorted_all)
+        rendered = _render_tree_html(tree)
+        file_table = (
+            '<h3 style="margin-top:28px;">File-Level Changes</h3>'
+            '<div class="rtc-tree">' + rendered + '</div>'
+        )
     elif has_file_data:
-        file_table = '<p style="color:#57606a;margin-top:20px;">File details: counts retrieved but file list not available.</p>'
+        file_table = '<p style="color:#57606a;margin-top:20px;">File counts available but path details not returned.</p>'
     else:
         file_table = '''
         <div style="margin-top:24px;padding:16px 20px;background:#fff8c5;border:1px solid #d4a72c;
@@ -386,56 +437,50 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
           different UUIDs — baselines are immutable, so a different UUID means different content.
         </div>'''
 
-    # ── Inline diff section ────────────────────────────────────────────────
+    # Diffs are now embedded per-file inside the tree; no separate diff card needed
     inline_diff_card = ''
-    if inline_diffs_html:
-        diff_count = inline_diffs_html.count('<details ')
-        inline_diff_card = f'''
-    <div class="card">
-      <h3>📄 Line-by-Line File Comparisons ({diff_count} file{"s" if diff_count != 1 else ""})</h3>
-      <p style="color:#57606a;font-size:12px;margin:0 0 14px;">
-        Left panel = <strong>{html_mod.escape(snap1_label)}</strong> &nbsp;|&nbsp;
-        Right panel = <strong>{html_mod.escape(snap2_label)}</strong>.
-        Added lines are highlighted in green, removed in red, changed in yellow.
-        Click a file header to collapse/expand.
-      </p>
-      {inline_diffs_html}
-    </div>'''
-    elif details and any(s in ('modified', 'added', 'removed') for s in details.values()):
-        # There are changed files but no content was fetched (SCM CLI not available or binary)
-        changed_count = sum(1 for s in details.values() if s in ('modified', 'added', 'removed'))
-        inline_diff_card = f'''
-    <div class="card" style="border-color:#d4a72c;">
-      <h3>📄 Line-by-Line Diff</h3>
-      <div style="padding:14px 16px;background:#fff8c5;border-radius:6px;color:#9a6700;">
-        <strong>ℹ {changed_count} changed file{"s" if changed_count != 1 else ""} detected</strong> —
-        inline content diff requires the EWM SCM CLI (<code>scm.exe</code>) to be configured
-        and reachable.<br>
-        <small>Set <code>LSCM_PATH</code> and <code>SKIP_SCM_CLI = False</code> in
-        <code>src/config/settings.py</code> to enable inline diffs.</small>
-      </div>
-    </div>'''
 
-    # ── difflib CSS (needed when inline diffs are present) ─────────────────
-    difflib_css = ''
-    if inline_diffs_html:
-        difflib_css = '''
-    /* difflib side-by-side diff table styles */
+    # ── CSS (tree styles + difflib when diffs are present) ────────────────
+    difflib_css = '''
+    .rtc-tree { border:1px solid #d0d7de; border-radius:6px; overflow:hidden; background:#fff; margin-top:10px; }
+    .rtc-folder { border-bottom:1px solid #eaecef; }
+    .rtc-folder-sum { cursor:pointer; padding:6px 10px; background:#f6f8fa;
+                      display:block; list-style:none; font-size:13px; }
+    .rtc-folder-sum::-webkit-details-marker { display:none; }
+    .rtc-folder-sum:hover { background:#eaf3fb; }
+    .rtc-folder-body { padding-left:18px; border-left:2px solid #d0d7de; margin-left:10px; }
+    .rtc-file { display:flex; align-items:flex-start; flex-wrap:wrap;
+                padding:4px 10px 4px 10px; border-bottom:1px solid #f0f0f0;
+                font-family:"Segoe UI",Arial,sans-serif; }
+    .rtc-file:last-child { border-bottom:none; }
+    .file-icon { font-size:14px; margin-right:6px; flex-shrink:0; padding-top:1px; }
+    .file-name { font-family:Consolas,"Courier New",monospace; font-size:12px;
+                 flex:1; word-break:break-all; min-width:100px; }
+    .file-status { font-size:11px; font-weight:600; margin-left:8px; white-space:nowrap; }
+    .file-badge { font-size:10px; margin-left:6px; padding:1px 7px; border-radius:10px; }
+    .file-badge-bin { background:#fff8c5; color:#9a6700; }
+    .file-badge-nc  { background:#f6f8fa; color:#aaa; }
+    .file-diff-details { width:100%; margin-top:5px; flex-basis:100%; }
+    .view-diff-btn { cursor:pointer; display:inline-block; padding:2px 10px;
+                     border-radius:4px; color:#fff; font-size:11px; font-weight:600;
+                     margin-left:8px; user-select:none; list-style:none; }
+    .view-diff-btn::-webkit-details-marker { display:none; }
+    .diff-panel { margin-top:4px; overflow-x:auto; border:1px solid #d0d7de; border-radius:4px; }
+    .diff-snap-bar { display:flex; justify-content:space-between; background:#003366;
+                     color:#fff; font-size:11px; padding:5px 12px; font-family:monospace; }''' + ('''
     .diff_header { background-color:#F8B862; }
     td.diff_header { text-align:right; }
     .diff_next { background-color:#c0c0c0; }
     .diff_add { background-color:#aaffaa; }
     .diff_chg { background-color:#ffff77; }
     .diff_sub { background-color:#ffaaaa; }
-    table.diff { font-family: Consolas, "Courier New", monospace; font-size:12px;
+    table.diff { font-family:Consolas,"Courier New",monospace; font-size:12px;
                  border-collapse:collapse; width:100%; }
     table.diff td { padding:2px 6px; white-space:pre-wrap; word-break:break-all; }
     table.diff th { padding:4px 6px; background:#24292f; color:#fff; font-weight:600; }
     table.diff td:first-child, table.diff td:nth-child(3) {
         color:#57606a; font-size:11px; min-width:36px; text-align:right;
-        padding-right:8px; user-select:none; }
-    details > summary { list-style:none; }
-    details > summary::-webkit-details-marker { display:none; }'''
+        padding-right:8px; user-select:none; }''' if _diff_active[0] else '')
 
     html_content = f'''<!DOCTYPE html>
 <html lang="en">
@@ -477,10 +522,16 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
           <td style="padding:8px 12px;font-family:monospace;">{html_mod.escape(component_name)}</td></tr>
         <tr>
           <td style="padding:8px 12px;color:#57606a;font-weight:600;">{html_mod.escape(snap1_label)}</td>
-          <td style="padding:8px 12px;"><span class="uuid">{html_mod.escape(baseline1_uuid)}</span></td></tr>
+          <td style="padding:8px 12px;">
+            <strong style="font-size:13px;">{html_mod.escape(b1info.get('name') or baseline1_uuid)}</strong>
+            <br><span class="uuid" style="font-size:11px;color:#57606a;">{html_mod.escape(baseline1_uuid)}</span>
+          </td></tr>
         <tr style="background:#f6f8fa;">
           <td style="padding:8px 12px;color:#57606a;font-weight:600;">{html_mod.escape(snap2_label)}</td>
-          <td style="padding:8px 12px;"><span class="uuid">{html_mod.escape(baseline2_uuid)}</span></td></tr>
+          <td style="padding:8px 12px;">
+            <strong style="font-size:13px;">{html_mod.escape(b2info.get('name') or baseline2_uuid)}</strong>
+            <br><span class="uuid" style="font-size:11px;color:#57606a;">{html_mod.escape(baseline2_uuid)}</span>
+          </td></tr>
       </table>
     </div>
 
