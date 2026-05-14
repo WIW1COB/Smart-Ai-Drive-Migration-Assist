@@ -63,10 +63,11 @@ class MigrationAnalysisGUI:
         # Comparison Mode Selection
         self.create_mode_selection()
         
-        # Input frames (all 3 modes)
+        # Input frames (all modes)
         self.create_folder_input_frame()       # Offline → Offline
         self.create_snapshot_input_frame()     # Online → Online
         self.create_hybrid_input_frame()       # Online → Offline
+        self.create_interface_check_frame()    # Interface List Check
         
         # RTC Integration Section
         self.create_rtc_section()
@@ -170,6 +171,17 @@ class MigrationAnalysisGUI:
             text="🔄 Online → Offline",
             variable=self.comparison_mode,
             value="online_offline",
+            bg="#EAF3FB",
+            font=("Segoe UI", 10),
+            command=self.toggle_input_mode
+        ).pack(side="left", padx=10)
+        
+        # Mode 4: Interface List Check
+        tk.Radiobutton(
+            mode_frame,
+            text="📝 Interface List Check",
+            variable=self.comparison_mode,
+            value="interface_check",
             bg="#EAF3FB",
             font=("Segoe UI", 10),
             command=self.toggle_input_mode
@@ -323,6 +335,129 @@ class MigrationAnalysisGUI:
             command=lambda: self.browse_folder(self.hybrid_folder_entry)
         ).pack(pady=5)
     
+    def create_interface_check_frame(self):
+        """Create interface list check input section"""
+        self.interface_check_frame = tk.Frame(self.root, bg="#EAF3FB")
+        
+        # Info label
+        tk.Label(
+            self.interface_check_frame,
+            text="📝 Interface List Check: Analyze interfaces, switches, and dependencies",
+            bg="#EAF3FB",
+            font=("Segoe UI", 9, "italic"),
+            fg="#666666"
+        ).pack(pady=(5, 10))
+        
+        # Analysis mode selection
+        self.interface_check_mode = tk.StringVar(value="single")
+        
+        mode_selector_frame = tk.Frame(self.interface_check_frame, bg="#EAF3FB")
+        mode_selector_frame.pack(pady=10)
+        
+        tk.Label(
+            mode_selector_frame,
+            text="Analysis Mode:",
+            bg="#EAF3FB",
+            font=("Segoe UI", 10, "bold")
+        ).pack(side="left", padx=5)
+        
+        tk.Radiobutton(
+            mode_selector_frame,
+            text="Option 1: Single Workspace",
+            variable=self.interface_check_mode,
+            value="single",
+            bg="#EAF3FB",
+            font=("Segoe UI", 10),
+            command=self.toggle_interface_check_mode
+        ).pack(side="left", padx=10)
+        
+        tk.Radiobutton(
+            mode_selector_frame,
+            text="Option 2: Compare Two Workspaces",
+            variable=self.interface_check_mode,
+            value="compare",
+            bg="#EAF3FB",
+            font=("Segoe UI", 10),
+            command=self.toggle_interface_check_mode
+        ).pack(side="left", padx=10)
+        
+        # Single workspace input
+        self.single_workspace_frame = tk.Frame(self.interface_check_frame, bg="#EAF3FB")
+        
+        tk.Label(
+            self.single_workspace_frame,
+            text="Workspace Path (Platform or Project):",
+            bg="#EAF3FB",
+            font=("Segoe UI", 11)
+        ).pack(pady=(5, 5))
+        
+        self.single_workspace_entry = tk.Entry(self.single_workspace_frame, width=85)
+        self.single_workspace_entry.pack()
+        
+        tk.Button(
+            self.single_workspace_frame,
+            text="Browse Folder",
+            bg="#007B3E",
+            fg="white",
+            command=lambda: self.browse_folder(self.single_workspace_entry)
+        ).pack(pady=5)
+        
+        # Dual workspace input (hidden by default)
+        self.dual_workspace_frame = tk.Frame(self.interface_check_frame, bg="#EAF3FB")
+        
+        tk.Label(
+            self.dual_workspace_frame,
+            text="Platform Workspace Path:",
+            bg="#EAF3FB",
+            font=("Segoe UI", 11)
+        ).pack(pady=(5, 5))
+        
+        self.platform_workspace_entry = tk.Entry(self.dual_workspace_frame, width=85)
+        self.platform_workspace_entry.pack()
+        
+        tk.Button(
+            self.dual_workspace_frame,
+            text="Browse Platform Folder",
+            bg="#007B3E",
+            fg="white",
+            command=lambda: self.browse_folder(self.platform_workspace_entry)
+        ).pack(pady=5)
+        
+        tk.Label(
+            self.dual_workspace_frame,
+            text="Project Workspace Path:",
+            bg="#EAF3FB",
+            font=("Segoe UI", 11)
+        ).pack(pady=(10, 5))
+        
+        self.project_workspace_entry = tk.Entry(self.dual_workspace_frame, width=85)
+        self.project_workspace_entry.pack()
+        
+        tk.Button(
+            self.dual_workspace_frame,
+            text="Browse Project Folder",
+            bg="#007B3E",
+            fg="white",
+            command=lambda: self.browse_folder(self.project_workspace_entry)
+        ).pack(pady=5)
+        
+        # Initially show single workspace mode
+        self.toggle_interface_check_mode()
+    
+    def toggle_interface_check_mode(self):
+        """Toggle between single and dual workspace analysis"""
+        mode = self.interface_check_mode.get()
+        
+        # Hide both frames first
+        self.single_workspace_frame.pack_forget()
+        self.dual_workspace_frame.pack_forget()
+        
+        # Show the appropriate frame
+        if mode == "single":
+            self.single_workspace_frame.pack(fill="x", pady=10)
+        else:
+            self.dual_workspace_frame.pack(fill="x", pady=10)
+    
     def create_rtc_section(self):
         """Create RTC integration section"""
         self.rtc_frame = tk.Frame(self.root, bg="#EAF3FB")
@@ -401,6 +536,7 @@ class MigrationAnalysisGUI:
         self.folder_input_frame.pack_forget()
         self.snapshot_input_frame.pack_forget()
         self.hybrid_input_frame.pack_forget()
+        self.interface_check_frame.pack_forget()
         
         # Show the appropriate frame
         if mode == "offline_offline":
@@ -409,6 +545,8 @@ class MigrationAnalysisGUI:
             self.snapshot_input_frame.pack(fill="x", before=self.rtc_frame)
         elif mode == "online_offline":
             self.hybrid_input_frame.pack(fill="x", before=self.rtc_frame)
+        elif mode == "interface_check":
+            self.interface_check_frame.pack(fill="x", before=self.rtc_frame)
     
     def browse_folder(self, entry_field):
         """Browse for folder or ZIP file"""
@@ -517,6 +655,229 @@ class MigrationAnalysisGUI:
                 "🔄 Online → Offline Mode\n\n"
                 "Comparing RTC snapshot with local folder will be implemented soon."
             )
+        
+        elif mode == "interface_check":
+            # Interface List Check Mode
+            check_mode = self.interface_check_mode.get()
+            
+            if check_mode == "single":
+                # Single workspace analysis
+                workspace_path = self.single_workspace_entry.get().strip()
+                
+                if not workspace_path:
+                    messagebox.showerror(
+                        "Missing Input",
+                        "Please select a workspace path to analyze."
+                    )
+                    return
+                
+                if not os.path.exists(workspace_path):
+                    messagebox.showerror(
+                        "Invalid Path",
+                        "The workspace path does not exist."
+                    )
+                    return
+                
+                # Start single workspace analysis
+                self.run_interface_analysis_single(workspace_path)
+            
+            else:
+                # Dual workspace comparison
+                platform_path = self.platform_workspace_entry.get().strip()
+                project_path = self.project_workspace_entry.get().strip()
+                
+                if not platform_path or not project_path:
+                    messagebox.showerror(
+                        "Missing Input",
+                        "Please select both platform and project workspace paths."
+                    )
+                    return
+                
+                if not os.path.exists(platform_path) or not os.path.exists(project_path):
+                    messagebox.showerror(
+                        "Invalid Path",
+                        "One or both workspace paths do not exist."
+                    )
+                    return
+                
+                # Start dual workspace comparison
+                self.run_interface_analysis_compare(platform_path, project_path)
+    
+    def run_interface_analysis_single(self, workspace_path):
+        """Run interface analysis on a single workspace"""
+        self.compare_btn.config(state='disabled')
+        self.progress_bar['value'] = 0
+        self.progress_label.config(text="Starting interface analysis...")
+        self.root.update()
+        
+        def analysis_thread():
+            try:
+                from src.utils.interface_list_analyzer import InterfaceListAnalyzer
+                from src.utils.interface_list_reporter import InterfaceListReportGenerator
+                
+                # Update progress
+                self.root.after(0, lambda: self.progress_label.config(
+                    text="Analyzing workspace files..."
+                ))
+                self.root.after(0, lambda: self.progress_bar.config(value=20))
+                
+                # Run analysis
+                analyzer = InterfaceListAnalyzer()
+                analysis = analyzer.analyze_workspace(workspace_path)
+                
+                self.root.after(0, lambda: self.progress_bar.config(value=60))
+                self.root.after(0, lambda: self.progress_label.config(
+                    text="Generating reports..."
+                ))
+                
+                # Generate reports
+                workspace_name = os.path.basename(workspace_path)
+                reporter = InterfaceListReportGenerator()
+                html_path, excel_path = reporter.generate_single_workspace_report(
+                    analysis, workspace_name
+                )
+                
+                self.root.after(0, lambda: self.progress_bar.config(value=100))
+                self.root.after(0, lambda: self.progress_label.config(
+                    text="✓ Analysis complete!"
+                ))
+                
+                # Show results
+                self.root.after(0, lambda: self.show_interface_analysis_results(
+                    html_path, excel_path, analysis
+                ))
+                
+            except Exception as e:
+                logger.error(f"Interface analysis failed: {e}", exc_info=True)
+                self.root.after(0, lambda: messagebox.showerror(
+                    "Analysis Failed",
+                    f"An error occurred during analysis:\n{str(e)}"
+                ))
+            finally:
+                self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+        
+        thread = threading.Thread(target=analysis_thread, daemon=True)
+        thread.start()
+    
+    def run_interface_analysis_compare(self, platform_path, project_path):
+        """Run interface analysis comparing two workspaces"""
+        self.compare_btn.config(state='disabled')
+        self.progress_bar['value'] = 0
+        self.progress_label.config(text="Starting workspace comparison...")
+        self.root.update()
+        
+        def comparison_thread():
+            try:
+                from src.utils.interface_list_analyzer import InterfaceListAnalyzer
+                from src.utils.interface_list_reporter import InterfaceListReportGenerator
+                
+                # Update progress
+                self.root.after(0, lambda: self.progress_label.config(
+                    text="Analyzing platform workspace..."
+                ))
+                self.root.after(0, lambda: self.progress_bar.config(value=15))
+                
+                # Run comparison
+                analyzer = InterfaceListAnalyzer()
+                comparison_data = analyzer.compare_workspaces(platform_path, project_path)
+                
+                self.root.after(0, lambda: self.progress_bar.config(value=60))
+                self.root.after(0, lambda: self.progress_label.config(
+                    text="Generating comparison reports..."
+                ))
+                
+                # Generate reports
+                platform_name = os.path.basename(platform_path)
+                project_name = os.path.basename(project_path)
+                reporter = InterfaceListReportGenerator()
+                html_path, excel_path = reporter.generate_comparison_report(
+                    comparison_data, platform_name, project_name
+                )
+                
+                self.root.after(0, lambda: self.progress_bar.config(value=100))
+                self.root.after(0, lambda: self.progress_label.config(
+                    text="✓ Comparison complete!"
+                ))
+                
+                # Show results
+                self.root.after(0, lambda: self.show_interface_comparison_results(
+                    html_path, excel_path, comparison_data
+                ))
+                
+            except Exception as e:
+                logger.error(f"Interface comparison failed: {e}", exc_info=True)
+                self.root.after(0, lambda: messagebox.showerror(
+                    "Comparison Failed",
+                    f"An error occurred during comparison:\n{str(e)}"
+                ))
+            finally:
+                self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+        
+        thread = threading.Thread(target=comparison_thread, daemon=True)
+        thread.start()
+    
+    def show_interface_analysis_results(self, html_path, excel_path, analysis):
+        """Show interface analysis results dialog"""
+        summary = f"""Interface Analysis Complete!
+
+Workspace: {analysis.workspace_path}
+
+Results:
+\u2022 Files Analyzed: {analysis.analyzed_files} / {analysis.total_files}
+\u2022 Interfaces Found: {len(analysis.interfaces)}
+\u2022 Switches Found: {len(analysis.switches)}
+\u2022 Dependencies Tracked: {len(analysis.dependencies)}
+\u2022 Data Types Used: {len(analysis.data_types_used)}
+
+Reports generated:
+\U0001f4c4 HTML: {html_path}
+\U0001f4ca Excel: {excel_path}
+"""
+        
+        result = messagebox.askquestion(
+            "Analysis Complete",
+            summary + "\n\nDo you want to open the HTML report now?"
+        )
+        
+        if result == 'yes':
+            import webbrowser
+            webbrowser.open(html_path)
+    
+    def show_interface_comparison_results(self, html_path, excel_path, comparison_data):
+        """Show interface comparison results dialog"""
+        platform = comparison_data['platform']
+        project = comparison_data['project']
+        differences = comparison_data['differences']
+        
+        summary = f"""Workspace Comparison Complete!
+
+Platform: {platform.workspace_path}
+   \u2022 Files: {platform.analyzed_files}
+   \u2022 Interfaces: {len(platform.interfaces)}
+
+Project: {project.workspace_path}
+   \u2022 Files: {project.analyzed_files}
+   \u2022 Interfaces: {len(project.interfaces)}
+
+Differences Found:
+   \u2022 Only in Platform: {len(differences['interfaces']['only_in_platform'])}
+   \u2022 Only in Project: {len(differences['interfaces']['only_in_project'])}
+   \u2022 Modified: {len(differences['interfaces']['modified'])}
+   \u2022 Switch Changes: {len(differences['switches']['status_changed'])}
+
+Reports generated:
+\U0001f4c4 HTML: {html_path}
+\U0001f4ca Excel: {excel_path}
+"""
+        
+        result = messagebox.askquestion(
+            "Comparison Complete",
+            summary + "\n\nDo you want to open the HTML report now?"
+        )
+        
+        if result == 'yes':
+            import webbrowser
+            webbrowser.open(html_path)
     
     def show_credential_dialog(self):
         """Show dialog to input RTC credentials"""
