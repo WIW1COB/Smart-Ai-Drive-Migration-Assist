@@ -1001,14 +1001,19 @@ class MigrationAnalysisGUI:
                 return
             
             selected_comp_names = set(selection_result['selected'])
+            component_mappings  = selection_result.get('component_mappings', {})  # {snap1_name: snap2_name}
             logger.info(f"✓ User selected {len(selected_comp_names)}/{len(selection_result['common'])} common components")
+            if component_mappings:
+                logger.info(f"✓ User mapped {len(component_mappings)} cross-snapshot component pair(s):")
+                for s1n, s2n in component_mappings.items():
+                    logger.info(f"    {s1n}  ↔  {s2n}")
             
             # Filter components to only selected ones
-            if not selected_comp_names:
+            if not selected_comp_names and not component_mappings:
                 logger.info("No components selected. Comparison aborted.")
                 self.root.after(0, lambda: messagebox.showwarning(
                     'No Components Selected',
-                    'Please select at least one common component to compare.'
+                    'Please select at least one common component to compare or map at least one pair.'
                 ))
                 self.root.after(0, lambda: self.compare_btn.config(state='normal'))
                 self.root.after(0, lambda: self._update_progress(0, "Ready"))
@@ -1016,8 +1021,32 @@ class MigrationAnalysisGUI:
 
             snap1_filtered = [c for c in snap1_components if c.get('name', str(c)) in selected_comp_names]
             snap2_filtered = [c for c in snap2_components if c.get('name', str(c)) in selected_comp_names]
+
+            # ── Inject mapped pairs ────────────────────────────────────────
+            # For each (snap1_name → snap2_name) user mapping, add the snap1 component
+            # as-is, and add a renamed copy of the snap2 component so that
+            # compare_snapshots pairs them by name naturally.
+            if component_mappings:
+                snap1_by_name = {c.get('name', str(c)): c for c in snap1_components}
+                snap2_by_name = {c.get('name', str(c)): c for c in snap2_components}
+                for s1_name, s2_name in component_mappings.items():
+                    s1_comp = snap1_by_name.get(s1_name)
+                    s2_comp = snap2_by_name.get(s2_name)
+                    if s1_comp and s2_comp:
+                        snap1_filtered.append(s1_comp)
+                        # Rename the snap2 component so compare_snapshots pairs it with s1_name
+                        renamed_s2 = dict(s2_comp)
+                        renamed_s2['name'] = s1_name
+                        renamed_s2['_original_name'] = s2_name   # preserved for reference
+                        snap2_filtered.append(renamed_s2)
+                        logger.info(f"  Injected mapped pair: {s1_name!r} (Snap1) ↔ {s2_name!r} (Snap2)")
+                    else:
+                        logger.warning(f"  Skipping mapped pair {s1_name!r}/{s2_name!r}: component not found")
+
             logger.info(f"Filtered: {len(snap1_filtered)} from Snapshot 1, {len(snap2_filtered)} from Snapshot 2")
-            logger.info(f"Excluded: {len(selection_result['only_in_snap1'])} only in Snap1, {len(selection_result['only_in_snap2'])} only in Snap2")
+            logger.info(f"Excluded: {len(selection_result['only_in_snap1'])} only in Snap1, "
+                        f"{len(selection_result['only_in_snap2'])} only in Snap2, "
+                        f"{len(component_mappings)} cross-mapped pair(s)")
             
             # Compare snapshots (only selected components) with progress tracking
             self.root.after(0, lambda: self._update_progress(70, f"🔍 Comparing {len(snap1_filtered)} selected components..."))
@@ -1066,9 +1095,9 @@ class MigrationAnalysisGUI:
                 '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.pdf', '.doc', '.docx',
                 '.ppt', '.pptx', '.bin', '.lib', '.obj', '.jar', '.class', '.pyc',
             }
-            MAX_FILES_PER_COMP   = 15
-            MAX_TOTAL_FETCH_JOBS = 80
-            TOTAL_BUDGET_SECS    = 600
+            MAX_FILES_PER_COMP   = 200
+            MAX_TOTAL_FETCH_JOBS = 1000
+            TOTAL_BUDGET_SECS    = 900
 
             # Each task: (cname, fpath_key, full_path, item_id, state_id, baseline_uuid, snap_key)
             #   fpath_key   — key in details dict (just filename in flat SCM structure)
@@ -1160,7 +1189,7 @@ class MigrationAnalysisGUI:
                 import time as _time
                 deadline = _time.time() + TOTAL_BUDGET_SECS
 
-                with ThreadPoolExecutor(max_workers=4) as fetch_ex:
+                with ThreadPoolExecutor(max_workers=10) as fetch_ex:
                     futures = {fetch_ex.submit(_fetch_one, t): t for t in fetch_tasks}
                     for fut in as_completed(futures):
                         if _time.time() > deadline:
@@ -1213,6 +1242,10 @@ class MigrationAnalysisGUI:
                     'baseline2': b2info,
                     'changesets': changesets,
                 }
+                # If this component was compared via a cross-name mapping, record
+                # the original Snapshot 2 component name for display in the report.
+                if cname in component_mappings:
+                    changeset_by_component[cname]['mapped_snap2_name'] = component_mappings[cname]
 
             logger.info(
                 f"✓ Baseline metadata fetched for {len(changeset_by_component)} components"
@@ -1623,18 +1656,19 @@ class MigrationAnalysisGUI:
                 status_type = status  # 'Identical' or 'Different' passed through unchanged
             
             # Generate purpose/description based on status
-            if status == 'Modified':
+            if status == 'Different':
                 # Show file change details in purpose
                 file_comparison = result.get('file_comparison', {})
                 if file_comparison:
-                    added_count = len(file_comparison.get('added', []))
-                    modified_count = len(file_comparison.get('modified', []))
-                    removed_count = len(file_comparison.get('removed', []))
+                    # file_comparison values are ints (counts) from compare_folder_structures
+                    added_count = file_comparison.get('added', 0)
+                    modified_count = file_comparison.get('modified', 0)
+                    removed_count = file_comparison.get('removed', 0)
                     purpose = f"Component baseline changed: {baseline1_uuid[:12]}... → {baseline2_uuid[:12]}... " \
                              f"(+{added_count} added, ~{modified_count} modified, -{removed_count} removed)"
                 else:
                     purpose = f"Component baseline changed: {baseline1_uuid[:12]}... → {baseline2_uuid[:12]}..."
-            elif status == 'Unchanged':
+            elif status == 'Identical' or status == 'Unchanged':
                 purpose = f"Component baseline unchanged: {baseline1_uuid[:12]}..."
             elif status == 'Added in Snapshot 2':
                 purpose = f"Component added in snapshot 2: {baseline2_uuid[:12]}..."
@@ -1653,14 +1687,17 @@ class MigrationAnalysisGUI:
             
             # Fetch changeset information if enabled and component was modified
             changeset_info = ""
-            if enable_changesets and rtc_conn and status == 'Modified':
+            if enable_changesets and rtc_conn and status == 'Different':
                 changeset_stats['total_modified'] += 1
                 try:
                     # Get file comparison data
                     file_comparison = result.get('file_comparison', {})
                     if file_comparison:
-                        # Get modified files (limit to first few for performance)
-                        modified_files = file_comparison.get('modified', [])[:5]
+                        # Get modified file paths from details dict (values are ints, not lists)
+                        modified_files = [
+                            fp for fp, ct in file_comparison.get('details', {}).items()
+                            if ct == 'modified'
+                        ][:5]
                         if modified_files:
                             logger.info(f"📋 {comp_name}: Fetching changesets for {len(modified_files)} modified files...")
                             changeset_map = rtc_conn.fetch_changesets_for_files(
@@ -1761,10 +1798,11 @@ class MigrationAnalysisGUI:
                 for comp in comparison_results:
                     file_comp = comp.get('file_comparison', {})
                     if file_comp:
-                        total_files_modified += len(file_comp.get('modified', []))
-                        total_files_added += len(file_comp.get('added', []))
-                        total_files_removed += len(file_comp.get('removed', []))
-                        total_files_unchanged += len(file_comp.get('unchanged', []))
+                        # file_comparison values are ints (counts) from compare_folder_structures
+                        total_files_modified += file_comp.get('modified', 0) if isinstance(file_comp.get('modified'), int) else len(file_comp.get('details', {}))
+                        total_files_added += file_comp.get('added', 0) if isinstance(file_comp.get('added'), int) else 0
+                        total_files_removed += file_comp.get('removed', 0) if isinstance(file_comp.get('removed'), int) else 0
+                        total_files_unchanged += file_comp.get('unchanged', 0) if isinstance(file_comp.get('unchanged'), int) else 0
             
             # Write MAIN CSV report (component-level)
             logger.info(f"Exporting snapshot comparison to CSV: {csv_path}")
@@ -1838,18 +1876,16 @@ class MigrationAnalysisGUI:
                         diff_lookup = {fd['file_path']: fd['diff_html'] for fd in file_diffs}
                         
                         if file_comp:
-                            # Modified files
-                            for file_path in file_comp.get('modified', []):
-                                diff_link = diff_lookup.get(file_path, 'N/A')
-                                writer.writerow([comp_name, file_path, 'Modified', diff_link])
-                            
-                            # Added files
-                            for file_path in file_comp.get('added', []):
-                                writer.writerow([comp_name, file_path, 'Added', 'N/A'])
-                            
-                            # Removed files
-                            for file_path in file_comp.get('removed', []):
-                                writer.writerow([comp_name, file_path, 'Removed', 'N/A'])
+                            # Use details dict: {file_path: 'modified'|'added'|'removed'|'unchanged'}
+                            details = file_comp.get('details', {})
+                            for file_path, change_type in sorted(details.items()):
+                                if change_type == 'modified':
+                                    diff_link = diff_lookup.get(file_path, 'N/A')
+                                    writer.writerow([comp_name, file_path, 'Modified', diff_link])
+                                elif change_type == 'added':
+                                    writer.writerow([comp_name, file_path, 'Added', 'N/A'])
+                                elif change_type == 'removed':
+                                    writer.writerow([comp_name, file_path, 'Removed', 'N/A'])
                 
                 logger.info(f"✓ File-level CSV exported: {file_csv_path}")
             
@@ -1989,32 +2025,23 @@ class MigrationAnalysisGUI:
                         diff_lookup = {fd['file_path']: fd['diff_html'] for fd in file_diffs}
                         
                         if file_comp:
-                            # Modified files
-                            for file_path in file_comp.get('modified', []):
-                                diff_link = diff_lookup.get(file_path, 'N/A')
+                            # Use details dict: {file_path: 'modified'|'added'|'removed'|'unchanged'}
+                            details = file_comp.get('details', {})
+                            fill_map = {
+                                'modified': PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid"),
+                                'added':    PatternFill(start_color="D4EDDA", end_color="D4EDDA", fill_type="solid"),
+                                'removed':  PatternFill(start_color="F8D7DA", end_color="F8D7DA", fill_type="solid"),
+                            }
+                            label_map = {'modified': 'Modified', 'added': 'Added', 'removed': 'Removed'}
+                            for file_path, change_type in sorted(details.items()):
+                                if change_type not in label_map:
+                                    continue
+                                diff_link = diff_lookup.get(file_path, 'N/A') if change_type == 'modified' else 'N/A'
                                 ws_files.cell(row=file_row, column=1, value=comp_name)
                                 ws_files.cell(row=file_row, column=2, value=file_path)
-                                cell_type = ws_files.cell(row=file_row, column=3, value='Modified')
-                                cell_type.fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+                                cell_type = ws_files.cell(row=file_row, column=3, value=label_map[change_type])
+                                cell_type.fill = fill_map[change_type]
                                 ws_files.cell(row=file_row, column=4, value=diff_link)
-                                file_row += 1
-                            
-                            # Added files
-                            for file_path in file_comp.get('added', []):
-                                ws_files.cell(row=file_row, column=1, value=comp_name)
-                                ws_files.cell(row=file_row, column=2, value=file_path)
-                                cell_type = ws_files.cell(row=file_row, column=3, value='Added')
-                                cell_type.fill = PatternFill(start_color="D4EDDA", end_color="D4EDDA", fill_type="solid")
-                                ws_files.cell(row=file_row, column=4, value='N/A')
-                                file_row += 1
-                            
-                            # Removed files
-                            for file_path in file_comp.get('removed', []):
-                                ws_files.cell(row=file_row, column=1, value=comp_name)
-                                ws_files.cell(row=file_row, column=2, value=file_path)
-                                cell_type = ws_files.cell(row=file_row, column=3, value='Removed')
-                                cell_type.fill = PatternFill(start_color="F8D7DA", end_color="F8D7DA", fill_type="solid")
-                                ws_files.cell(row=file_row, column=4, value='N/A')
                                 file_row += 1
                     
                     # Column widths

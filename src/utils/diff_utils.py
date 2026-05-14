@@ -302,13 +302,33 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
             from_label = f'{os.path.basename(fpath)} ← {snap1_label}'
             to_label   = f'{os.path.basename(fpath)} → {snap2_label}'
 
+            # For pure add (snap1 empty) or pure remove (snap2 empty),
+            # show a simpler full-content view rather than a confusing diff against empty
+            if not lines1:
+                body = ''.join(
+                    f'<tr><td class="diff_add" colspan="4" style="padding:1px 6px;">'                    f'<code>{line.rstrip()}</code></td></tr>'
+                    for line in lines2
+                )
+                return (
+                    f'<table class="diff" style="width:100%">'                    f'<tr><th colspan="4" style="padding:4px 6px;text-align:left;">'                    f'&#43; New file — {html_mod.escape(to_label)}</th></tr>'
+                    f'{body}</table>'
+                )
+            if not lines2:
+                body = ''.join(
+                    f'<tr><td class="diff_sub" colspan="4" style="padding:1px 6px;">'                    f'<code>{line.rstrip()}</code></td></tr>'
+                    for line in lines1
+                )
+                return (
+                    f'<table class="diff" style="width:100%">'                    f'<tr><th colspan="4" style="padding:4px 6px;text-align:left;">'                    f'&#8722; Deleted file — {html_mod.escape(from_label)}</th></tr>'
+                    f'{body}</table>'
+                )
+
             differ = difflib.HtmlDiff(wrapcolumn=100, linejunk=None, charjunk=None)
             table_html = differ.make_table(
                 lines1, lines2,
                 fromdesc=from_label,
                 todesc=to_label,
-                context=True,
-                numlines=3
+                context=False
             )
             return table_html
         except Exception as _ex:
@@ -402,7 +422,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
                     extra_badge = '<span class="file-badge file-badge-nc">no content</span>'
 
             parts_html.append(
-                f'<div class="rtc-file" style="background:{bg_row};">'
+                f'<div class="rtc-file" data-status="{fstatus}" style="background:{bg_row};">'
                 f'<span class="file-icon" style="color:{color};">{icon}</span>'
                 f'<span class="file-name" style="color:{color if fstatus != "unchanged" else "#57606a"};">'
                 f'{esc_name}</span>'
@@ -453,6 +473,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
                 padding:4px 10px 4px 10px; border-bottom:1px solid #f0f0f0;
                 font-family:"Segoe UI",Arial,sans-serif; }
     .rtc-file:last-child { border-bottom:none; }
+    .rtc-file[data-status="unchanged"] { display:none; }
     .file-icon { font-size:14px; margin-right:6px; flex-shrink:0; padding-top:1px; }
     .file-name { font-family:Consolas,"Courier New",monospace; font-size:12px;
                  flex:1; word-break:break-all; min-width:100px; }
@@ -467,7 +488,17 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
     .view-diff-btn::-webkit-details-marker { display:none; }
     .diff-panel { margin-top:4px; overflow-x:auto; border:1px solid #d0d7de; border-radius:4px; }
     .diff-snap-bar { display:flex; justify-content:space-between; background:#003366;
-                     color:#fff; font-size:11px; padding:5px 12px; font-family:monospace; }''' + ('''
+                     color:#fff; font-size:11px; padding:5px 12px; font-family:monospace; }
+    .filter-bar { margin:10px 0 6px; display:flex; align-items:center; flex-wrap:wrap; gap:6px; }
+    .filter-btn { cursor:pointer; padding:3px 13px; border-radius:20px; border:1px solid #d0d7de;
+                  font-size:12px; font-weight:600; background:#f6f8fa; color:#57606a;
+                  opacity:0.4; transition:opacity 0.15s; }
+    .filter-btn.active { opacity:1; }
+    .filter-btn-all { background:#e8eaf6; color:#3730a3; border-color:#a5b4fc; opacity:1; }
+    .filter-btn-modified  { background:#fff8c5; color:#9a6700; border-color:#d4a72c; }
+    .filter-btn-added     { background:#dafbe1; color:#1a7f37; border-color:#82cfac; }
+    .filter-btn-removed   { background:#ffebe9; color:#cf222e; border-color:#ffaba8; }
+    .filter-btn-unchanged { background:#f6f8fa; color:#57606a; border-color:#d0d7de; }''' + ('''
     .diff_header { background-color:#F8B862; }
     td.diff_header { text-align:right; }
     .diff_next { background-color:#c0c0c0; }
@@ -481,6 +512,19 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
     table.diff td:first-child, table.diff td:nth-child(3) {
         color:#57606a; font-size:11px; min-width:36px; text-align:right;
         padding-right:8px; user-select:none; }''' if _diff_active[0] else '')
+
+    # Mapping note — shown when this component was compared via a cross-name user mapping
+    _mapped_snap2_name = cd.get('mapped_snap2_name', '')
+    _mapping_note_html = ''
+    if _mapped_snap2_name:
+        _mapping_note_html = (
+            f'<tr style="background:#f3e8ff;">'
+            f'<td style="padding:8px 12px;color:#6e40c9;font-weight:600;">⚠ Mapped Component</td>'
+            f'<td style="padding:8px 12px;font-size:12px;color:#6e40c9;">'
+            f'This report compares <strong>{html_mod.escape(component_name)}</strong> (Snapshot&nbsp;1)'
+            f' against <strong>{html_mod.escape(_mapped_snap2_name)}</strong> (Snapshot&nbsp;2)'
+            f' — matched by user-defined component mapping.</td></tr>'
+        )
 
     html_content = f'''<!DOCTYPE html>
 <html lang="en">
@@ -532,6 +576,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
             <strong style="font-size:13px;">{html_mod.escape(b2info.get('name') or baseline2_uuid)}</strong>
             <br><span class="uuid" style="font-size:11px;color:#57606a;">{html_mod.escape(baseline2_uuid)}</span>
           </td></tr>
+        {_mapping_note_html}
       </table>
     </div>
 
@@ -545,12 +590,72 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
         {badge("Removed",   removed,   STATUS_COLOR["removed"],   STATUS_BG["removed"])}
         {badge("Unchanged", unchanged, STATUS_COLOR["unchanged"], STATUS_BG["unchanged"])}
       </div>
+      <div class="filter-bar">
+        <span style="font-size:12px;color:#57606a;font-weight:600;margin-right:2px;">Filter:</span>
+        <button class="filter-btn filter-btn-modified active" id="btn-modified"
+                onclick="toggleFilter('modified')">&#177; Modified ({modified})</button>
+        <button class="filter-btn filter-btn-added active" id="btn-added"
+                onclick="toggleFilter('added')">&#43; Added ({added})</button>
+        <button class="filter-btn filter-btn-removed active" id="btn-removed"
+                onclick="toggleFilter('removed')">&#8722; Removed ({removed})</button>
+        <button class="filter-btn filter-btn-unchanged" id="btn-unchanged"
+                onclick="toggleFilter('unchanged')">&#9675; Unchanged ({unchanged})</button>
+        <button class="filter-btn filter-btn-all" onclick="showAll()">&#9654; Show All</button>
+      </div>
       {file_table}
     </div>
 
     {inline_diff_card}
 
   </div>
+  <script>
+  (function() {{
+    var visible = {{modified: true, added: true, removed: true, unchanged: false}};
+
+    function applyFilters() {{
+      // Hide all folders first, then show only those containing visible files
+      document.querySelectorAll('.rtc-folder').forEach(function(f) {{
+        f.style.display = 'none';
+      }});
+
+      document.querySelectorAll('.rtc-file').forEach(function(el) {{
+        var s = el.getAttribute('data-status');
+        var show = visible[s] !== false;
+        el.style.display = show ? 'flex' : 'none';
+        if (show) {{
+          // Walk up and make parent folders visible
+          var p = el.parentElement;
+          while (p) {{
+            if (p.classList && p.classList.contains('rtc-folder')) {{
+              p.style.display = '';
+            }}
+            p = p.parentElement;
+          }}
+        }}
+      }});
+
+      ['modified', 'added', 'removed', 'unchanged'].forEach(function(s) {{
+        var btn = document.getElementById('btn-' + s);
+        if (btn) {{
+          if (visible[s]) {{ btn.classList.add('active'); }}
+          else {{ btn.classList.remove('active'); }}
+        }}
+      }});
+    }}
+
+    window.toggleFilter = function(status) {{
+      visible[status] = !visible[status];
+      applyFilters();
+    }};
+
+    window.showAll = function() {{
+      Object.keys(visible).forEach(function(k) {{ visible[k] = true; }});
+      applyFilters();
+    }};
+
+    document.addEventListener('DOMContentLoaded', applyFilters);
+  }})();
+  </script>
 </body>
 </html>'''
 
