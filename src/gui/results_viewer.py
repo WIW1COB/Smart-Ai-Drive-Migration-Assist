@@ -517,6 +517,17 @@ class ComparisonResultsDialog:
             padx=8,
             pady=4
         ).pack(side="left", padx=2)
+
+        tk.Button(
+            button_row,
+            text="🔍 Beyond Compare",
+            command=self.open_master_report,
+            bg="#6A0DAD",
+            fg="white",
+            font=("Segoe UI", 8, "bold"),
+            padx=8,
+            pady=4
+        ).pack(side="left", padx=2)
         
         tk.Button(
             button_row,
@@ -1541,6 +1552,24 @@ class ComparisonResultsDialog:
             width=15
         ).pack(side="right", padx=10)
     
+    def open_master_report(self):
+        """Open the Beyond Compare-style master snapshot comparison report."""
+        master_path = self.report_paths.get('master_report', '') if isinstance(self.report_paths, dict) else ''
+        if master_path and os.path.isfile(master_path):
+            webbrowser.open('file:///' + master_path.replace('\\', '/'))
+        else:
+            # Fallback: look for Master_Comparison_Report.html in output_dir
+            output_dir = self.report_paths.get('output_dir', '') if isinstance(self.report_paths, dict) else ''
+            fallback = os.path.join(output_dir, 'Master_Comparison_Report.html')
+            if output_dir and os.path.isfile(fallback):
+                webbrowser.open('file:///' + fallback.replace('\\', '/'))
+            else:
+                messagebox.showinfo(
+                    "Not Available",
+                    "The Beyond Compare master report was not generated for this comparison.\n\n"
+                    "It is only produced for Online→Online snapshot comparisons."
+                )
+
     def open_reports_folder(self):
         """Open the reports folder in file explorer"""
         output_dir = self.report_paths['output_dir']

@@ -1,4 +1,4 @@
-"""Diff generation utilities for Migration Analysis Tool"""
+﻿"""Diff generation utilities for Migration Analysis Tool"""
 
 import os
 import difflib
@@ -104,14 +104,14 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
 
     STATUS_COLOR = {'added': '#1a7f37', 'modified': '#9a6700', 'removed': '#cf222e', 'unchanged': '#57606a'}
     STATUS_BG    = {'added': '#dafbe1', 'modified': '#fff8c5', 'removed': '#ffebe9', 'unchanged': '#f6f8fa'}
-    STATUS_ICON  = {'added': '＋', 'modified': '±', 'removed': '－', 'unchanged': '○'}
+    STATUS_ICON  = {'added': 'ï¼‹', 'modified': 'Â±', 'removed': 'ï¼', 'unchanged': 'â—‹'}
 
     def badge(label, count, color, bg):
         return (f'<span style="display:inline-block;padding:2px 10px;border-radius:12px;'
                 f'background:{bg};color:{color};font-weight:600;font-size:13px;margin:0 4px;">'
                 f'{label}: {count}</span>')
 
-    # ── Build changeset section ────────────────────────────────────────────
+    # â”€â”€ Build changeset section â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # changeset_data dict may contain:
     #   baseline1: {name, comment, author, timestamp, changeset_url}
     #   baseline2: {name, comment, author, timestamp, changeset_url}
@@ -170,7 +170,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
         for i, cs in enumerate(cs_list):
             bg = '#f6f8fa' if i % 2 else '#fff'
             cs_uuid   = str(cs.get('uuid', ''))
-            author    = html_mod.escape(str(cs.get('author', '—')))
+            author    = html_mod.escape(str(cs.get('author', 'â€”')))
             comment   = html_mod.escape(str(cs.get('comment', '')))
             ts        = html_mod.escape(str(cs.get('timestamp', '')))
 
@@ -207,7 +207,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
             elif wi_numbers:
                 task_cell = ' '.join(f'<span style="font-weight:600;">#{n}</span>' for n in wi_numbers[:5])
             else:
-                task_cell = '<span style="color:#aaa;font-size:11px;">—</span>'
+                task_cell = '<span style="color:#aaa;font-size:11px;">â€”</span>'
 
             cs_rows += (
                 f'<tr style="background:{bg};">'
@@ -235,7 +235,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
 
     changeset_section = f'''
     <div class="card">
-      <h3>🔗 Changeset / Baseline Comparison</h3>
+      <h3>ðŸ”— Changeset / Baseline Comparison</h3>
       <table class="main-table" style="width:100%;border-collapse:collapse;font-size:13px;">
         {_info_rows(b1info, baseline1_uuid, snap1_label)}
         <tr><td colspan="2" style="padding:2px;background:#d0d7de;"></td></tr>
@@ -243,14 +243,14 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
         <tr style="background:#fff3cd;">
           <td style="padding:6px 12px;color:#57606a;font-weight:600;">Change Direction</td>
           <td style="padding:6px 12px;color:#6e40c9;font-weight:700;">
-            {html_mod.escape(snap1_label)} ➜ {html_mod.escape(snap2_label)}
+            {html_mod.escape(snap1_label)} âžœ {html_mod.escape(snap2_label)}
           </td>
         </tr>
       </table>
       {cs_table_html}
     </div>'''
 
-    # ── Binary content detection ───────────────────────────────────────────
+    # â”€â”€ Binary content detection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     _BINARY_SIGNATURES = (b'PK', b'\x7fELF', b'\x89PNG', b'%PDF',
                           b'\xff\xd8', b'GIF8', b'BM', b'\xd0\xcf')
 
@@ -258,9 +258,9 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
         """Return True if the text string appears to be decoded binary data."""
         if not text:
             return False
-        # High ratio of unicode replacement chars (\ufffd) → binary decoded as utf-8
+        # High ratio of unicode replacement chars (\ufffd) â†’ binary decoded as utf-8
         replacement_ratio = text.count('\ufffd') / max(len(text), 1)
-        if replacement_ratio > 0.02:   # >2 % replacement chars → binary
+        if replacement_ratio > 0.02:   # >2 % replacement chars â†’ binary
             return True
         # Null bytes are a strong indicator of binary
         if '\x00' in text:
@@ -276,7 +276,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
             return True
         return False
 
-    # ── Build inline diff HTML for a pair of text contents ────────────────
+    # â”€â”€ Build inline diff HTML for a pair of text contents â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     def _make_inline_diff(snap1_text, snap2_text, fpath, fstatus):
         """Generate a side-by-side diff table embedded in the HTML report."""
         try:
@@ -287,7 +287,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
                 return (
                     '<div style="padding:12px 16px;background:#fff8c5;border-radius:4px;'
                     'color:#9a6700;font-size:13px;">'
-                    '⚠️ <strong>Binary file</strong> — line-by-line diff is not available '
+                    'âš ï¸ <strong>Binary file</strong> â€” line-by-line diff is not available '
                     'for binary/non-text files. The file has changed (different baseline UUIDs) '
                     'but its content cannot be displayed as text.'
                     '</div>'
@@ -299,8 +299,8 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
             if not lines1 and not lines2:
                 return '<p style="color:#57606a;padding:8px;">Empty file in both snapshots.</p>'
 
-            from_label = f'{os.path.basename(fpath)} ← {snap1_label}'
-            to_label   = f'{os.path.basename(fpath)} → {snap2_label}'
+            from_label = f'{os.path.basename(fpath)} â† {snap1_label}'
+            to_label   = f'{os.path.basename(fpath)} â†’ {snap2_label}'
 
             # For pure add (snap1 empty) or pure remove (snap2 empty),
             # show a simpler full-content view rather than a confusing diff against empty
@@ -310,7 +310,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
                     for line in lines2
                 )
                 return (
-                    f'<table class="diff" style="width:100%">'                    f'<tr><th colspan="4" style="padding:4px 6px;text-align:left;">'                    f'&#43; New file — {html_mod.escape(to_label)}</th></tr>'
+                    f'<table class="diff" style="width:100%">'                    f'<tr><th colspan="4" style="padding:4px 6px;text-align:left;">'                    f'&#43; New file â€” {html_mod.escape(to_label)}</th></tr>'
                     f'{body}</table>'
                 )
             if not lines2:
@@ -319,7 +319,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
                     for line in lines1
                 )
                 return (
-                    f'<table class="diff" style="width:100%">'                    f'<tr><th colspan="4" style="padding:4px 6px;text-align:left;">'                    f'&#8722; Deleted file — {html_mod.escape(from_label)}</th></tr>'
+                    f'<table class="diff" style="width:100%">'                    f'<tr><th colspan="4" style="padding:4px 6px;text-align:left;">'                    f'&#8722; Deleted file â€” {html_mod.escape(from_label)}</th></tr>'
                     f'{body}</table>'
                 )
 
@@ -334,7 +334,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
         except Exception as _ex:
             return f'<p style="color:#cf222e;">Could not generate diff: {_ex}</p>'
 
-    # ── Folder-tree builder with per-file inline diff toggles ────────────
+    # â”€â”€ Folder-tree builder with per-file inline diff toggles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     def _build_path_tree(pairs):
         """Build a nested dict: folders have __children__, files have string status."""
         tree = {}
@@ -377,7 +377,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
             parts_html.append(
                 f'<details class="rtc-folder" open>'
                 f'<summary class="rtc-folder-sum">'
-                f'<span style="color:#0550ae;font-weight:600;">📁 {html_mod.escape(fname)}</span>'
+                f'<span style="color:#0550ae;font-weight:600;">ðŸ“ {html_mod.escape(fname)}</span>'
                 f'{badge_html}</summary>'
                 f'<div class="rtc-folder-body">{child_html}</div>'
                 f'</details>'
@@ -387,7 +387,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
             full_path = f'{path_prefix}{fname}'
             color     = STATUS_COLOR.get(fstatus, '#57606a')
             bg_row    = STATUS_BG.get(fstatus, 'transparent') if fstatus != 'unchanged' else 'transparent'
-            icon      = STATUS_ICON.get(fstatus, '○')
+            icon      = STATUS_ICON.get(fstatus, 'â—‹')
             esc_name  = html_mod.escape(fname)
 
             content_pair = fc_map.get(full_path) or {}
@@ -409,7 +409,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
                     diff_toggle = (
                         f'<details class="file-diff-details">'
                         f'<summary class="view-diff-btn" style="background:{color};">'
-                        f'▶ View Diff</summary>'
+                        f'â–¶ View Diff</summary>'
                         f'<div class="diff-panel">'
                         f'<div class="diff-snap-bar">'
                         f'<span>&#8592; {s1_display}</span>'
@@ -417,7 +417,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
                         f'</div>{diff_table}</div></details>'
                     )
                 elif is_binary:
-                    extra_badge = '<span class="file-badge file-badge-bin">⊘ binary</span>'
+                    extra_badge = '<span class="file-badge file-badge-bin">âŠ˜ binary</span>'
                 else:
                     extra_badge = '<span class="file-badge file-badge-nc">no content</span>'
 
@@ -433,7 +433,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
 
         return ''.join(parts_html)
 
-    # ── Build the file tree / file table ──────────────────────────────────
+    # â”€â”€ Build the file tree / file table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     file_table = ''
     if details:
         sorted_all = sorted(details.items(), key=lambda x: (
@@ -451,16 +451,16 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
         file_table = '''
         <div style="margin-top:24px;padding:16px 20px;background:#fff8c5;border:1px solid #d4a72c;
                     border-radius:6px;color:#9a6700;">
-          <strong>ℹ File-level detail not available</strong><br>
+          <strong>â„¹ File-level detail not available</strong><br>
           The RTC folder/file listing API did not return file data for this component.<br>
           The component is marked <strong>Different</strong> because the two baselines have
-          different UUIDs — baselines are immutable, so a different UUID means different content.
+          different UUIDs â€” baselines are immutable, so a different UUID means different content.
         </div>'''
 
     # Diffs are now embedded per-file inside the tree; no separate diff card needed
     inline_diff_card = ''
 
-    # ── CSS (tree styles + difflib when diffs are present) ────────────────
+    # â”€â”€ CSS (tree styles + difflib when diffs are present) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     difflib_css = '''
     .rtc-tree { border:1px solid #d0d7de; border-radius:6px; overflow:hidden; background:#fff; margin-top:10px; }
     .rtc-folder { border-bottom:1px solid #eaecef; }
@@ -513,17 +513,17 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
         color:#57606a; font-size:11px; min-width:36px; text-align:right;
         padding-right:8px; user-select:none; }''' if _diff_active[0] else '')
 
-    # Mapping note — shown when this component was compared via a cross-name user mapping
+    # Mapping note â€” shown when this component was compared via a cross-name user mapping
     _mapped_snap2_name = cd.get('mapped_snap2_name', '')
     _mapping_note_html = ''
     if _mapped_snap2_name:
         _mapping_note_html = (
             f'<tr style="background:#f3e8ff;">'
-            f'<td style="padding:8px 12px;color:#6e40c9;font-weight:600;">⚠ Mapped Component</td>'
+            f'<td style="padding:8px 12px;color:#6e40c9;font-weight:600;">âš  Mapped Component</td>'
             f'<td style="padding:8px 12px;font-size:12px;color:#6e40c9;">'
             f'This report compares <strong>{html_mod.escape(component_name)}</strong> (Snapshot&nbsp;1)'
             f' against <strong>{html_mod.escape(_mapped_snap2_name)}</strong> (Snapshot&nbsp;2)'
-            f' — matched by user-defined component mapping.</td></tr>'
+            f' â€” matched by user-defined component mapping.</td></tr>'
         )
 
     html_content = f'''<!DOCTYPE html>
@@ -551,7 +551,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
 </head>
 <body>
   <div class="header">
-    <h1>🔍 Component Diff Report</h1>
+    <h1>ðŸ” Component Diff Report</h1>
     <div class="sub">{html_mod.escape(component_name)}</div>
     <div class="sub">Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</div>
   </div>
@@ -560,7 +560,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
       <h3>Comparison Summary</h3>
       <table class="main-table" style="width:100%;border-collapse:collapse;font-size:13px;">
         <tr><td style="padding:8px 12px;width:160px;color:#57606a;font-weight:600;">Status</td>
-            <td style="padding:8px 12px;" class="status-diff">● Different</td></tr>
+            <td style="padding:8px 12px;" class="status-diff">â— Different</td></tr>
         <tr style="background:#f6f8fa;">
           <td style="padding:8px 12px;color:#57606a;font-weight:600;">Component</td>
           <td style="padding:8px 12px;font-family:monospace;">{html_mod.escape(component_name)}</td></tr>
@@ -662,6 +662,877 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
     try:
         with open(out_path, 'w', encoding='utf-8') as f:
             f.write(html_content)
+        return out_path
+    except Exception:
+        return None
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Beyond Compare-style master report
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+def generate_beyond_compare_master_report(
+    comparison_results,
+    output_dir,
+    snap1_label='Snapshot 1',
+    snap2_label='Snapshot 2',
+    file_contents_by_component=None,
+    changeset_by_component=None,
+    server_url=None,
+):
+    """
+    Generate a Beyond Compare-style master HTML report.
+
+    Navigation:
+      Left sidebar  â†’ only Different/Added/Removed components
+      Click component â†’ see its folders with change counts
+      Click folder    â†’ see files inside that folder with status
+      Click file      â†’ synchronised side-by-side line diff
+
+    At the bottom of every component view the changeset / baseline section
+    is always visible.
+    """
+    import html as _h
+    import json as _json
+    import re as _re
+    from datetime import datetime
+
+    os.makedirs(output_dir, exist_ok=True)
+    out_path = os.path.join(output_dir, "Master_Comparison_Report.html")
+
+    fc_map_all = file_contents_by_component or {}
+    cs_map_all  = changeset_by_component    or {}
+
+    total     = len(comparison_results)
+    n_diff    = sum(1 for r in comparison_results if r.get('status') == 'Different')
+    n_ident   = sum(1 for r in comparison_results if r.get('status') == 'Identical')
+    n_added   = sum(1 for r in comparison_results if 'Added'   in r.get('status', ''))
+    n_removed = sum(1 for r in comparison_results if 'Removed' in r.get('status', ''))
+
+    STATUS_COLOR = {
+        'Different':            '#d29922',
+        'Identical':            '#8b949e',
+        'Added in Snapshot 2':  '#3fb950',
+        'Removed in Snapshot 2':'#f85149',
+    }
+    FILE_STATUS_COLOR = {'modified':'#d29922','added':'#3fb950','removed':'#f85149','unchanged':'#8b949e'}
+    FILE_STATUS_ICON  = {'modified':'Â±','added':'+','removed':'âˆ’','unchanged':'â—‹'}
+
+    MAX_DIFF_ROWS  = 1200   # per file
+    MAX_CHARS      = 120_000
+
+    # â”€â”€ Binary detector â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    def _is_bin(text):
+        if not text:
+            return False
+        if text.count('\ufffd') / max(len(text), 1) > 0.02:
+            return True
+        if '\x00' in text:
+            return True
+        sample = text[:2000]
+        p = sum(c.isprintable() or c in '\t\n\r' for c in sample)
+        return len(sample) > 0 and p / len(sample) < 0.70
+
+    # â”€â”€ Side-by-side diff builder (Python-side, stored as JSON) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    def _sidebyside_rows(s1, s2):
+        """Return list of row-dicts for the synchronised side-by-side view."""
+        if _is_bin(s1) or _is_bin(s2):
+            return None, True   # binary flag
+
+        l1 = (s1 or '').splitlines()
+        l2 = (s2 or '').splitlines()
+
+        truncated = False
+        if len(l1) + len(l2) > MAX_DIFF_ROWS * 2:
+            l1 = l1[:MAX_DIFF_ROWS]
+            l2 = l2[:MAX_DIFF_ROWS]
+            truncated = True
+
+        rows = []
+        lno1 = lno2 = 1
+        sm = difflib.SequenceMatcher(None, l1, l2, autojunk=False)
+        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+            if tag == 'equal':
+                for a, b in zip(range(i1, i2), range(j1, j2)):
+                    rows.append({'t': 'e', 'l': l1[a], 'r': l2[b], 'n1': lno1, 'n2': lno2})
+                    lno1 += 1; lno2 += 1
+            elif tag == 'replace':
+                ll = list(range(i1, i2))
+                rl = list(range(j1, j2))
+                for k in range(max(len(ll), len(rl))):
+                    lv = l1[ll[k]] if k < len(ll) else None
+                    rv = l2[rl[k]] if k < len(rl) else None
+                    rows.append({
+                        't': 'c',
+                        'l': lv if lv is not None else '',
+                        'r': rv if rv is not None else '',
+                        'n1': lno1 if lv is not None else 0,
+                        'n2': lno2 if rv is not None else 0,
+                    })
+                    if lv is not None: lno1 += 1
+                    if rv is not None: lno2 += 1
+            elif tag == 'delete':
+                for a in range(i1, i2):
+                    rows.append({'t': 'd', 'l': l1[a], 'r': '', 'n1': lno1, 'n2': 0})
+                    lno1 += 1
+            elif tag == 'insert':
+                for b in range(j1, j2):
+                    rows.append({'t': 'i', 'l': '', 'r': l2[b], 'n1': 0, 'n2': lno2})
+                    lno2 += 1
+
+        return rows, truncated
+
+    # â”€â”€ Build component data dict (to be JSON-serialised into the page) â”€â”€â”€
+    components_json = []   # only changed components
+    diff_data_json  = {}   # {ci_str: {file_path: [rows]}}
+
+    for ci, comp in enumerate(comparison_results):
+        status = comp.get('status', '')
+        if status not in ('Different', 'Added in Snapshot 2', 'Removed in Snapshot 2'):
+            continue
+
+        cname  = comp.get('name', f'Component {ci}')
+        b1uuid = comp.get('baseline1_uuid', comp.get('snapshot1', {}).get('baseline_uuid', ''))
+        b2uuid = comp.get('baseline2_uuid', comp.get('snapshot2', {}).get('baseline_uuid', ''))
+
+        fc      = comp.get('file_comparison') or {}
+        details = fc.get('details', {})
+
+        # Organise files into folders
+        folders = {}   # {folder_path: [{name, path, status}]}
+        for fpath, fstatus in sorted(details.items()):
+            parts      = fpath.replace('\\', '/').split('/')
+            fname      = parts[-1]
+            folder_key = '/'.join(parts[:-1]) if len(parts) > 1 else ''
+            folders.setdefault(folder_key, []).append({
+                'name': fname, 'path': fpath, 'status': fstatus
+            })
+
+        # Changeset / baseline info
+        csdata = cs_map_all.get(cname) or {}
+        b1info = csdata.get('baseline1') or {}
+        b2info = csdata.get('baseline2') or {}
+        csl    = csdata.get('changesets') or []
+
+        def _cs_name(info, uuid):
+            return str(info.get('name') or uuid[:30] or '')
+
+        cs_items = []
+        for cs in csl[:80]:
+            cs_uuid  = str(cs.get('uuid', ''))
+            wi_raw   = str(cs.get('comment', ''))
+            wi_m     = _re.findall(
+                r'(?:Work\s*Item|Task|WI|Defect|Bug|Story)\s*[:#]?\s*(\d{3,7})|#(\d{3,7})',
+                wi_raw, _re.IGNORECASE)
+            wi_nums  = list(dict.fromkeys(n for pair in wi_m for n in pair if n))
+            cs_items.append({
+                'uuid':    cs_uuid,
+                'author':  str(cs.get('author', '')),
+                'comment': str(cs.get('comment', ''))[:500],
+                'ts':      str(cs.get('timestamp', '')),
+                'wi':      wi_nums[:5],
+                'href': (f'{server_url}/resource/itemOid/com.ibm.team.scm.ChangeSet/{cs_uuid}'
+                         if server_url and cs_uuid else ''),
+            })
+
+        def _wi_hrefs(wi_nums):
+            if not wi_nums:
+                return []
+            return [{'n': wn, 'href': (
+                f'{server_url}/resource/itemName/com.ibm.team.workitem.WorkItem/{wn}'
+                if server_url else '')} for wn in wi_nums]
+
+        components_json.append({
+            'ci':     ci,
+            'name':   cname,
+            'status': status,
+            'b1uuid': b1uuid,
+            'b2uuid': b2uuid,
+            'b1name': _cs_name(b1info, b1uuid),
+            'b2name': _cs_name(b2info, b2uuid),
+            'stats': {
+                'modified':  fc.get('modified',  0),
+                'added':     fc.get('added',     0),
+                'removed':   fc.get('removed',   0),
+                'unchanged': fc.get('unchanged', 0),
+            },
+            'folders': {k: v for k, v in folders.items()},
+            'has_files': bool(details),
+            'baseline1': {
+                'name':      b1info.get('name', ''),
+                'comment':   b1info.get('comment', ''),
+                'author':    str(b1info.get('author', '')),
+                'timestamp': str(b1info.get('timestamp', '')),
+                'href': (f'{server_url}/resource/itemOid/com.ibm.team.scm.Baseline/{b1uuid}'
+                         if server_url and b1uuid else ''),
+            },
+            'baseline2': {
+                'name':      b2info.get('name', ''),
+                'comment':   b2info.get('comment', ''),
+                'author':    str(b2info.get('author', '')),
+                'timestamp': str(b2info.get('timestamp', '')),
+                'href': (f'{server_url}/resource/itemOid/com.ibm.team.scm.Baseline/{b2uuid}'
+                         if server_url and b2uuid else ''),
+            },
+            'changesets': cs_items,
+        })
+
+        # Pre-compute side-by-side diffs for available file content
+        file_diffs = {}
+        file_contents = fc_map_all.get(cname, {})
+        for fpath, fstatus in details.items():
+            if fstatus not in ('modified', 'added', 'removed'):
+                continue
+            pair = file_contents.get(fpath) or {}
+            s1   = pair.get('snap1')
+            s2   = pair.get('snap2')
+            if s1 is None and s2 is None:
+                continue
+            # Cap size
+            if len(s1 or '') > MAX_CHARS or len(s2 or '') > MAX_CHARS:
+                file_diffs[fpath] = {'bin': True, 'reason': 'too_large'}
+                continue
+            rows, trunc = _sidebyside_rows(s1, s2)
+            if rows is None:
+                file_diffs[fpath] = {'bin': True, 'reason': 'binary'}
+            else:
+                file_diffs[fpath] = {'rows': rows, 'trunc': trunc}
+
+        diff_data_json[str(ci)] = file_diffs
+
+    # â”€â”€ Serialise to JS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Use separators=(',',':') for compact output
+    comp_js      = _json.dumps(components_json,            separators=(',', ':'), ensure_ascii=False)
+    diff_data_js = _json.dumps(diff_data_json,             separators=(',', ':'), ensure_ascii=False)
+    surl_js      = _json.dumps(server_url or '',           separators=(',', ':'), ensure_ascii=False)
+    s1l_js       = _json.dumps(snap1_label,                separators=(',', ':'), ensure_ascii=False)
+    s2l_js       = _json.dumps(snap2_label,                separators=(',', ':'), ensure_ascii=False)
+
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # â”€â”€ CSS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    css = """
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;font-family:"Segoe UI",Arial,sans-serif;font-size:13px;
+  background:#0d1117;color:#e6edf3;overflow:hidden}
+#app{display:flex;flex-direction:column;height:100vh}
+/* â”€â”€ Header â”€â”€ */
+#hdr{flex-shrink:0;background:#161b22;border-bottom:1px solid #30363d;padding:8px 18px}
+#hdr h1{font-size:15px;font-weight:700;color:#e6edf3;margin:0}
+.hdr-sub{font-size:11px;color:#8b949e;margin-top:2px}
+.hdr-stats{display:flex;gap:8px;margin-top:5px;flex-wrap:wrap}
+/* â”€â”€ Body â”€â”€ */
+#body{display:flex;flex:1;overflow:hidden}
+/* â”€â”€ Sidebar â”€â”€ */
+#sb{width:260px;flex-shrink:0;background:#161b22;border-right:1px solid #30363d;
+  display:flex;flex-direction:column;overflow:hidden}
+#sb-hd{padding:6px 12px;font-size:10px;font-weight:700;color:#8b949e;
+  text-transform:uppercase;letter-spacing:.06em;flex-shrink:0}
+#sb-srch{padding:4px 10px;flex-shrink:0}
+#sb-srch input{width:100%;padding:4px 8px;border-radius:5px;border:1px solid #30363d;
+  background:#0d1117;color:#e6edf3;font-size:11px;outline:none}
+#sb-srch input:focus{border-color:#388bfd}
+#sb-list{flex:1;overflow-y:auto}
+.si{display:flex;align-items:center;padding:5px 10px;cursor:pointer;gap:6px;
+  user-select:none;transition:background .1s;border-left:3px solid transparent}
+.si:hover{background:#21262d}
+.si.active{background:#1f6feb22;border-left-color:#388bfd}
+.si-ico{width:14px;text-align:center;flex-shrink:0;font-size:13px}
+.si-nm{flex:1;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.si-cnt{font-size:10px;background:#30363d;color:#cba6f7;padding:0 5px;border-radius:8px}
+.si-sep{padding:4px 12px;font-size:10px;color:#484f58;font-style:italic;margin-top:4px}
+/* â”€â”€ Main pane â”€â”€ */
+#main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.view{display:none;flex-direction:column;height:100%;overflow:hidden}
+.view.active{display:flex}
+/* â”€â”€ Breadcrumb â”€â”€ */
+#bc{flex-shrink:0;background:#161b22;border-bottom:1px solid #30363d;
+  padding:6px 14px;display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+.bc-seg{font-size:11px;color:#8b949e;cursor:pointer;white-space:nowrap}
+.bc-seg:hover{color:#58a6ff;text-decoration:underline}
+.bc-sep{color:#484f58;font-size:11px}
+.bc-cur{font-size:11px;color:#e6edf3;font-weight:600;white-space:nowrap}
+/* â”€â”€ Component stats bar â”€â”€ */
+#comp-hdr{flex-shrink:0;padding:8px 14px;background:#0d1117;border-bottom:1px solid #30363d;
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.comp-title{font-size:13px;font-weight:700}
+.badge{font-size:11px;padding:1px 7px;border-radius:10px;font-weight:700}
+/* â”€â”€ Generic scrollable content area â”€â”€ */
+#content{flex:1;overflow-y:auto;padding:10px 14px}
+/* â”€â”€ Folder list â”€â”€ */
+.fl-grid{display:grid;gap:8px}
+.fl-item{background:#161b22;border:1px solid #30363d;border-radius:6px;
+  padding:10px 14px;cursor:pointer;display:flex;align-items:center;gap:10px;
+  transition:background .1s}
+.fl-item:hover{background:#21262d;border-color:#58a6ff}
+.fl-icon{font-size:20px;flex-shrink:0}
+.fl-info{flex:1;overflow:hidden}
+.fl-name{font-size:12px;font-weight:700;color:#79c0ff;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.fl-counts{display:flex;gap:6px;margin-top:3px;flex-wrap:wrap}
+.fc-m{font-size:10px;color:#d29922}
+.fc-a{font-size:10px;color:#3fb950}
+.fc-r{font-size:10px;color:#f85149}
+.fc-u{font-size:10px;color:#8b949e}
+/* â”€â”€ File list â”€â”€ */
+.file-item{display:flex;align-items:center;padding:6px 10px;border-bottom:1px solid #21262d;
+  cursor:pointer;gap:8px;transition:background .1s;border-radius:4px;margin-bottom:2px}
+.file-item:hover{background:#21262d}
+.file-item.active{background:#1f6feb22;border:1px solid #388bfd}
+.fi-ico{font-size:13px;flex-shrink:0;width:16px;text-align:center}
+.fi-name{flex:1;font-family:monospace;font-size:12px;word-break:break-all}
+.fi-badge{font-size:10px;font-weight:700;padding:1px 7px;border-radius:10px;
+  background:rgba(255,255,255,.08)}
+/* â”€â”€ Side-by-side diff â”€â”€ */
+#diff-hdr{flex-shrink:0;padding:7px 14px;background:#161b22;
+  border-bottom:1px solid #30363d;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.diff-fname{font-family:monospace;font-size:13px;font-weight:700;flex:1}
+.diff-status{font-size:11px;padding:2px 8px;border-radius:8px;font-weight:700}
+.diff-snaplbl{font-size:11px;color:#8b949e}
+#diff-table-wrap{flex:1;overflow:auto;background:#0d1117}
+.diff-hdr-row{display:grid;grid-template-columns:46px 1fr 46px 1fr;
+  background:#161b22;border-bottom:1px solid #30363d;position:sticky;top:0;z-index:10}
+.diff-hdr-cell{padding:4px 8px;font-size:11px;font-weight:700;color:#e6edf3;
+  border-right:1px solid #30363d}
+.diff-row{display:grid;grid-template-columns:46px 1fr 46px 1fr;min-height:18px}
+.diff-row:hover{filter:brightness(1.1)}
+.dl-lno{padding:0 6px;text-align:right;font-size:11px;font-family:monospace;
+  color:#484f58;border-right:1px solid #21262d;user-select:none;min-height:18px;
+  display:flex;align-items:center;justify-content:flex-end;flex-shrink:0}
+.dl-code{padding:0 8px;font-family:Consolas,"Courier New",monospace;font-size:12px;
+  white-space:pre-wrap;word-break:break-all;min-height:18px;border-right:1px solid #21262d;
+  line-height:18px}
+.dr-eq  .dl-code,.dr-eq  .dl-lno{background:#0d1117;color:#8b949e}
+.dr-chg .dl-code,.dr-chg .dl-lno{background:#2d1800;color:#e6edf3}
+.dr-del .dl-code            {background:#2d0000;color:#ffa8a8}
+.dr-del .dl-lno             {background:#2d0000;color:#f85149}
+.dr-ins .dl-code            {background:#0e2d1a;color:#a8ffb0}
+.dr-ins .dl-lno             {background:#0e2d1a;color:#3fb950}
+.dr-ept .dl-code,.dr-ept .dl-lno{background:#161b22}
+#diff-msg{padding:14px;text-align:center;color:#8b949e;font-size:12px;
+  display:none;align-items:center;justify-content:center}
+/* â”€â”€ Changeset section â”€â”€ */
+#cs-section{flex-shrink:0;background:#161b22;border-top:2px solid #30363d;
+  max-height:28vh;overflow-y:auto}
+#cs-toggle{padding:7px 14px;cursor:pointer;display:flex;align-items:center;gap:6px;
+  background:#161b22;border-bottom:1px solid #30363d;user-select:none;font-size:12px;
+  font-weight:700;color:#cba6f7}
+#cs-toggle:hover{background:#21262d}
+#cs-body{padding:10px 14px}
+.bl-row{display:grid;grid-template-columns:140px 1fr;font-size:12px;
+  border-bottom:1px solid #21262d;padding:5px 0}
+.bl-lbl{color:#8b949e;font-weight:700}
+.bl-val a{color:#58a6ff;text-decoration:none}
+.bl-val a:hover{text-decoration:underline}
+.cs-tbl{width:100%;border-collapse:collapse;font-size:11px;margin-top:8px}
+.cs-tbl th{background:#21262d;padding:4px 8px;text-align:left;color:#8b949e;
+  font-weight:700;position:sticky;top:0}
+.cs-tbl td{padding:3px 8px;border-bottom:1px solid #21262d;vertical-align:top}
+.cs-tbl tr:nth-child(even) td{background:#1c2128}
+.cs-link{color:#58a6ff;font-family:monospace;font-size:11px;text-decoration:none}
+.cs-link:hover{text-decoration:underline}
+.wi-link{color:#58a6ff;font-weight:700;font-size:11px;text-decoration:none}
+.wi-link:hover{text-decoration:underline}
+/* â”€â”€ Scrollbar â”€â”€ */
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:#0d1117}
+::-webkit-scrollbar-thumb{background:#30363d;border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:#484f58}
+/* â”€â”€ Welcome â”€â”€ */
+#welcome{align-items:center;justify-content:center;text-align:center;gap:12px;
+  color:#8b949e}
+#welcome h2{font-size:16px;color:#e6edf3}
+#welcome .wbadges{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:10px}
+"""
+
+    # â”€â”€ JS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    js = r"""
+const COMPS      = __COMP_JS__;
+const DIFFS      = __DIFF_JS__;
+const SERVER_URL = __SURL_JS__;
+const S1L        = __S1L_JS__;
+const S2L        = __S2L_JS__;
+
+// Build lookup: ci â†’ comp data
+const BY_CI = {};
+COMPS.forEach(c => { BY_CI[c.ci] = c; });
+
+// State
+let selCI     = null;   // selected component index
+let selFolder = null;   // selected folder key  ('') = root
+let selFile   = null;   // selected file path
+
+// â”€â”€ HTML escape â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function esc(s){
+  return String(s||'')
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// â”€â”€ Sidebar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function buildSidebar(){
+  const list = document.getElementById('sb-list');
+  let html = '';
+  const diff = COMPS.filter(c=>c.status==='Different');
+  const added = COMPS.filter(c=>c.status.includes('Added'));
+  const removed = COMPS.filter(c=>c.status.includes('Removed'));
+
+  if(diff.length){
+    html += `<div class="si-sep">Â± Different (${diff.length})</div>`;
+    diff.forEach(c=>{
+      const n = c.stats.modified+c.stats.added+c.stats.removed;
+      html += `<div class="si" id="si_${c.ci}" onclick="selectComp(${c.ci})">
+        <span class="si-ico" style="color:#d29922">Â±</span>
+        <span class="si-nm" title="${esc(c.name)}">${esc(c.name.length>36?c.name.slice(0,36)+'â€¦':c.name)}</span>
+        ${n?`<span class="si-cnt">${n}</span>`:''}
+      </div>`;
+    });
+  }
+  if(added.length){
+    html += `<div class="si-sep">+ Added (${added.length})</div>`;
+    added.forEach(c=>{
+      html += `<div class="si" id="si_${c.ci}" onclick="selectComp(${c.ci})">
+        <span class="si-ico" style="color:#3fb950">+</span>
+        <span class="si-nm" title="${esc(c.name)}">${esc(c.name.length>36?c.name.slice(0,36)+'â€¦':c.name)}</span>
+      </div>`;
+    });
+  }
+  if(removed.length){
+    html += `<div class="si-sep">âˆ’ Removed (${removed.length})</div>`;
+    removed.forEach(c=>{
+      html += `<div class="si" id="si_${c.ci}" onclick="selectComp(${c.ci})">
+        <span class="si-ico" style="color:#f85149">âˆ’</span>
+        <span class="si-nm" title="${esc(c.name)}">${esc(c.name.length>36?c.name.slice(0,36)+'â€¦':c.name)}</span>
+      </div>`;
+    });
+  }
+  list.innerHTML = html || '<div class="si-sep">No changed components</div>';
+}
+
+// â”€â”€ Breadcrumb â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function setBreadcrumb(parts){
+  // parts: [{label, onclick}]  last one = current (no onclick)
+  const bc = document.getElementById('bc');
+  let html = '';
+  parts.forEach((p,i)=>{
+    if(i>0) html += '<span class="bc-sep">â€º</span>';
+    if(i===parts.length-1){
+      html += `<span class="bc-cur">${esc(p.label)}</span>`;
+    } else {
+      html += `<span class="bc-seg" onclick="${p.onclick}">${esc(p.label)}</span>`;
+    }
+  });
+  bc.innerHTML = html;
+}
+
+// â”€â”€ Comp header â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function setCompHdr(c){
+  const h = document.getElementById('comp-hdr');
+  if(!c){h.style.display='none';return;}
+  h.style.display='flex';
+  const sc = {Different:'#d29922','Added in Snapshot 2':'#3fb950','Removed in Snapshot 2':'#f85149'}[c.status]||'#8b949e';
+  let badges='';
+  if(c.stats.modified) badges+=`<span class="badge" style="background:#332200;color:#d29922">Â± ${c.stats.modified} Modified</span>`;
+  if(c.stats.added)    badges+=`<span class="badge" style="background:#122117;color:#3fb950">+ ${c.stats.added} Added</span>`;
+  if(c.stats.removed)  badges+=`<span class="badge" style="background:#2d0000;color:#f85149">âˆ’ ${c.stats.removed} Removed</span>`;
+  if(c.stats.unchanged)badges+=`<span class="badge" style="background:#1c2128;color:#8b949e">â—‹ ${c.stats.unchanged} Unchanged</span>`;
+  h.innerHTML = `<span class="comp-title" style="color:${sc}">${esc(c.name)}</span>${badges}`;
+}
+
+// â”€â”€ Show views â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function showView(id){
+  document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+  const v = document.getElementById(id);
+  if(v) v.classList.add('active');
+}
+
+// â”€â”€ Select component â†’ show folder list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function selectComp(ci){
+  selCI     = ci;
+  selFolder = null;
+  selFile   = null;
+
+  document.querySelectorAll('.si').forEach(s=>s.classList.remove('active'));
+  const si = document.getElementById('si_'+ci);
+  if(si){si.classList.add('active');si.scrollIntoView({block:'nearest'});}
+
+  const c = BY_CI[ci];
+  if(!c) return;
+
+  setCompHdr(c);
+  setBreadcrumb([{label: c.name}]);
+  setChangesets(c);
+
+  // Build folder list
+  const content = document.getElementById('content');
+  const folders  = c.folders;   // {folder_key: [{name,path,status}]}
+
+  if(!c.has_files){
+    content.innerHTML = `<div style="padding:20px;color:#8b949e;font-size:12px;">
+      â„¹ No file-level detail returned by the RTC API for this component.<br>
+      The component is marked <strong>Different</strong> because the baseline UUIDs differ.
+    </div>`;
+    showView('view-folders');
+    return;
+  }
+
+  // Count changes per folder
+  const sortedFolders = Object.entries(folders).sort((a,b)=>{
+    // Root first, then alphabetical
+    if(a[0]===''&&b[0]!=='') return -1;
+    if(b[0]===''&&a[0]!=='') return 1;
+    return a[0].localeCompare(b[0]);
+  });
+
+  let html = '<div class="fl-grid">';
+  sortedFolders.forEach(([fkey, files])=>{
+    const nm = files.filter(f=>f.status==='modified').length;
+    const na = files.filter(f=>f.status==='added').length;
+    const nr = files.filter(f=>f.status==='removed').length;
+    const nu = files.filter(f=>f.status==='unchanged').length;
+    const nchg = nm+na+nr;
+    const label = fkey==='' ? '/ (root)' : fkey;
+    let counts = '';
+    if(nm) counts+=`<span class="fc-m">Â± ${nm} modified</span>`;
+    if(na) counts+=`<span class="fc-a">+ ${na} added</span>`;
+    if(nr) counts+=`<span class="fc-r">âˆ’ ${nr} removed</span>`;
+    if(nu) counts+=`<span class="fc-u">â—‹ ${nu} unchanged</span>`;
+    const fkEsc = esc(fkey).replace(/'/g,"\\'");
+    html += `<div class="fl-item" onclick="selectFolder(${ci},'${fkEsc}')">
+      <span class="fl-icon">ðŸ“</span>
+      <div class="fl-info">
+        <div class="fl-name">${esc(label)}</div>
+        <div class="fl-counts">${counts||'<span class="fc-u">â—‹ no changes</span>'}</div>
+      </div>
+      ${nchg?`<span class="badge" style="background:#30363d;color:#cba6f7">${nchg}</span>`:''}
+    </div>`;
+  });
+  html += '</div>';
+  content.innerHTML = html;
+  showView('view-folders');
+}
+
+// â”€â”€ Select folder â†’ show file list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function selectFolder(ci, fkey){
+  selCI     = ci;
+  selFolder = fkey;
+  selFile   = null;
+
+  const c = BY_CI[ci];
+  if(!c) return;
+
+  setCompHdr(c);
+  setBreadcrumb([
+    {label: c.name, onclick:`selectComp(${ci})`},
+    {label: fkey===''?'/ (root)':fkey},
+  ]);
+  setChangesets(c);
+
+  const files = (c.folders[fkey]||[]).slice().sort((a,b)=>{
+    // Changed files first
+    const ord={modified:0,added:1,removed:2,unchanged:3};
+    return (ord[a.status]??9)-(ord[b.status]??9)||a.name.localeCompare(b.name);
+  });
+
+  let html = '';
+  files.forEach(f=>{
+    const col = {modified:'#d29922',added:'#3fb950',removed:'#f85149',unchanged:'#8b949e'}[f.status]||'#8b949e';
+    const ico = {modified:'Â±',added:'+',removed:'âˆ’',unchanged:'â—‹'}[f.status]||'â—‹';
+    const bg  = {modified:'#332200',added:'#122117',removed:'#2d0000'}[f.status]||'';
+    const fpE = esc(f.path).replace(/'/g,"\\'");
+    const clickable = f.status!=='unchanged';
+    html += `<div class="file-item" onclick="${clickable?`selectFile(${ci},'${fpE}','${esc(f.status)}')`:''}"
+      style="${clickable?'cursor:pointer':'cursor:default;opacity:.6'}">
+      <span class="fi-ico" style="color:${col}">${ico}</span>
+      <span class="fi-name" style="color:${col}">${esc(f.name)}</span>
+      <span class="fi-badge" style="background:${bg};color:${col}">${f.status}</span>
+    </div>`;
+  });
+
+  document.getElementById('content').innerHTML = html||'<div style="padding:14px;color:#8b949e">No files</div>';
+  showView('view-folders');
+}
+
+// â”€â”€ Select file â†’ show side-by-side diff â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function selectFile(ci, fpath, fstatus){
+  selCI   = ci;
+  selFile = fpath;
+
+  const c = BY_CI[ci];
+  if(!c) return;
+
+  // Determine folder key from fpath
+  const parts = fpath.replace(/\\/g,'/').split('/');
+  const fname = parts[parts.length-1];
+  const fkey  = parts.slice(0,-1).join('/');
+
+  setCompHdr(c);
+  setBreadcrumb([
+    {label: c.name,                     onclick:`selectComp(${ci})`},
+    {label: fkey===''?'/ (root)':fkey,  onclick:`selectFolder(${ci},'${esc(fkey).replace(/'/g,"\\'")}')` },
+    {label: fname},
+  ]);
+  setChangesets(c);
+
+  // Diff header
+  const col = {modified:'#d29922',added:'#3fb950',removed:'#f85149'}[fstatus]||'#8b949e';
+  const bg  = {modified:'#332200',added:'#122117',removed:'#2d0000'}[fstatus]||'#1c2128';
+  document.getElementById('diff-hdr').innerHTML = `
+    <span class="diff-fname">${esc(fpath)}</span>
+    <span class="diff-status" style="background:${bg};color:${col}">${fstatus}</span>
+    <span class="diff-snaplbl">â† ${esc(S1L)}</span>
+    <span class="diff-snaplbl">${esc(S2L)} â†’</span>
+  `;
+
+  // Look up diff data
+  const ciData  = DIFFS[String(ci)] || {};
+  const fd      = ciData[fpath];
+  const wrap    = document.getElementById('diff-table-wrap');
+  const msg     = document.getElementById('diff-msg');
+
+  if(!fd){
+    msg.textContent = 'No file content available â€” could not be fetched from the server.';
+    msg.style.display='flex'; wrap.innerHTML=''; showView('view-diff'); return;
+  }
+  if(fd.bin){
+    const reason = fd.reason==='too_large'
+      ? 'File is too large for inline diff. Open the per-component HTML report.'
+      : 'Binary file â€” line-by-line diff is not available for binary files.';
+    msg.textContent = reason;
+    msg.style.display='flex'; wrap.innerHTML=''; showView('view-diff'); return;
+  }
+
+  msg.style.display='none';
+  const rows    = fd.rows;
+  const trunc   = fd.trunc;
+
+  // Build side-by-side table
+  let thead = `<div class="diff-hdr-row">
+    <div class="diff-hdr-cell">#</div>
+    <div class="diff-hdr-cell">â† ${esc(S1L)}</div>
+    <div class="diff-hdr-cell">#</div>
+    <div class="diff-hdr-cell">${esc(S2L)} â†’</div>
+  </div>`;
+
+  let tbody = '';
+  rows.forEach(function(row){
+    let cls='';
+    if(row.t==='e') cls='dr-eq';
+    else if(row.t==='c'){
+      // If one side is empty it's actually insert/delete
+      if(!row.l && row.n1===0) cls='dr-ins';
+      else if(!row.r && row.n2===0) cls='dr-del';
+      else cls='dr-chg';
+    }
+    else if(row.t==='d') cls='dr-del';
+    else if(row.t==='i') cls='dr-ins';
+
+    const ln1 = row.n1>0 ? row.n1 : '';
+    const ln2 = row.n2>0 ? row.n2 : '';
+
+    // Left side might be empty (insert row), right side empty (delete row)
+    const leftCls  = (row.t==='i' || (row.t==='c'&&row.n1===0)) ? 'dr-ept' : cls;
+    const rightCls = (row.t==='d' || (row.t==='c'&&row.n2===0)) ? 'dr-ept' : cls;
+
+    tbody += `<div class="diff-row ${cls}">
+      <div class="dl-lno ${leftCls}">${ln1}</div>
+      <div class="dl-code ${leftCls}">${esc(row.l)}</div>
+      <div class="dl-lno ${rightCls}">${ln2}</div>
+      <div class="dl-code ${rightCls}">${esc(row.r)}</div>
+    </div>`;
+  });
+
+  if(trunc){
+    tbody += `<div style="padding:8px 14px;background:#1d2d3e;color:#79c0ff;font-size:11px;">
+      âš  Diff truncated â€” file is large. Open the per-component HTML report for the full diff.
+    </div>`;
+  }
+
+  wrap.innerHTML = thead + tbody;
+  showView('view-diff');
+}
+
+// â”€â”€ Changeset section â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+let csOpen = true;
+function setChangesets(c){
+  const body = document.getElementById('cs-body');
+  if(!c){body.innerHTML='';return;}
+
+  // Baselines
+  function blrow(label, info, uuid, href){
+    const nm = esc(info.name||uuid.slice(0,30));
+    const link = href
+      ? `<a href="${esc(href)}" target="_blank" class="cs-link">${nm}</a>`
+      : `<code class="cs-link">${nm}</code>`;
+    const sub = info.author
+      ? `<br><small style="color:#8b949e">${esc(info.author)} Â· ${esc(info.timestamp)}</small>` : '';
+    const com = info.comment
+      ? `<br><span style="color:#8b949e;font-size:11px">${esc(info.comment.slice(0,200))}</span>` : '';
+    return `<div class="bl-row"><div class="bl-lbl">${esc(label)}</div>
+      <div class="bl-val">${link}${sub}${com}</div></div>`;
+  }
+  let html = blrow(S1L, c.baseline1, c.b1uuid, c.baseline1.href);
+  html    += blrow(S2L, c.baseline2, c.b2uuid, c.baseline2.href);
+
+  // Changesets
+  if(c.changesets && c.changesets.length){
+    html += `<table class="cs-tbl"><thead><tr>
+      <th>Changeset</th><th>Author</th><th>Comment</th>
+      <th>Work Items</th><th>Timestamp</th>
+    </tr></thead><tbody>`;
+    c.changesets.forEach(cs=>{
+      const csLink = cs.href
+        ? `<a href="${esc(cs.href)}" target="_blank" class="cs-link">${esc(cs.uuid.slice(0,24))}</a>`
+        : `<code class="cs-link">${esc(cs.uuid.slice(0,24))}</code>`;
+      const wiCells = cs.wi && cs.wi.length
+        ? cs.wi.map(w=>{
+            const wi = (typeof w==='object') ? w : {n:w,href:''};
+            return wi.href
+              ? `<a href="${esc(wi.href)}" target="_blank" class="wi-link">#${esc(wi.n)}</a>`
+              : `<span class="wi-link">#${esc(wi.n)}</span>`;
+          }).join(' ')
+        : 'â€”';
+      html += `<tr><td>${csLink}</td><td>${esc(cs.author)}</td>
+        <td style="white-space:pre-wrap;font-size:11px">${esc(cs.comment)}</td>
+        <td>${wiCells}</td><td style="white-space:nowrap">${esc(cs.ts)}</td></tr>`;
+    });
+    html += '</tbody></table>';
+  }
+
+  body.innerHTML = html;
+  document.getElementById('cs-section').style.display = '';
+}
+
+function toggleCS(){
+  csOpen = !csOpen;
+  document.getElementById('cs-body').style.display = csOpen ? '' : 'none';
+  document.getElementById('cs-toggle').querySelector('.cs-arr').textContent = csOpen ? 'â–¾' : 'â–¸';
+}
+
+// â”€â”€ Sidebar search â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+document.getElementById('sb-srch').querySelector('input').addEventListener('input',function(){
+  const q = this.value.toLowerCase();
+  document.querySelectorAll('.si').forEach(s=>{
+    const nm = s.querySelector('.si-nm');
+    s.style.display = (nm&&nm.textContent.toLowerCase().includes(q)) ? '' : 'none';
+  });
+  document.querySelectorAll('.si-sep').forEach(s=>s.style.display='');
+});
+
+// â”€â”€ Boot â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+buildSidebar();
+// Auto-select first Different component
+const first = COMPS.find(c=>c.status==='Different') || COMPS[0];
+if(first){
+  selectComp(first.ci);
+} else {
+  document.getElementById('comp-hdr').style.display='none';
+  showView('welcome');
+}
+"""
+    # Replace placeholders with actual JSON
+    js = (js
+          .replace('__COMP_JS__',  comp_js)
+          .replace('__DIFF_JS__',  diff_data_js)
+          .replace('__SURL_JS__',  surl_js)
+          .replace('__S1L_JS__',   s1l_js)
+          .replace('__S2L_JS__',   s2l_js))
+
+    s1e = _h.escape(snap1_label)
+    s2e = _h.escape(snap2_label)
+
+    hidden_only_ident = n_ident + sum(
+        1 for r in comparison_results
+        if r.get('status') not in ('Different', 'Added in Snapshot 2', 'Removed in Snapshot 2')
+    )
+
+    html_out = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <title>Beyond Compare: {s1e} â†’ {s2e}</title>
+  <style>{css}</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- Header -->
+  <div id="hdr">
+    <h1>ðŸ” Beyond Compare â€” Master Snapshot Report</h1>
+    <div class="hdr-sub">{s1e} &nbsp;â†’&nbsp; {s2e} &nbsp;Â·&nbsp; {now_str}</div>
+    <div class="hdr-stats">
+      <span class="badge" style="background:#332200;color:#d29922">Â± {n_diff} Different</span>
+      <span class="badge" style="background:#122117;color:#3fb950">+ {n_added} Added</span>
+      <span class="badge" style="background:#2d0000;color:#f85149">âˆ’ {n_removed} Removed</span>
+      <span class="badge" style="background:#1c2128;color:#8b949e">â—‹ {n_ident} Identical (hidden)</span>
+      <span class="badge" style="background:#1c2128;color:#e6edf3">Total: {total}</span>
+    </div>
+  </div>
+
+  <!-- Body -->
+  <div id="body">
+
+    <!-- Sidebar: only changed components -->
+    <div id="sb">
+      <div id="sb-hd">Changed Components ({n_diff + n_added + n_removed})</div>
+      <div id="sb-srch"><input type="text" placeholder="Filterâ€¦"></div>
+      <div id="sb-list"></div>
+    </div>
+
+    <!-- Main -->
+    <div id="main">
+
+      <!-- Breadcrumb -->
+      <div id="bc"><span class="bc-cur">Select a component</span></div>
+
+      <!-- Component stats bar -->
+      <div id="comp-hdr" style="display:none"></div>
+
+      <!-- VIEW: folder / file list -->
+      <div id="view-folders" class="view active">
+        <div id="content" style="flex:1;overflow-y:auto;padding:10px 14px"></div>
+      </div>
+
+      <!-- VIEW: side-by-side diff -->
+      <div id="view-diff" class="view" style="display:none;">
+        <div id="diff-hdr"></div>
+        <div id="diff-msg" style="display:none;padding:14px;color:#8b949e;font-size:12px;
+          align-items:center;justify-content:center"></div>
+        <div id="diff-table-wrap" style="flex:1;overflow:auto;background:#0d1117"></div>
+      </div>
+
+      <!-- VIEW: welcome -->
+      <div id="welcome" class="view" style="display:none;flex-direction:column">
+        <div style="font-size:48px">ðŸ”</div>
+        <h2>Select a component</h2>
+        <p>Choose a changed component from the left sidebar.</p>
+        <div class="wbadges">
+          <span class="badge" style="background:#332200;color:#d29922">Â± {n_diff} Different</span>
+          <span class="badge" style="background:#122117;color:#3fb950">+ {n_added} Added</span>
+          <span class="badge" style="background:#2d0000;color:#f85149">âˆ’ {n_removed} Removed</span>
+        </div>
+      </div>
+
+      <!-- Changeset section (always at bottom) -->
+      <div id="cs-section" style="display:none">
+        <div id="cs-toggle" onclick="toggleCS()">
+          <span class="cs-arr">â–¾</span>
+          ðŸ”— Baselines &amp; Changesets
+        </div>
+        <div id="cs-body"></div>
+      </div>
+
+    </div><!-- /main -->
+  </div><!-- /body -->
+</div><!-- /app -->
+<script>{js}</script>
+</body>
+</html>"""
+
+    try:
+        with open(out_path, 'w', encoding='utf-8') as f:
+            f.write(html_out)
         return out_path
     except Exception:
         return None

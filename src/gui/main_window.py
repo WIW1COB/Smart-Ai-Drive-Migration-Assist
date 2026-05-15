@@ -2347,6 +2347,7 @@ Reports generated:
                     cell.alignment = Alignment(horizontal='center', vertical='center')
                 
                 # Data rows
+                hyperlink_font = Font(color="0563C1", underline="single")
                 for row_idx, row in enumerate(viewer_results, 2):
                     for col_idx, cell_value in enumerate(row, 1):
                         cell = ws_components.cell(row=row_idx, column=col_idx, value=str(cell_value) if cell_value else '')
@@ -2358,6 +2359,14 @@ Reports generated:
                                 cell.fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
                             elif cell_value == 'Identical':
                                 cell.fill = PatternFill(start_color="D4EDDA", end_color="D4EDDA", fill_type="solid")
+                        
+                        # col 6 (index 5) = HTML diff link — make clickable if file exists
+                        if col_idx == 6 and cell_value and str(cell_value).lower().endswith('.html'):
+                            html_abs = str(cell_value)
+                            if os.path.isfile(html_abs):
+                                cell.value = "Open Diff Report"
+                                cell.hyperlink = 'file:///' + html_abs.replace('\\', '/')
+                                cell.font = hyperlink_font
                 
                 # Auto-adjust column widths
                 for col_idx in range(1, len(headers) + 1):
@@ -2375,15 +2384,19 @@ Reports generated:
                         cell.font = header_font
                         cell.alignment = Alignment(horizontal='center', vertical='center')
                     
+                    # Build lookup: comp_name → component HTML diff path (from viewer_results)
+                    comp_html_lookup = {}
+                    for vr in viewer_results:
+                        html_val = vr[5] if len(vr) > 5 else ''
+                        if html_val and str(html_val).lower().endswith('.html') and os.path.isfile(str(html_val)):
+                            comp_html_lookup[vr[0]] = str(html_val)
+
                     # Data rows
                     file_row = 2
                     for comp in comparison_results:
                         comp_name = comp.get('name', 'Unknown')
                         file_comp = comp.get('file_comparison', {})
-                        file_diffs = comp.get('file_diffs', [])
-                        
-                        # Create lookup for diff links
-                        diff_lookup = {fd['file_path']: fd['diff_html'] for fd in file_diffs}
+                        comp_html = comp_html_lookup.get(comp_name)  # per-component HTML report
                         
                         if file_comp:
                             # Use details dict: {file_path: 'modified'|'added'|'removed'|'unchanged'}
@@ -2397,12 +2410,18 @@ Reports generated:
                             for file_path, change_type in sorted(details.items()):
                                 if change_type not in label_map:
                                     continue
-                                diff_link = diff_lookup.get(file_path, 'N/A') if change_type == 'modified' else 'N/A'
                                 ws_files.cell(row=file_row, column=1, value=comp_name)
                                 ws_files.cell(row=file_row, column=2, value=file_path)
                                 cell_type = ws_files.cell(row=file_row, column=3, value=label_map[change_type])
                                 cell_type.fill = fill_map[change_type]
-                                ws_files.cell(row=file_row, column=4, value=diff_link)
+                                # For modified files link to the component HTML diff report;
+                                # added/removed files have no separate diff, so link the same report
+                                if comp_html:
+                                    link_cell = ws_files.cell(row=file_row, column=4, value="Open Diff Report")
+                                    link_cell.hyperlink = 'file:///' + comp_html.replace('\\', '/')
+                                    link_cell.font = Font(color="0563C1", underline="single")
+                                else:
+                                    ws_files.cell(row=file_row, column=4, value='N/A')
                                 file_row += 1
                     
                     # Column widths
@@ -2503,21 +2522,9 @@ Reports generated:
                     manifest.write(f"{component_name}\n")
             logger.info(f"✓ Selected component manifest exported: {manifest_path}")
             
-            # Export snapshot comparison results to CSV, Excel, and HTML
-            comparison_results = comparison_metadata.get('comparison_results', [])
-            self._export_snapshot_results_to_reports(
-                viewer_results, 
-                csv_report, 
-                excel_report,
-                snap1_name,
-                snap2_name,
-                comparison_results  # Pass comparison results for file diff links
-            )
-
             # ── Generate per-component HTML diff reports ─────────────────────
-            # For every "Different" component, write a self-contained HTML report
-            # and store its absolute path in viewer_results[idx][5] so the
-            # results-viewer "View Diff" button can open it.
+            # IMPORTANT: Must run BEFORE export so that viewer_results[idx][5]
+            # holds the actual HTML path when the Excel/CSV is written.
             try:
                 from src.utils.diff_utils import generate_snapshot_component_html
                 full_comparison_results = comparison_metadata.get('comparison_results', [])
@@ -2559,22 +2566,58 @@ Reports generated:
 
                 logger.info(
                     f"✓ HTML diff reports generated for "
-                    f"{sum(1 for vr in viewer_results if vr[5] not in ['N/A', '', None])} "
+                    f"{sum(1 for vr in viewer_results if vr[5] not in ['N/A', '', None, 'Component-level (no file diff)'])} "
                     f"Different components in: {html_dir}"
                 )
             except Exception as html_err:
                 logger.warning(f"HTML diff generation failed (non-fatal): {html_err}")
-            
+
+            # Export snapshot comparison results to CSV, Excel, and HTML
+            # (called after HTML diff generation so viewer_results[idx][5] holds actual paths)
+            comparison_results = comparison_metadata.get('comparison_results', [])
+            self._export_snapshot_results_to_reports(
+                viewer_results,
+                csv_report,
+                excel_report,
+                snap1_name,
+                snap2_name,
+                comparison_results  # Pass comparison results for file diff links
+            )
+
+            # ── Generate Beyond Compare master report ────────────────────────
+            # One self-contained HTML with ALL components, dual tree view, inline
+            # unified diffs, and changeset table — written AFTER per-component
+            # HTML is generated so file_contents are already available.
+            master_report_path = None
+            try:
+                from src.utils.diff_utils import generate_beyond_compare_master_report
+                master_report_path = generate_beyond_compare_master_report(
+                    comparison_results=comparison_results,
+                    output_dir=output_dir,
+                    snap1_label=snap1_name,
+                    snap2_label=snap2_name,
+                    file_contents_by_component=comparison_metadata.get('file_contents_by_component', {}),
+                    changeset_by_component=comparison_metadata.get('changeset_by_component', {}),
+                    server_url=comparison_metadata.get('rtc_server_url', ''),
+                )
+                if master_report_path:
+                    report_paths['master_report'] = master_report_path
+                    logger.info(f"✓ Beyond Compare master report: {master_report_path}")
+                else:
+                    logger.warning("Beyond Compare master report generation returned None")
+            except Exception as mr_err:
+                logger.warning(f"Beyond Compare master report failed (non-fatal): {mr_err}")
+
             # Log transformation details
             logger.info(f"Displaying {len(viewer_results)} snapshots results in viewer")
             if viewer_results:
                 logger.info(f"Sample result: {viewer_results[0]} (type: {type(viewer_results[0])})")
                 logger.info(f"Result length: {len(viewer_results[0]) if viewer_results else 'N/A'}")
-            
+
             logger.info(f"Files1 count: {len(files1)}, Files2 count: {len(files2)}")
             logger.info(f"snap1_name: {snap1_name}, snap2_name: {snap2_name}")
             logger.info(f"Selected components exported: {len(selected_components)}/{total_common_components}")
-            
+
             # Show results using enhanced viewer
             show_results_dialog(
                 self.root,
@@ -2587,6 +2630,25 @@ Reports generated:
                 files2,
                 report_paths
             )
+
+            # Notify user about master report
+            if master_report_path and os.path.isfile(master_report_path):
+                import webbrowser
+                self.root.after(
+                    800,
+                    lambda p=master_report_path: (
+                        messagebox.askquestion(
+                            "📊 Beyond Compare Report Ready",
+                            f"A complete Beyond Compare-style master report has been generated:\n\n"
+                            f"{p}\n\n"
+                            f"This report shows all {len(comparison_results)} components with:\n"
+                            f"  • Left/Right dual folder tree view\n"
+                            f"  • Inline file diffs (click any file)\n"
+                            f"  • Changeset & baseline details\n\n"
+                            f"Open it now?",
+                        ) == 'yes' and webbrowser.open(p)
+                    )
+                )
             
             logger.info("✓ Snapshot comparison results displayed in enhanced viewer")
             
