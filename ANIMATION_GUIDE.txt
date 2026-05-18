@@ -1,0 +1,84 @@
+
+=================================================================
+ANIMATION GUIDE FOR MIGRATION ANALYSIS TOOL PRESENTATION
+=================================================================
+
+To make the presentation more engaging, add these animations in PowerPoint:
+
+SLIDE 1 (Title Slide):
+  • Title: Appear animation (On Click)
+  • Subtitle: Fade In (After Previous, 0.5s delay)
+
+SLIDE 2 (Overview):
+  • Each bullet point: Fly In from Left (On Click)
+  • Duration: 0.5 seconds
+
+SLIDE 3 (Comparison Modes):
+  • Main bullets (📁, ☁️, 🔄): Zoom In (On Click)
+  • Sub-bullets: Wipe (After Previous, 0.3s delay)
+
+SLIDE 4 (Features - Analysis):
+  • Section headers: Grow & Turn (On Click)
+  • Sub-bullets: Fade In (After Previous)
+
+SLIDE 5 (Features - Integration):
+  • Section headers: Bounce (On Click)
+  • Sub-bullets: Float In (After Previous)
+
+SLIDE 6 (Time Savings Comparison):
+  • Table: Wipe from Top (On Click)
+  • Each row: Appear one by one (After Previous, 0.5s delay)
+
+SLIDE 7 (Performance Optimizations):
+  • ⚡ bullets: Flash (On Click)
+  • Sub-bullets: Wipe from Right (After Previous)
+
+SLIDE 8 (Use Cases):
+  • Each use case: Wheel animation (On Click)
+  • Sub-bullets: Fade In (After Previous)
+
+SLIDE 9 (Benefits Summary):
+  • Each benefit section: Split (On Click)
+  • Sub-bullets: Appear (After Previous, 0.2s delay)
+
+SLIDE 10 (Coverage Summary):
+  • Each checkmark item: Pulse (One by One, 0.3s delay)
+
+SLIDE 11 (Getting Started):
+  • Numbered steps: Ascend (On Click)
+  • Sub-bullets: Descend (After Previous)
+
+SLIDE 12 (Thank You):
+  • Title: Swivel (On Click)
+  • Subtitle: Teeter (After Previous)
+
+=================================================================
+HOW TO ADD ANIMATIONS IN POWERPOINT:
+=================================================================
+
+1. Open the .pptx file in Microsoft PowerPoint
+2. Go to each slide
+3. Select the text box or shape
+4. Click "Animations" tab
+5. Choose the animation from the list
+6. Set timing options (On Click / After Previous)
+7. Adjust duration and delay as needed
+
+Quick Tips:
+  • Use "Animation Pane" to manage all animations
+  • Preview animations with F5 (slideshow mode)
+  • Keep animations professional (not too flashy)
+  • Use consistent timing across slides
+
+=================================================================
+RECOMMENDED SLIDE TRANSITIONS:
+=================================================================
+
+ALL SLIDES:
+  • Transition: Push (from Right)
+  • Duration: 0.7 seconds
+  • Sound: None
+
+This creates a smooth, professional flow between slides.
+
+=================================================================

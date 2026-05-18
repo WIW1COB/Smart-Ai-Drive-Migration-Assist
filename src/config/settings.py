@@ -22,7 +22,39 @@ RTC_CLIENT_LIB_PATH = r"C:\Users\WIW1COB\Desktop\TOOL_Developed\Migration_Analys
 # The tool will automatically fall back to REST API if lscm is not available or fails
 # Using scm.exe directly instead of lscm.bat to bypass Java environment issues
 # Example: r"C:\Program Files\IBM\RTC-SCM-CLI\scmtools\eclipse\scm.exe"
-LSCM_PATH = r"C:\Users\yyy1cob\Desktop\598_Kit_Download_Fail\Migration_Assist\EWM-scmTools-Win64-7.0.3\jazz\scmtools\eclipse\scm.exe"  # EWM SCM CLI
+
+def _get_lscm_path():
+    """
+    Auto-detect LSCM/SCM path. Checks:
+    1. Bundled SCM (if running from executable)
+    2. Bosch STEPS installation
+    3. Standard installations
+    4. Fallback to configured path
+    """
+    # Check if running as frozen executable (PyInstaller)
+    if getattr(sys, 'frozen', False):
+        # Running as executable - check bundled SCM
+        exe_dir = os.path.dirname(sys.executable)
+        bundled_scm = os.path.join(exe_dir, '_internal', 'SCM', 'scm.exe')
+        if os.path.exists(bundled_scm):
+            return bundled_scm
+    
+    # Check common installation paths
+    common_paths = [
+        r"C:\Program Files\BOSCH\STEPS\ALM\SCM\scm.exe",  # Bosch STEPS
+        r"C:\Program Files\IBM\RTC-SCM-CLI\scmtools\eclipse\scm.exe",
+        r"C:\toolbase\lscm\scmtools\eclipse\scm.exe",
+        r"C:\Users\yyy1cob\Desktop\598_Kit_Download_Fail\Migration_Assist\EWM-scmTools-Win64-7.0.3\jazz\scmtools\eclipse\scm.exe",
+    ]
+    
+    for path in common_paths:
+        if os.path.exists(path):
+            return path
+    
+    # Fallback to original configured path
+    return None
+
+LSCM_PATH = _get_lscm_path()
 
 # Global variables for RTC authentication
 RTC_USERNAME = None
