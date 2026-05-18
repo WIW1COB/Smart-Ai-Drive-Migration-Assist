@@ -639,7 +639,7 @@ class MigrationAnalysisGUI:
             if not url or not folder:
                 messagebox.showerror(
                     "Missing Input",
-                    "Please enter RTC URL and select a local folder."
+                    "Please enter RTC snapshot URL/UUID and select a local folder."
                 )
                 return
             
@@ -650,11 +650,21 @@ class MigrationAnalysisGUI:
                 )
                 return
             
-            messagebox.showinfo(
-                "Feature Coming Soon",
-                "🔄 Online → Offline Mode\n\n"
-                "Comparing RTC snapshot with local folder will be implemented soon."
-            )
+            # Check if RTC credentials are available
+            if not self.rtc_username.get() or not self.rtc_password.get():
+                # Try loading cached credentials first
+                if not self.cached_credentials_loaded:
+                    self._load_cached_credentials()
+                
+                # If still no credentials, show login dialog
+                if not self.rtc_username.get() or not self.rtc_password.get():
+                    self.show_signin_dialog(lambda: self.start_hybrid_comparison(url, folder))
+                else:
+                    # Credentials loaded from cache, proceed
+                    self.start_hybrid_comparison(url, folder)
+            else:
+                # Credentials already available, proceed
+                self.start_hybrid_comparison(url, folder)
         
         elif mode == "interface_check":
             # Interface List Check Mode
@@ -879,8 +889,12 @@ Reports generated:
             import webbrowser
             webbrowser.open(html_path)
     
-    def show_credential_dialog(self):
-        """Show dialog to input RTC credentials"""
+    def show_signin_dialog(self, callback=None):
+        """Show dialog to input RTC credentials with optional callback
+        
+        Args:
+            callback: Function to call after successful login (e.g., lambda: self.start_hybrid_comparison(url, folder))
+        """
         dialog = tk.Toplevel(self.root)
         dialog.title("RTC Login")
         dialog.geometry("480x360")
@@ -959,12 +973,16 @@ Reports generated:
                         
             dialog.destroy()
             
-            # Get snapshot URLs
-            url1 = self.snapshot1_entry.get().strip()
-            url2 = self.snapshot2_entry.get().strip()
-            
-            # Start comparison
-            self.start_snapshot_comparison(url1, url2)
+            # If callback provided (for hybrid mode), use it
+            # Otherwise, use default Online→Online behavior
+            if callback:
+                callback()
+            else:
+                # Get snapshot URLs for Online→Online mode
+                url1 = self.snapshot1_entry.get().strip()
+                url2 = self.snapshot2_entry.get().strip()
+                # Start comparison
+                self.start_snapshot_comparison(url1, url2)
         
         def on_cancel():
             dialog.destroy()
@@ -1011,6 +1029,10 @@ Reports generated:
         else:
             username_entry.focus()
         dialog.bind('<Return>', lambda e: on_ok())
+    
+    def show_credential_dialog(self):
+        """Legacy method - redirects to show_signin_dialog for backward compatibility"""
+        self.show_signin_dialog()
         dialog.bind('<Escape>', lambda e: on_cancel())
     
     def _load_cached_credentials(self):
@@ -1714,7 +1736,237 @@ Reports generated:
         
         return f"Cannot connect to RTC:\n{error_msg}{tips}"
 
+    def start_hybrid_comparison(self, snapshot_url, local_folder):
+        """Start hybrid comparison: RTC snapshot → Local folder"""
+        self.save_credentials_on_success = self.keep_signed_in_var.get()
+        self.compare_btn.config(state='disabled')
+        self.progress_bar['value'] = 0
+        self.progress_label.config(text="🔄 Starting hybrid comparison...")
+        self.root.update()
+        
+        # Run in background thread
+        thread = threading.Thread(
+            target=self._hybrid_comparison_thread,
+            args=(snapshot_url, local_folder),
+            daemon=True
+        )
+        thread.start()
     
+    def _hybrid_comparison_thread(self, snapshot_url, local_folder):
+        """
+        Background thread for hybrid comparison (Online → Offline)
+        
+        Steps:
+        1. Validate inputs
+        2. Connect to RTC
+        3. Fetch snapshot and download files to temp folder
+        4. Compare downloaded snapshot with local folder
+        5. Generate reports (same as offline→offline)
+        """
+        temp_snapshot_folder = None
+        
+        try:
+            logger.info("=" * 80)
+            logger.info("HYBRID COMPARISON STARTED (Online → Offline)")
+            logger.info(f"RTC Snapshot: {snapshot_url}")
+            logger.info(f"Local Folder: {local_folder}")
+            logger.info("=" * 80)
+            
+            # Get credentials
+            username = self.rtc_username.get()
+            password = self.rtc_password.get()
+            server_url = self.rtc_server_url.get()
+            
+            # Validate credentials
+            self.root.after(0, lambda: self._update_progress(5, "Validating credentials..."))
+            if not username or not password:
+                error_msg = "Username and password are required"
+                logger.error(f"Validation failed: {error_msg}")
+                self.root.after(0, lambda: messagebox.showerror('Validation Error', error_msg))
+                self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+                self.root.after(0, lambda: self._update_progress(0, "Ready"))
+                return
+            
+            # Test connection
+            self.root.after(0, lambda: self._update_progress(10, "🔗 Testing RTC connection..."))
+            rtc_conn, error_msg = get_rtc_connection(username, password, server_url)
+            
+            if not rtc_conn:
+                detailed_error = self._format_connection_error(error_msg)
+                logger.error(f"Connection failed: {error_msg}")
+                self.root.after(0, lambda: messagebox.showerror('Connection Error', detailed_error))
+                self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+                self.root.after(0, lambda: self._update_progress(0, "Ready"))
+                return
+            
+            self._update_cached_credentials_after_login(username, password, server_url)
+            
+            # Extract snapshot UUID
+            self.root.after(0, lambda: self._update_progress(15, "Validating snapshot URL..."))
+            snapshot_uuid = rtc_conn.extract_snapshot_uuid(snapshot_url)
+            
+            if not snapshot_uuid:
+                error_msg = "Could not extract snapshot UUID. Please verify the URL/UUID is correct."
+                logger.error(error_msg)
+                self.root.after(0, lambda: messagebox.showerror('Invalid Input', error_msg))
+                self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+                self.root.after(0, lambda: self._update_progress(0, "Ready"))
+                return
+            
+            logger.info(f"Snapshot UUID: {snapshot_uuid}")
+            
+            # Create temp folder for snapshot
+            import tempfile
+            temp_snapshot_folder = tempfile.mkdtemp(prefix="rtc_snapshot_")
+            logger.info(f"Temp folder created: {temp_snapshot_folder}")
+            
+            # Fetch snapshot components and download files
+            self.root.after(0, lambda: self._update_progress(20, "⬇️ Fetching snapshot components..."))
+            
+            def progress_callback(current, total, message):
+                # Map progress to 20-70% range
+                if total > 0:
+                    progress_pct = 20 + ((current / total) * 50)
+                    self.root.after(0, lambda p=progress_pct, m=message: self._update_progress(p, m))
+            
+            snapshot_data = rtc_conn.fetch_snapshot_components(
+                snapshot_uuid,
+                snapshot_name="RTC Snapshot",
+                progress_callback=progress_callback
+            )
+            
+            # Handle dict return format
+            if isinstance(snapshot_data, dict):
+                components = snapshot_data.get('components', [])
+                snapshot_name = snapshot_data.get('name', 'RTC Snapshot')
+            else:
+                components = snapshot_data if isinstance(snapshot_data, list) else []
+                snapshot_name = 'RTC Snapshot'
+            
+            if not components:
+                error_msg = f"No components found in snapshot {snapshot_uuid}"
+                logger.error(error_msg)
+                self.root.after(0, lambda: messagebox.showerror('Fetch Error', error_msg))
+                self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+                self.root.after(0, lambda: self._update_progress(0, "Ready"))
+                return
+            
+            logger.info(f"✓ Fetched {len(components)} components")
+            
+            # Download files from snapshot to temp folder
+            self.root.after(0, lambda: self._update_progress(70, f"📥 Downloading {len(components)} components..."))
+            
+            downloaded_count = 0
+            total_files_downloaded = 0
+            
+            for idx, component in enumerate(components, 1):
+                component_name = component.get('name', 'Unknown')
+                files = component.get('files', [])
+                
+                if not files:
+                    continue
+                
+                # Create component directory in temp folder
+                component_dir = os.path.join(temp_snapshot_folder, component_name)
+                os.makedirs(component_dir, exist_ok=True)
+                
+                # Download files (sample up to 100 per component to avoid huge downloads)
+                files_to_download = files[:100]  # Limit for performance
+                
+                for file_info in files_to_download:
+                    try:
+                        file_path = file_info.get('path', '')
+                        item_id = file_info.get('item_id')
+                        baseline_id = file_info.get('baseline_id')
+                        
+                        if not item_id or not baseline_id:
+                            continue
+                        
+                        # Download file content
+                        content = rtc_conn.download_file_content(item_id, baseline_id)
+                        
+                        if content:
+                            # Save to temp folder
+                            full_path = os.path.join(component_dir, file_path.replace('/', os.sep))
+                            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+                            
+                            # Write content (handle binary/text)
+                            if isinstance(content, bytes):
+                                with open(full_path, 'wb') as f:
+                                    f.write(content)
+                            else:
+                                with open(full_path, 'w', encoding='utf-8', errors='replace') as f:
+                                    f.write(content)
+                            
+                            total_files_downloaded += 1
+                    
+                    except Exception as e:
+                        logger.warning(f"Failed to download {file_path}: {e}")
+                        continue
+                
+                downloaded_count += 1
+                progress_pct = 70 + ((downloaded_count / len(components)) * 15)
+                self.root.after(0, lambda p=progress_pct, c=downloaded_count, t=len(components): 
+                               self._update_progress(p, f"📥 Downloaded {c}/{t} components ({total_files_downloaded} files)"))
+            
+            logger.info(f"✓ Downloaded {total_files_downloaded} files from {downloaded_count} components")
+            
+            # Now run folder comparison between temp snapshot folder and local folder
+            self.root.after(0, lambda: self._update_progress(85, "📊 Comparing snapshot with local folder..."))
+            
+            # Use the same comparison engine as offline→offline mode
+            from src.utils.comparison_engine import compare_folders
+            
+            def comparison_progress(current, total, message):
+                if total > 0:
+                    progress_pct = 85 + ((current / total) * 10)
+                    self.root.after(0, lambda p=progress_pct, m=message: self._update_progress(p, m))
+            
+            result = compare_folders(
+                temp_snapshot_folder,
+                local_folder,
+                progress_callback=comparison_progress,
+                custom_mappings=None,
+                rtc_info=None
+            )
+            
+            if result.get('success'):
+                # Update display names for better clarity
+                result['folder1_display'] = f"{snapshot_name} (RTC)"
+                result['folder2_display'] = os.path.basename(local_folder)
+                
+                # Show results
+                self.root.after(0, lambda: self._update_progress(98, "✅ Opening results..."))
+                self.root.after(0, lambda r=result: self.on_comparison_complete(r))
+                
+                logger.info("=" * 80)
+                logger.info("HYBRID COMPARISON COMPLETED SUCCESSFULLY")
+                logger.info("=" * 80)
+            else:
+                error_msg = result.get('error', 'Unknown error during comparison')
+                logger.error(f"Comparison failed: {error_msg}")
+                self.root.after(0, lambda e=error_msg: messagebox.showerror('Comparison Failed', f"Error: {e}"))
+                self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+                self.root.after(0, lambda: self._update_progress(0, "Ready"))
+            
+        except Exception as e:
+            logger.error(f"Hybrid comparison error: {e}", exc_info=True)
+            error_msg = f"Hybrid comparison failed:\n\n{type(e).__name__}:\n{str(e)[:200]}"
+            self.root.after(0, lambda: messagebox.showerror('Error', error_msg))
+            self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+            self.root.after(0, lambda: self._update_progress(0, "Ready"))
+        
+        finally:
+            # Clean up temp folder
+            if temp_snapshot_folder and os.path.exists(temp_snapshot_folder):
+                try:
+                    import shutil
+                    shutil.rmtree(temp_snapshot_folder)
+                    logger.info(f"Cleaned up temp folder: {temp_snapshot_folder}")
+                except Exception as e:
+                    logger.warning(f"Failed to clean up temp folder: {e}")
+    
+
     def _update_progress(self, value, message):
         """Update progress bar and label"""
         self.progress_bar['value'] = value
