@@ -1609,6 +1609,9 @@ Reports generated:
 
                 import time as _time
                 deadline = _time.time() + TOTAL_BUDGET_SECS
+                total_file_tasks = len(fetch_tasks)
+                completed_file_tasks = 0
+                fetched_ok = 0
 
                 with ThreadPoolExecutor(max_workers=10) as fetch_ex:
                     futures = {fetch_ex.submit(_fetch_one, t): t for t in fetch_tasks}
@@ -1616,13 +1619,27 @@ Reports generated:
                         if _time.time() > deadline:
                             logger.warning("File content fetch budget exceeded — stopping early")
                             break
+                        completed_file_tasks += 1
                         try:
                             cname, fpath_key, snap_key, content = fut.result(timeout=90)
                             if content is not None:
                                 file_contents_by_component.setdefault(
                                     cname, {}).setdefault(fpath_key, {})[snap_key] = content
+                                fetched_ok += 1
                         except Exception as _fe:
                             logger.debug(f"Content fetch error: {_fe}")
+
+                        # Update progress label with live counter every 5 files
+                        if completed_file_tasks % 5 == 0 or completed_file_tasks == total_file_tasks:
+                            _ct = completed_file_tasks
+                            _tt = total_file_tasks
+                            _ok = fetched_ok
+                            self.root.after(0, lambda c=_ct, t=_tt, o=_ok:
+                                self._update_progress(
+                                    88,
+                                    f"📥 Fetching file content: {c}/{t} fetched ({o} successful)"
+                                )
+                            )
 
                 fetched_files = sum(len(v) for v in file_contents_by_component.values())
                 logger.info(
@@ -1645,9 +1662,11 @@ Reports generated:
                 baseline_info_cache[bid] = info
                 return info
 
-            for comp in comparison_results:
-                if comp.get('status') != 'Different':
-                    continue
+            _diff_comps = [c for c in comparison_results if c.get('status') == 'Different']
+            _total_cs   = len(_diff_comps)
+            _done_cs    = 0
+
+            for comp in _diff_comps:
                 cname  = comp.get('name', '')
                 b1uuid = comp.get('baseline1_uuid', '')
                 b2uuid = comp.get('baseline2_uuid', '')
@@ -1667,6 +1686,18 @@ Reports generated:
                 # the original Snapshot 2 component name for display in the report.
                 if cname in component_mappings:
                     changeset_by_component[cname]['mapped_snap2_name'] = component_mappings[cname]
+
+                _done_cs += 1
+                _d = _done_cs
+                _t = _total_cs
+                _nc = len(changesets)
+                self.root.after(0, lambda d=_d, t=_t, n=_nc, nm=cname:
+                    self._update_progress(
+                        89,
+                        f"📋 Changeset metadata: {d}/{t} components "
+                        f"({n} changeset{'s' if n != 1 else ''} for {nm})"
+                    )
+                )
 
             logger.info(
                 f"✓ Baseline metadata fetched for {len(changeset_by_component)} components"
@@ -2018,7 +2049,8 @@ Reports generated:
 
                 if online_files:
                     downloaded = 0
-                    for fi in online_files:
+                    total_online = len(online_files)
+                    for _fi_idx, fi in enumerate(online_files, 1):
                         file_path = fi.get('path', fi.get('name', ''))
                         if not file_path:
                             continue
@@ -2036,6 +2068,23 @@ Reports generated:
                                 downloaded += 1
                             except Exception as _we:
                                 logger.warning(f"  Write error {file_path}: {_we}")
+
+                        # Update progress every 5 files or on last file
+                        if _fi_idx % 5 == 0 or _fi_idx == total_online:
+                            _ci = comp_idx
+                            _ts = total_selected
+                            _fi = _fi_idx
+                            _to = total_online
+                            _dl = downloaded
+                            _cn = comp_name
+                            self.root.after(0, lambda ci=_ci, ts=_ts, fi=_fi,
+                                            to=_to, dl=_dl, cn=_cn:
+                                self._update_progress(
+                                    step_pct,
+                                    f"[{ci}/{ts}] 📥 {cn}: "
+                                    f"{fi}/{to} files fetched ({dl} downloaded)"
+                                )
+                            )
                     logger.info(f"[{comp_name}] Downloaded {downloaded}/{len(online_files)} files")
                 else:
                     logger.warning(
