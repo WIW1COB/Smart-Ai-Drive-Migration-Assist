@@ -1026,25 +1026,28 @@ class RTCConnection:
                             return name
                     return None
 
-                def fetch_baseline_component(baseline_ref):
+                def fetch_baseline_component(orig_idx, baseline_ref):
                     """
                     Fetch component info for a single baseline.
 
                     Speed improvement: The baseline JSON already contains the
                     component itemId inline under the 'component' key.
                     We extract it directly instead of making a second HTTP call
-                    to resolve the component ID ΓÇö the only extra call needed is
+                    to resolve the component ID — the only extra call needed is
                     the component-name lookup (which is heavily cached).
+
+                    Returns a tuple (orig_idx, component_dict) so callers can
+                    restore the original snapshot order after parallel fetch.
                     """
                     if not isinstance(baseline_ref, dict):
-                        return None
+                        return orig_idx, None
 
                     item_id   = baseline_ref.get('itemId', '')
                     state_id  = baseline_ref.get('stateId', '')
                     if not item_id:
-                        return None
+                        return orig_idx, None
 
-                    # ΓöÇΓöÇ Fast path: component ID embedded in baseline_ref ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+                    # — Fast path: component ID embedded in baseline_ref ——
                     # Some RTC versions embed the component reference directly
                     # inside the baseline list entry, avoiding a round-trip.
                     inline_comp = (baseline_ref.get('component')
@@ -1053,34 +1056,34 @@ class RTCConnection:
                         comp_item_id = inline_comp['itemId']
                         comp_name = get_component_name(comp_item_id)
                         if comp_name:
-                            return {
+                            return orig_idx, {
                                 'name': comp_name,
                                 'uuid': comp_item_id,
                                 'baseline_uuid': item_id,
                                 'state_id': state_id,
                             }
 
-                    # ΓöÇΓöÇ Slow path: fetch baseline details first ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+                    # — Slow path: fetch baseline details first ——————————
                     baseline_url = (f'{server_url}/resource/itemOid/'
                                     f'com.ibm.team.scm.Baseline/{item_id}')
                     data = self._get_json(session, baseline_url, timeout=25)
                     if not data:
                         logger.debug(f'{snapshot_name}: No data for baseline {item_id[:8]}')
-                        return None
+                        return orig_idx, None
 
                     comp_ref = (data.get('component')
                                 or data.get('com.ibm.team.scm.Component'))
                     if not isinstance(comp_ref, dict) or not comp_ref.get('itemId'):
                         logger.debug(f'{snapshot_name}: No component ref in baseline {item_id[:8]}')
-                        return None
+                        return orig_idx, None
 
                     comp_item_id = comp_ref['itemId']
                     comp_name = get_component_name(comp_item_id)
                     if not comp_name:
                         logger.debug(f'{snapshot_name}: Could not resolve name for {comp_item_id[:8]}')
-                        return None
+                        return orig_idx, None
 
-                    return {
+                    return orig_idx, {
                         'name': comp_name,
                         'uuid': comp_item_id,
                         'baseline_uuid': item_id,
@@ -1092,8 +1095,15 @@ class RTCConnection:
                 last_heartbeat = start_time
                 processed = 0
 
+                # indexed_components collects (orig_idx, comp_dict) tuples so
+                # we can sort back to snapshot order after parallel fetch.
+                indexed_components = []
+
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    pending = {executor.submit(fetch_baseline_component, b) for b in baseline_list}
+                    pending = {
+                        executor.submit(fetch_baseline_component, idx, b): idx
+                        for idx, b in enumerate(baseline_list)
+                    }
 
                     while pending:
                         done, pending = wait(pending, timeout=5)
@@ -1101,15 +1111,15 @@ class RTCConnection:
                         for future in done:
                             processed += 1
                             try:
-                                component = future.result()
+                                orig_idx, component = future.result()
                                 if component:
-                                    components.append(component)
+                                    indexed_components.append((orig_idx, component))
                             except Exception as e:
                                 logger.debug(f'{snapshot_name}: Baseline processing error: {e}')
 
                         if progress_callback:
                             try:
-                                progress_callback(processed, total_baselines, f'{len(components)} components found')
+                                progress_callback(processed, total_baselines, f'{len(indexed_components)} components found')
                             except Exception:
                                 pass
 
@@ -1119,7 +1129,7 @@ class RTCConnection:
                             rate = processed / elapsed if elapsed > 0 else 0
                             logger.info(
                                 f'{snapshot_name}: Progress: {processed}/{total_baselines} baselines '
-                                f'({len(components)} components found) ΓÇö '
+                                f'({len(indexed_components)} components found) — '
                                 f'{elapsed:.1f}s  ({rate:.1f} baselines/s)'
                             )
                             last_heartbeat = now
@@ -1127,9 +1137,13 @@ class RTCConnection:
                             elapsed = now - start_time
                             logger.info(
                                 f'{snapshot_name}: Still working... {processed}/{total_baselines} processed, '
-                                f'{len(pending)} pending, {len(components)} components found - {elapsed:.1f}s'
+                                f'{len(pending)} pending, {len(indexed_components)} components found - {elapsed:.1f}s'
                             )
                             last_heartbeat = now
+
+                # Restore snapshot order
+                indexed_components.sort(key=lambda x: x[0])
+                components = [c for _, c in indexed_components]
 
                 logger.info(f'{snapshot_name}: Γ£ô Successfully extracted {len(components)} components')
 
