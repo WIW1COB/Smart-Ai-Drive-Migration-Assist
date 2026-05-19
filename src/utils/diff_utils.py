@@ -104,7 +104,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
 
     STATUS_COLOR = {'added': '#1a7f37', 'modified': '#9a6700', 'removed': '#cf222e', 'unchanged': '#57606a'}
     STATUS_BG    = {'added': '#dafbe1', 'modified': '#fff8c5', 'removed': '#ffebe9', 'unchanged': '#f6f8fa'}
-    STATUS_ICON  = {'added': 'ï¼‹', 'modified': 'Â±', 'removed': 'ï¼', 'unchanged': 'â—‹'}
+    STATUS_ICON  = {'added': '+', 'modified': '±', 'removed': '-', 'unchanged': '○'}
 
     def badge(label, count, color, bg):
         return (f'<span style="display:inline-block;padding:2px 10px;border-radius:12px;'
@@ -170,7 +170,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
         for i, cs in enumerate(cs_list):
             bg = '#f6f8fa' if i % 2 else '#fff'
             cs_uuid   = str(cs.get('uuid', ''))
-            author    = html_mod.escape(str(cs.get('author', 'â€”')))
+            author    = html_mod.escape(str(cs.get('author', '—')))
             comment   = html_mod.escape(str(cs.get('comment', '')))
             ts        = html_mod.escape(str(cs.get('timestamp', '')))
 
@@ -207,7 +207,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
             elif wi_numbers:
                 task_cell = ' '.join(f'<span style="font-weight:600;">#{n}</span>' for n in wi_numbers[:5])
             else:
-                task_cell = '<span style="color:#aaa;font-size:11px;">â€”</span>'
+                task_cell = '<span style="color:#aaa;font-size:11px;">—</span>'
 
             cs_rows += (
                 f'<tr style="background:{bg};">'
@@ -235,7 +235,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
 
     changeset_section = f'''
     <div class="card">
-      <h3>ðŸ”— Changeset / Baseline Comparison</h3>
+      <h3>🔗 Changeset / Baseline Comparison</h3>
       <table class="main-table" style="width:100%;border-collapse:collapse;font-size:13px;">
         {_info_rows(b1info, baseline1_uuid, snap1_label)}
         <tr><td colspan="2" style="padding:2px;background:#d0d7de;"></td></tr>
@@ -243,7 +243,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
         <tr style="background:#fff3cd;">
           <td style="padding:6px 12px;color:#57606a;font-weight:600;">Change Direction</td>
           <td style="padding:6px 12px;color:#6e40c9;font-weight:700;">
-            {html_mod.escape(snap1_label)} âžœ {html_mod.escape(snap2_label)}
+            {html_mod.escape(snap1_label)} ➜ {html_mod.escape(snap2_label)}
           </td>
         </tr>
       </table>
@@ -258,9 +258,9 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
         """Return True if the text string appears to be decoded binary data."""
         if not text:
             return False
-        # High ratio of unicode replacement chars (\ufffd) â†’ binary decoded as utf-8
+        # High ratio of unicode replacement chars (\ufffd) → binary decoded as utf-8
         replacement_ratio = text.count('\ufffd') / max(len(text), 1)
-        if replacement_ratio > 0.02:   # >2 % replacement chars â†’ binary
+        if replacement_ratio > 0.02:   # >2 % replacement chars → binary
             return True
         # Null bytes are a strong indicator of binary
         if '\x00' in text:
@@ -287,7 +287,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
                 return (
                     '<div style="padding:12px 16px;background:#fff8c5;border-radius:4px;'
                     'color:#9a6700;font-size:13px;">'
-                    'âš ï¸ <strong>Binary file</strong> â€” line-by-line diff is not available '
+                    'âš ï¸ <strong>Binary file</strong> — line-by-line diff is not available '
                     'for binary/non-text files. The file has changed (different baseline UUIDs) '
                     'but its content cannot be displayed as text.'
                     '</div>'
@@ -299,8 +299,8 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
             if not lines1 and not lines2:
                 return '<p style="color:#57606a;padding:8px;">Empty file in both snapshots.</p>'
 
-            from_label = f'{os.path.basename(fpath)} â† {snap1_label}'
-            to_label   = f'{os.path.basename(fpath)} â†’ {snap2_label}'
+            from_label = f'{os.path.basename(fpath)} ← {snap1_label}'
+            to_label   = f'{os.path.basename(fpath)} → {snap2_label}'
 
             # For pure add (snap1 empty) or pure remove (snap2 empty),
             # show a simpler full-content view rather than a confusing diff against empty
@@ -310,7 +310,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
                     for line in lines2
                 )
                 return (
-                    f'<table class="diff" style="width:100%">'                    f'<tr><th colspan="4" style="padding:4px 6px;text-align:left;">'                    f'&#43; New file â€” {html_mod.escape(to_label)}</th></tr>'
+                    f'<table class="diff" style="width:100%">'                    f'<tr><th colspan="4" style="padding:4px 6px;text-align:left;">'                    f'&#43; New file — {html_mod.escape(to_label)}</th></tr>'
                     f'{body}</table>'
                 )
             if not lines2:
@@ -319,7 +319,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
                     for line in lines1
                 )
                 return (
-                    f'<table class="diff" style="width:100%">'                    f'<tr><th colspan="4" style="padding:4px 6px;text-align:left;">'                    f'&#8722; Deleted file â€” {html_mod.escape(from_label)}</th></tr>'
+                    f'<table class="diff" style="width:100%">'                    f'<tr><th colspan="4" style="padding:4px 6px;text-align:left;">'                    f'&#8722; Deleted file — {html_mod.escape(from_label)}</th></tr>'
                     f'{body}</table>'
                 )
 
@@ -377,7 +377,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
             parts_html.append(
                 f'<details class="rtc-folder" open>'
                 f'<summary class="rtc-folder-sum">'
-                f'<span style="color:#0550ae;font-weight:600;">ðŸ“ {html_mod.escape(fname)}</span>'
+                f'<span style="color:#0550ae;font-weight:600;">📁 {html_mod.escape(fname)}</span>'
                 f'{badge_html}</summary>'
                 f'<div class="rtc-folder-body">{child_html}</div>'
                 f'</details>'
@@ -387,7 +387,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
             full_path = f'{path_prefix}{fname}'
             color     = STATUS_COLOR.get(fstatus, '#57606a')
             bg_row    = STATUS_BG.get(fstatus, 'transparent') if fstatus != 'unchanged' else 'transparent'
-            icon      = STATUS_ICON.get(fstatus, 'â—‹')
+            icon      = STATUS_ICON.get(fstatus, '○')
             esc_name  = html_mod.escape(fname)
 
             content_pair = fc_map.get(full_path) or {}
@@ -409,7 +409,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
                     diff_toggle = (
                         f'<details class="file-diff-details">'
                         f'<summary class="view-diff-btn" style="background:{color};">'
-                        f'â–¶ View Diff</summary>'
+                        f'▶ View Diff</summary>'
                         f'<div class="diff-panel">'
                         f'<div class="diff-snap-bar">'
                         f'<span>&#8592; {s1_display}</span>'
@@ -451,10 +451,10 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
         file_table = '''
         <div style="margin-top:24px;padding:16px 20px;background:#fff8c5;border:1px solid #d4a72c;
                     border-radius:6px;color:#9a6700;">
-          <strong>â„¹ File-level detail not available</strong><br>
+          <strong>ℹ File-level detail not available</strong><br>
           The RTC folder/file listing API did not return file data for this component.<br>
           The component is marked <strong>Different</strong> because the two baselines have
-          different UUIDs â€” baselines are immutable, so a different UUID means different content.
+          different UUIDs — baselines are immutable, so a different UUID means different content.
         </div>'''
 
     # Diffs are now embedded per-file inside the tree; no separate diff card needed
@@ -513,7 +513,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
         color:#57606a; font-size:11px; min-width:36px; text-align:right;
         padding-right:8px; user-select:none; }''' if _diff_active[0] else '')
 
-    # Mapping note â€” shown when this component was compared via a cross-name user mapping
+    # Mapping note — shown when this component was compared via a cross-name user mapping
     _mapped_snap2_name = cd.get('mapped_snap2_name', '')
     _mapping_note_html = ''
     if _mapped_snap2_name:
@@ -523,7 +523,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
             f'<td style="padding:8px 12px;font-size:12px;color:#6e40c9;">'
             f'This report compares <strong>{html_mod.escape(component_name)}</strong> (Snapshot&nbsp;1)'
             f' against <strong>{html_mod.escape(_mapped_snap2_name)}</strong> (Snapshot&nbsp;2)'
-            f' â€” matched by user-defined component mapping.</td></tr>'
+            f' — matched by user-defined component mapping.</td></tr>'
         )
 
     html_content = f'''<!DOCTYPE html>
@@ -551,7 +551,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
 </head>
 <body>
   <div class="header">
-    <h1>ðŸ” Component Diff Report</h1>
+    <h1>🔍 Component Diff Report</h1>
     <div class="sub">{html_mod.escape(component_name)}</div>
     <div class="sub">Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</div>
   </div>
@@ -560,7 +560,7 @@ def generate_snapshot_component_html(component_name, baseline1_uuid, baseline2_u
       <h3>Comparison Summary</h3>
       <table class="main-table" style="width:100%;border-collapse:collapse;font-size:13px;">
         <tr><td style="padding:8px 12px;width:160px;color:#57606a;font-weight:600;">Status</td>
-            <td style="padding:8px 12px;" class="status-diff">â— Different</td></tr>
+            <td style="padding:8px 12px;" class="status-diff">● Different</td></tr>
         <tr style="background:#f6f8fa;">
           <td style="padding:8px 12px;color:#57606a;font-weight:600;">Component</td>
           <td style="padding:8px 12px;font-family:monospace;">{html_mod.escape(component_name)}</td></tr>
@@ -684,10 +684,10 @@ def generate_beyond_compare_master_report(
     Generate a Beyond Compare-style master HTML report.
 
     Navigation:
-      Left sidebar  â†’ only Different/Added/Removed components
-      Click component â†’ see its folders with change counts
-      Click folder    â†’ see files inside that folder with status
-      Click file      â†’ synchronised side-by-side line diff
+      Left sidebar  → only Different/Added/Removed components
+      Click component → see its folders with change counts
+      Click folder    → see files inside that folder with status
+      Click file      → synchronised side-by-side line diff
 
     At the bottom of every component view the changeset / baseline section
     is always visible.
@@ -716,7 +716,7 @@ def generate_beyond_compare_master_report(
         'Removed in Snapshot 2':'#f85149',
     }
     FILE_STATUS_COLOR = {'modified':'#d29922','added':'#3fb950','removed':'#f85149','unchanged':'#8b949e'}
-    FILE_STATUS_ICON  = {'modified':'Â±','added':'+','removed':'âˆ’','unchanged':'â—‹'}
+    FILE_STATUS_ICON  = {'modified':'±','added':'+','removed':'−','unchanged':'○'}
 
     MAX_DIFF_ROWS  = 1200   # per file
     MAX_CHARS      = 120_000
@@ -1053,7 +1053,7 @@ const SERVER_URL = __SURL_JS__;
 const S1L        = __S1L_JS__;
 const S2L        = __S2L_JS__;
 
-// Build lookup: ci â†’ comp data
+// Build lookup: ci → comp data
 const BY_CI = {};
 COMPS.forEach(c => { BY_CI[c.ci] = c; });
 
@@ -1078,12 +1078,12 @@ function buildSidebar(){
   const removed = COMPS.filter(c=>c.status.includes('Removed'));
 
   if(diff.length){
-    html += `<div class="si-sep">Â± Different (${diff.length})</div>`;
+    html += `<div class="si-sep">± Different (${diff.length})</div>`;
     diff.forEach(c=>{
       const n = c.stats.modified+c.stats.added+c.stats.removed;
       html += `<div class="si" id="si_${c.ci}" onclick="selectComp(${c.ci})">
-        <span class="si-ico" style="color:#d29922">Â±</span>
-        <span class="si-nm" title="${esc(c.name)}">${esc(c.name.length>36?c.name.slice(0,36)+'â€¦':c.name)}</span>
+        <span class="si-ico" style="color:#d29922">±</span>
+        <span class="si-nm" title="${esc(c.name)}">${esc(c.name.length>36?c.name.slice(0,36)+'…':c.name)}</span>
         ${n?`<span class="si-cnt">${n}</span>`:''}
       </div>`;
     });
@@ -1093,16 +1093,16 @@ function buildSidebar(){
     added.forEach(c=>{
       html += `<div class="si" id="si_${c.ci}" onclick="selectComp(${c.ci})">
         <span class="si-ico" style="color:#3fb950">+</span>
-        <span class="si-nm" title="${esc(c.name)}">${esc(c.name.length>36?c.name.slice(0,36)+'â€¦':c.name)}</span>
+        <span class="si-nm" title="${esc(c.name)}">${esc(c.name.length>36?c.name.slice(0,36)+'…':c.name)}</span>
       </div>`;
     });
   }
   if(removed.length){
-    html += `<div class="si-sep">âˆ’ Removed (${removed.length})</div>`;
+    html += `<div class="si-sep">− Removed (${removed.length})</div>`;
     removed.forEach(c=>{
       html += `<div class="si" id="si_${c.ci}" onclick="selectComp(${c.ci})">
-        <span class="si-ico" style="color:#f85149">âˆ’</span>
-        <span class="si-nm" title="${esc(c.name)}">${esc(c.name.length>36?c.name.slice(0,36)+'â€¦':c.name)}</span>
+        <span class="si-ico" style="color:#f85149">−</span>
+        <span class="si-nm" title="${esc(c.name)}">${esc(c.name.length>36?c.name.slice(0,36)+'…':c.name)}</span>
       </div>`;
     });
   }
@@ -1132,10 +1132,10 @@ function setCompHdr(c){
   h.style.display='flex';
   const sc = {Different:'#d29922','Added in Snapshot 2':'#3fb950','Removed in Snapshot 2':'#f85149'}[c.status]||'#8b949e';
   let badges='';
-  if(c.stats.modified) badges+=`<span class="badge" style="background:#332200;color:#d29922">Â± ${c.stats.modified} Modified</span>`;
+  if(c.stats.modified) badges+=`<span class="badge" style="background:#332200;color:#d29922">± ${c.stats.modified} Modified</span>`;
   if(c.stats.added)    badges+=`<span class="badge" style="background:#122117;color:#3fb950">+ ${c.stats.added} Added</span>`;
-  if(c.stats.removed)  badges+=`<span class="badge" style="background:#2d0000;color:#f85149">âˆ’ ${c.stats.removed} Removed</span>`;
-  if(c.stats.unchanged)badges+=`<span class="badge" style="background:#1c2128;color:#8b949e">â—‹ ${c.stats.unchanged} Unchanged</span>`;
+  if(c.stats.removed)  badges+=`<span class="badge" style="background:#2d0000;color:#f85149">− ${c.stats.removed} Removed</span>`;
+  if(c.stats.unchanged)badges+=`<span class="badge" style="background:#1c2128;color:#8b949e">○ ${c.stats.unchanged} Unchanged</span>`;
   h.innerHTML = `<span class="comp-title" style="color:${sc}">${esc(c.name)}</span>${badges}`;
 }
 
@@ -1146,7 +1146,7 @@ function showView(id){
   if(v) v.classList.add('active');
 }
 
-// â”€â”€ Select component â†’ show folder list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â”€â”€ Select component → show folder list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function selectComp(ci){
   selCI     = ci;
   selFolder = null;
@@ -1169,7 +1169,7 @@ function selectComp(ci){
 
   if(!c.has_files){
     content.innerHTML = `<div style="padding:20px;color:#8b949e;font-size:12px;">
-      â„¹ No file-level detail returned by the RTC API for this component.<br>
+      ℹ No file-level detail returned by the RTC API for this component.<br>
       The component is marked <strong>Different</strong> because the baseline UUIDs differ.
     </div>`;
     showView('view-folders');
@@ -1193,16 +1193,16 @@ function selectComp(ci){
     const nchg = nm+na+nr;
     const label = fkey==='' ? '/ (root)' : fkey;
     let counts = '';
-    if(nm) counts+=`<span class="fc-m">Â± ${nm} modified</span>`;
+    if(nm) counts+=`<span class="fc-m">± ${nm} modified</span>`;
     if(na) counts+=`<span class="fc-a">+ ${na} added</span>`;
-    if(nr) counts+=`<span class="fc-r">âˆ’ ${nr} removed</span>`;
-    if(nu) counts+=`<span class="fc-u">â—‹ ${nu} unchanged</span>`;
+    if(nr) counts+=`<span class="fc-r">− ${nr} removed</span>`;
+    if(nu) counts+=`<span class="fc-u">○ ${nu} unchanged</span>`;
     const fkEsc = esc(fkey).replace(/'/g,"\\'");
     html += `<div class="fl-item" onclick="selectFolder(${ci},'${fkEsc}')">
-      <span class="fl-icon">ðŸ“</span>
+      <span class="fl-icon">📁</span>
       <div class="fl-info">
         <div class="fl-name">${esc(label)}</div>
-        <div class="fl-counts">${counts||'<span class="fc-u">â—‹ no changes</span>'}</div>
+        <div class="fl-counts">${counts||'<span class="fc-u">○ no changes</span>'}</div>
       </div>
       ${nchg?`<span class="badge" style="background:#30363d;color:#cba6f7">${nchg}</span>`:''}
     </div>`;
@@ -1212,7 +1212,7 @@ function selectComp(ci){
   showView('view-folders');
 }
 
-// â”€â”€ Select folder â†’ show file list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â”€â”€ Select folder → show file list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function selectFolder(ci, fkey){
   selCI     = ci;
   selFolder = fkey;
@@ -1237,7 +1237,7 @@ function selectFolder(ci, fkey){
   let html = '';
   files.forEach(f=>{
     const col = {modified:'#d29922',added:'#3fb950',removed:'#f85149',unchanged:'#8b949e'}[f.status]||'#8b949e';
-    const ico = {modified:'Â±',added:'+',removed:'âˆ’',unchanged:'â—‹'}[f.status]||'â—‹';
+    const ico = {modified:'±',added:'+',removed:'−',unchanged:'○'}[f.status]||'○';
     const bg  = {modified:'#332200',added:'#122117',removed:'#2d0000'}[f.status]||'';
     const fpE = esc(f.path).replace(/'/g,"\\'");
     const clickable = f.status!=='unchanged';
@@ -1253,7 +1253,7 @@ function selectFolder(ci, fkey){
   showView('view-folders');
 }
 
-// â”€â”€ Select file â†’ show side-by-side diff â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â”€â”€ Select file → show side-by-side diff â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function selectFile(ci, fpath, fstatus){
   selCI   = ci;
   selFile = fpath;
@@ -1280,8 +1280,8 @@ function selectFile(ci, fpath, fstatus){
   document.getElementById('diff-hdr').innerHTML = `
     <span class="diff-fname">${esc(fpath)}</span>
     <span class="diff-status" style="background:${bg};color:${col}">${fstatus}</span>
-    <span class="diff-snaplbl">â† ${esc(S1L)}</span>
-    <span class="diff-snaplbl">${esc(S2L)} â†’</span>
+    <span class="diff-snaplbl">← ${esc(S1L)}</span>
+    <span class="diff-snaplbl">${esc(S2L)} →</span>
   `;
 
   // Look up diff data
@@ -1291,13 +1291,13 @@ function selectFile(ci, fpath, fstatus){
   const msg     = document.getElementById('diff-msg');
 
   if(!fd){
-    msg.textContent = 'No file content available â€” could not be fetched from the server.';
+    msg.textContent = 'No file content available — could not be fetched from the server.';
     msg.style.display='flex'; wrap.innerHTML=''; showView('view-diff'); return;
   }
   if(fd.bin){
     const reason = fd.reason==='too_large'
       ? 'File is too large for inline diff. Open the per-component HTML report.'
-      : 'Binary file â€” line-by-line diff is not available for binary files.';
+      : 'Binary file — line-by-line diff is not available for binary files.';
     msg.textContent = reason;
     msg.style.display='flex'; wrap.innerHTML=''; showView('view-diff'); return;
   }
@@ -1309,9 +1309,9 @@ function selectFile(ci, fpath, fstatus){
   // Build side-by-side table
   let thead = `<div class="diff-hdr-row">
     <div class="diff-hdr-cell">#</div>
-    <div class="diff-hdr-cell">â† ${esc(S1L)}</div>
+    <div class="diff-hdr-cell">← ${esc(S1L)}</div>
     <div class="diff-hdr-cell">#</div>
-    <div class="diff-hdr-cell">${esc(S2L)} â†’</div>
+    <div class="diff-hdr-cell">${esc(S2L)} →</div>
   </div>`;
 
   let tbody = '';
@@ -1344,7 +1344,7 @@ function selectFile(ci, fpath, fstatus){
 
   if(trunc){
     tbody += `<div style="padding:8px 14px;background:#1d2d3e;color:#79c0ff;font-size:11px;">
-      âš  Diff truncated â€” file is large. Open the per-component HTML report for the full diff.
+      âš  Diff truncated — file is large. Open the per-component HTML report for the full diff.
     </div>`;
   }
 
@@ -1365,7 +1365,7 @@ function setChangesets(c){
       ? `<a href="${esc(href)}" target="_blank" class="cs-link">${nm}</a>`
       : `<code class="cs-link">${nm}</code>`;
     const sub = info.author
-      ? `<br><small style="color:#8b949e">${esc(info.author)} Â· ${esc(info.timestamp)}</small>` : '';
+      ? `<br><small style="color:#8b949e">${esc(info.author)} · ${esc(info.timestamp)}</small>` : '';
     const com = info.comment
       ? `<br><span style="color:#8b949e;font-size:11px">${esc(info.comment.slice(0,200))}</span>` : '';
     return `<div class="bl-row"><div class="bl-lbl">${esc(label)}</div>
@@ -1391,7 +1391,7 @@ function setChangesets(c){
               ? `<a href="${esc(wi.href)}" target="_blank" class="wi-link">#${esc(wi.n)}</a>`
               : `<span class="wi-link">#${esc(wi.n)}</span>`;
           }).join(' ')
-        : 'â€”';
+        : '—';
       html += `<tr><td>${csLink}</td><td>${esc(cs.author)}</td>
         <td style="white-space:pre-wrap;font-size:11px">${esc(cs.comment)}</td>
         <td>${wiCells}</td><td style="white-space:nowrap">${esc(cs.ts)}</td></tr>`;
@@ -1406,7 +1406,7 @@ function setChangesets(c){
 function toggleCS(){
   csOpen = !csOpen;
   document.getElementById('cs-body').style.display = csOpen ? '' : 'none';
-  document.getElementById('cs-toggle').querySelector('.cs-arr').textContent = csOpen ? 'â–¾' : 'â–¸';
+  document.getElementById('cs-toggle').querySelector('.cs-arr').textContent = csOpen ? '▾' : '▸';
 }
 
 // â”€â”€ Sidebar search â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1451,7 +1451,7 @@ if(first){
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1.0">
-  <title>Beyond Compare: {s1e} â†’ {s2e}</title>
+  <title>Beyond Compare: {s1e} → {s2e}</title>
   <style>{css}</style>
 </head>
 <body>
@@ -1459,13 +1459,13 @@ if(first){
 
   <!-- Header -->
   <div id="hdr">
-    <h1>ðŸ” Beyond Compare â€” Master Snapshot Report</h1>
-    <div class="hdr-sub">{s1e} &nbsp;â†’&nbsp; {s2e} &nbsp;Â·&nbsp; {now_str}</div>
+    <h1>🔍 Beyond Compare — Master Snapshot Report</h1>
+    <div class="hdr-sub">{s1e} &nbsp;→&nbsp; {s2e} &nbsp;·&nbsp; {now_str}</div>
     <div class="hdr-stats">
-      <span class="badge" style="background:#332200;color:#d29922">Â± {n_diff} Different</span>
+      <span class="badge" style="background:#332200;color:#d29922">± {n_diff} Different</span>
       <span class="badge" style="background:#122117;color:#3fb950">+ {n_added} Added</span>
-      <span class="badge" style="background:#2d0000;color:#f85149">âˆ’ {n_removed} Removed</span>
-      <span class="badge" style="background:#1c2128;color:#8b949e">â—‹ {n_ident} Identical (hidden)</span>
+      <span class="badge" style="background:#2d0000;color:#f85149">− {n_removed} Removed</span>
+      <span class="badge" style="background:#1c2128;color:#8b949e">○ {n_ident} Identical (hidden)</span>
       <span class="badge" style="background:#1c2128;color:#e6edf3">Total: {total}</span>
     </div>
   </div>
@@ -1476,7 +1476,7 @@ if(first){
     <!-- Sidebar: only changed components -->
     <div id="sb">
       <div id="sb-hd">Changed Components ({n_diff + n_added + n_removed})</div>
-      <div id="sb-srch"><input type="text" placeholder="Filterâ€¦"></div>
+      <div id="sb-srch"><input type="text" placeholder="Filter…"></div>
       <div id="sb-list"></div>
     </div>
 
@@ -1504,21 +1504,21 @@ if(first){
 
       <!-- VIEW: welcome -->
       <div id="welcome" class="view" style="display:none;flex-direction:column">
-        <div style="font-size:48px">ðŸ”</div>
+        <div style="font-size:48px">🔍</div>
         <h2>Select a component</h2>
         <p>Choose a changed component from the left sidebar.</p>
         <div class="wbadges">
-          <span class="badge" style="background:#332200;color:#d29922">Â± {n_diff} Different</span>
+          <span class="badge" style="background:#332200;color:#d29922">± {n_diff} Different</span>
           <span class="badge" style="background:#122117;color:#3fb950">+ {n_added} Added</span>
-          <span class="badge" style="background:#2d0000;color:#f85149">âˆ’ {n_removed} Removed</span>
+          <span class="badge" style="background:#2d0000;color:#f85149">− {n_removed} Removed</span>
         </div>
       </div>
 
       <!-- Changeset section (always at bottom) -->
       <div id="cs-section" style="display:none">
         <div id="cs-toggle" onclick="toggleCS()">
-          <span class="cs-arr">â–¾</span>
-          ðŸ”— Baselines &amp; Changesets
+          <span class="cs-arr">▾</span>
+          🔗 Baselines &amp; Changesets
         </div>
         <div id="cs-body"></div>
       </div>
