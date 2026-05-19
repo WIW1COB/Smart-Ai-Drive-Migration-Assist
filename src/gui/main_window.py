@@ -2104,12 +2104,15 @@ Reports generated:
                 os.makedirs(comp_output_dir, exist_ok=True)
 
                 try:
+                    safe_comp_name = comp_name.replace('.', '_').replace('/', '_')
                     cmp_result = _compare_folders(
                         temp_comp_dir,
                         local_folder,
                         progress_callback=None,
                         custom_mappings=None,
                         rtc_info=None,
+                        output_dir=comp_output_dir,
+                        report_name=f"Migration_Analysis_Report_{safe_comp_name}",
                     )
 
                     # Override display names

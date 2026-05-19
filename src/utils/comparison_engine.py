@@ -175,7 +175,7 @@ def process_file_comparison(args):
         ]
  
  
-def compare_folders(folder1, folder2, progress_callback=None, custom_mappings=None, rtc_info=None):
+def compare_folders(folder1, folder2, progress_callback=None, custom_mappings=None, rtc_info=None, output_dir=None, report_name=None):
     """
     Compare two folders and generate comparison reports.
    
@@ -185,6 +185,9 @@ def compare_folders(folder1, folder2, progress_callback=None, custom_mappings=No
         progress_callback (callable, optional): Callback(current, total, message) for progress updates
         custom_mappings (dict, optional): Custom file mappings {file1_rel_path: file2_rel_path}
         rtc_info (dict, optional): RTC integration info with keys: enabled, username, password, etc.
+        output_dir (str, optional): Directory to write CSV/Excel/HTML reports. Defaults to Migration_Analysis_Reports/.
+        report_name (str, optional): Base filename (without extension) for CSV/Excel reports.
+                                     Defaults to 'Migration_Analysis_Report'.
        
     Returns:
         dict: Result dictionary with keys:
@@ -196,11 +199,13 @@ def compare_folders(folder1, folder2, progress_callback=None, custom_mappings=No
             - 'output_dir': path to output directory
     """
     # Create output directory
-    output_dir = os.path.join(os.getcwd(), "Migration_Analysis_Reports")
+    if not output_dir:
+        output_dir = os.path.join(os.getcwd(), "Migration_Analysis_Reports")
     os.makedirs(output_dir, exist_ok=True)
-   
-    csv_report_path = os.path.join(output_dir, "Migration_Analysis_Report.csv")
-    excel_report_path = os.path.join(output_dir, "Migration_Analysis_Report.xlsx")
+
+    base_name = report_name if report_name else "Migration_Analysis_Report"
+    csv_report_path = os.path.join(output_dir, f"{base_name}.csv")
+    excel_report_path = os.path.join(output_dir, f"{base_name}.xlsx")
    
     # Handle ZIP folder inputs - extract if needed
     temp_dirs_to_cleanup = []
