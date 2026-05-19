@@ -287,13 +287,13 @@ class MigrationAnalysisGUI:
         ).pack()
     
     def create_hybrid_input_frame(self):
-        """Create online → offline input section (RTC URL + Local Folder)"""
+        """Create online → offline input section (RTC Snapshot + Local Root Folder)"""
         self.hybrid_input_frame = tk.Frame(self.root, bg="#EAF3FB")
         
         # Info label
         tk.Label(
             self.hybrid_input_frame,
-            text="🔄 Online → Offline: Compare RTC snapshot with local folder",
+            text="🔄 Online → Offline: Fetch RTC snapshot, select component, compare with local folder hierarchy",
             bg="#EAF3FB",
             font=("Segoe UI", 9, "italic"),
             fg="#666666"
@@ -301,7 +301,7 @@ class MigrationAnalysisGUI:
         
         tk.Label(
             self.hybrid_input_frame,
-            text="Platform Snapshot/Workspace URL or UUID (Online):",
+            text="Snapshot URL or UUID (Online):",
             bg="#EAF3FB",
             font=("Segoe UI", 11)
         ).pack(pady=(5, 5))
@@ -311,7 +311,7 @@ class MigrationAnalysisGUI:
         
         tk.Label(
             self.hybrid_input_frame,
-            text="📝 From RTC web: Copy snapshot URL or UUID",
+            text="📝 From RTC web: Copy snapshot URL (with id=_xxxxx) or just the UUID",
             bg="#EAF3FB",
             font=("Segoe UI", 8),
             fg="gray"
@@ -319,7 +319,7 @@ class MigrationAnalysisGUI:
         
         tk.Label(
             self.hybrid_input_frame,
-            text="Project Folder or ZIP (Offline):",
+            text="Local Root Folder (component folders live here):",
             bg="#EAF3FB",
             font=("Segoe UI", 11)
         ).pack(pady=(10, 5))
@@ -332,8 +332,20 @@ class MigrationAnalysisGUI:
             text="Browse",
             bg="#007B3E",
             fg="white",
-            command=lambda: self.browse_folder(self.hybrid_folder_entry)
+            command=lambda: self._browse_folder_only(self.hybrid_folder_entry)
         ).pack(pady=5)
+        
+        tk.Label(
+            self.hybrid_input_frame,
+            text=(
+                "📂 Component name  rb.as.ms.fiatgen.cswpr  →  <root>/rb/as/ms/fiatgen/cswpr\n"
+                "   Tool will prompt you to select which snapshot component(s) to compare."
+            ),
+            bg="#EAF3FB",
+            font=("Segoe UI", 8),
+            fg="#444444",
+            justify="left"
+        ).pack(pady=(2, 0))
     
     def create_interface_check_frame(self):
         """Create interface list check input section"""
@@ -548,6 +560,31 @@ class MigrationAnalysisGUI:
         elif mode == "interface_check":
             self.interface_check_frame.pack(fill="x", before=self.rtc_frame)
     
+    def _browse_folder_only(self, entry_field):
+        """Browse for a folder only (no ZIP option, for root folder selection)."""
+        folder_selected = filedialog.askdirectory(title="Select Local Root Folder")
+        if folder_selected:
+            entry_field.delete(0, tk.END)
+            entry_field.insert(0, folder_selected)
+
+    @staticmethod
+    def _resolve_local_folder_for_component(root_folder, component_name):
+        """
+        Resolve a local folder path for a component by splitting on '.'.
+
+        Example:
+            root = C:/work/myproject
+            component = rb.as.ms.fiatgen.cswpr
+            result  = C:/work/myproject/rb/as/ms/fiatgen/cswpr
+
+        Returns the resolved path string (regardless of whether it exists on disk).
+        """
+        parts = component_name.split('.')
+        path = root_folder
+        for part in parts:
+            path = os.path.join(path, part)
+        return path
+
     def browse_folder(self, entry_field):
         """Browse for folder or ZIP file"""
         choice = messagebox.askyesnocancel(
@@ -632,21 +669,22 @@ class MigrationAnalysisGUI:
                 self.start_snapshot_comparison(url1, url2)
         
         elif mode == "online_offline":
-            # Online → Offline: RTC URL + Local Folder
+            # Online → Offline: RTC Snapshot + Local Root Folder
             url = self.hybrid_url_entry.get().strip()
             folder = self.hybrid_folder_entry.get().strip()
             
             if not url or not folder:
                 messagebox.showerror(
                     "Missing Input",
-                    "Please enter RTC snapshot URL/UUID and select a local folder."
+                    "Please enter RTC snapshot URL/UUID and select a local root folder."
                 )
                 return
             
-            if not os.path.exists(folder):
+            if not os.path.isdir(folder):
                 messagebox.showerror(
                     "Invalid Path",
-                    "The local folder path does not exist."
+                    "The local root folder path does not exist or is not a directory.\n\n"
+                    "Please select a folder that contains the component sub-directories."
                 )
                 return
             
@@ -1752,220 +1790,630 @@ Reports generated:
         )
         thread.start()
     
-    def _hybrid_comparison_thread(self, snapshot_url, local_folder):
+    def _hybrid_comparison_thread(self, snapshot_url, local_root_folder):
         """
-        Background thread for hybrid comparison (Online → Offline)
-        
-        Steps:
-        1. Validate inputs
-        2. Connect to RTC
-        3. Fetch snapshot and download files to temp folder
-        4. Compare downloaded snapshot with local folder
-        5. Generate reports (same as offline→offline)
+        Background thread for Online → Offline comparison.
+
+        Flow:
+        1.  Connect to RTC and validate credentials.
+        2.  Fetch all components from the provided snapshot.
+        3.  Show component-selection dialog – each entry shows the resolved
+            local folder path (component name split on '.').
+        4.  For every selected component:
+            a. Resolve the local folder:
+               rb.as.ms.fiatgen.cswpr → <root>/rb/as/ms/fiatgen/cswpr
+            b. Fetch the baseline file list from the online component via SCM CLI.
+            c. Download each file's content to a temporary folder.
+            d. Run compare_folders(temp_component_dir, local_resolved_dir).
+            e. Collect the results.
+        5.  Generate and open a combined HTML master report.
         """
-        temp_snapshot_folder = None
-        
+        temp_dirs_to_cleanup = []
+
         try:
             logger.info("=" * 80)
             logger.info("HYBRID COMPARISON STARTED (Online → Offline)")
             logger.info(f"RTC Snapshot: {snapshot_url}")
-            logger.info(f"Local Folder: {local_folder}")
+            logger.info(f"Local Root Folder: {local_root_folder}")
             logger.info("=" * 80)
-            
-            # Get credentials
+
+            # ── Credentials ────────────────────────────────────────────────
             username = self.rtc_username.get()
             password = self.rtc_password.get()
             server_url = self.rtc_server_url.get()
-            
-            # Validate credentials
+
             self.root.after(0, lambda: self._update_progress(5, "Validating credentials..."))
             if not username or not password:
-                error_msg = "Username and password are required"
-                logger.error(f"Validation failed: {error_msg}")
-                self.root.after(0, lambda: messagebox.showerror('Validation Error', error_msg))
+                self.root.after(0, lambda: messagebox.showerror(
+                    'Validation Error', "Username and password are required"))
                 self.root.after(0, lambda: self.compare_btn.config(state='normal'))
                 self.root.after(0, lambda: self._update_progress(0, "Ready"))
                 return
-            
-            # Test connection
+
+            # ── RTC connection ──────────────────────────────────────────────
             self.root.after(0, lambda: self._update_progress(10, "🔗 Testing RTC connection..."))
             rtc_conn, error_msg = get_rtc_connection(username, password, server_url)
-            
+
             if not rtc_conn:
                 detailed_error = self._format_connection_error(error_msg)
                 logger.error(f"Connection failed: {error_msg}")
-                self.root.after(0, lambda: messagebox.showerror('Connection Error', detailed_error))
+                self.root.after(0, lambda: messagebox.showerror(
+                    'Connection Error', detailed_error))
                 self.root.after(0, lambda: self.compare_btn.config(state='normal'))
                 self.root.after(0, lambda: self._update_progress(0, "Ready"))
                 return
-            
+
             self._update_cached_credentials_after_login(username, password, server_url)
-            
-            # Extract snapshot UUID
-            self.root.after(0, lambda: self._update_progress(15, "Validating snapshot URL..."))
+
+            # ── Extract snapshot UUID ───────────────────────────────────────
+            self.root.after(0, lambda: self._update_progress(
+                15, "Validating snapshot URL..."))
             snapshot_uuid = rtc_conn.extract_snapshot_uuid(snapshot_url)
-            
+
             if not snapshot_uuid:
-                error_msg = "Could not extract snapshot UUID. Please verify the URL/UUID is correct."
-                logger.error(error_msg)
-                self.root.after(0, lambda: messagebox.showerror('Invalid Input', error_msg))
+                self.root.after(0, lambda: messagebox.showerror(
+                    'Invalid Input',
+                    "Could not extract snapshot UUID.\n"
+                    "Please verify the URL/UUID is correct."))
                 self.root.after(0, lambda: self.compare_btn.config(state='normal'))
                 self.root.after(0, lambda: self._update_progress(0, "Ready"))
                 return
-            
+
             logger.info(f"Snapshot UUID: {snapshot_uuid}")
-            
-            # Create temp folder for snapshot
-            import tempfile
-            temp_snapshot_folder = tempfile.mkdtemp(prefix="rtc_snapshot_")
-            logger.info(f"Temp folder created: {temp_snapshot_folder}")
-            
-            # Fetch snapshot components and download files
-            self.root.after(0, lambda: self._update_progress(20, "⬇️ Fetching snapshot components..."))
-            
-            def progress_callback(current, total, message):
-                # Map progress to 20-70% range
+
+            # ── Fetch snapshot components ───────────────────────────────────
+            self.root.after(0, lambda: self._update_progress(
+                20, "⬇️ Fetching snapshot components..."))
+
+            def _snap_progress(current, total, message):
                 if total > 0:
-                    progress_pct = 20 + ((current / total) * 50)
-                    self.root.after(0, lambda p=progress_pct, m=message: self._update_progress(p, m))
-            
+                    pct = 20 + int((current / total) * 25)
+                    self.root.after(0, lambda p=pct, m=message:
+                                    self._update_progress(p, m))
+
             snapshot_data = rtc_conn.fetch_snapshot_components(
                 snapshot_uuid,
                 snapshot_name="RTC Snapshot",
-                progress_callback=progress_callback
+                progress_callback=_snap_progress,
             )
-            
-            # Handle dict return format
+
             if isinstance(snapshot_data, dict):
-                components = snapshot_data.get('components', [])
+                components    = snapshot_data.get('components', [])
                 snapshot_name = snapshot_data.get('name', 'RTC Snapshot')
             else:
-                components = snapshot_data if isinstance(snapshot_data, list) else []
+                components    = snapshot_data if isinstance(snapshot_data, list) else []
                 snapshot_name = 'RTC Snapshot'
-            
+
             if not components:
-                error_msg = f"No components found in snapshot {snapshot_uuid}"
-                logger.error(error_msg)
-                self.root.after(0, lambda: messagebox.showerror('Fetch Error', error_msg))
+                self.root.after(0, lambda: messagebox.showerror(
+                    'Fetch Error',
+                    f"No components found in snapshot.\n"
+                    "Possible reasons:\n"
+                    "• Invalid snapshot UUID\n"
+                    "• Permission denied\n"
+                    "• Network error"))
                 self.root.after(0, lambda: self.compare_btn.config(state='normal'))
                 self.root.after(0, lambda: self._update_progress(0, "Ready"))
                 return
-            
+
             logger.info(f"✓ Fetched {len(components)} components")
-            
-            # Download files from snapshot to temp folder
-            self.root.after(0, lambda: self._update_progress(70, f"📥 Downloading {len(components)} components..."))
-            
-            downloaded_count = 0
-            total_files_downloaded = 0
-            
-            for idx, component in enumerate(components, 1):
-                component_name = component.get('name', 'Unknown')
-                files = component.get('files', [])
-                
-                if not files:
-                    continue
-                
-                # Create component directory in temp folder
-                component_dir = os.path.join(temp_snapshot_folder, component_name)
-                os.makedirs(component_dir, exist_ok=True)
-                
-                # Download files (sample up to 100 per component to avoid huge downloads)
-                files_to_download = files[:100]  # Limit for performance
-                
-                for file_info in files_to_download:
-                    try:
-                        file_path = file_info.get('path', '')
-                        item_id = file_info.get('item_id')
-                        baseline_id = file_info.get('baseline_id')
-                        
-                        if not item_id or not baseline_id:
-                            continue
-                        
-                        # Download file content
-                        content = rtc_conn.download_file_content(item_id, baseline_id)
-                        
-                        if content:
-                            # Save to temp folder
-                            full_path = os.path.join(component_dir, file_path.replace('/', os.sep))
-                            os.makedirs(os.path.dirname(full_path), exist_ok=True)
-                            
-                            # Write content (handle binary/text)
-                            if isinstance(content, bytes):
-                                with open(full_path, 'wb') as f:
-                                    f.write(content)
-                            else:
-                                with open(full_path, 'w', encoding='utf-8', errors='replace') as f:
-                                    f.write(content)
-                            
-                            total_files_downloaded += 1
-                    
-                    except Exception as e:
-                        logger.warning(f"Failed to download {file_path}: {e}")
-                        continue
-                
-                downloaded_count += 1
-                progress_pct = 70 + ((downloaded_count / len(components)) * 15)
-                self.root.after(0, lambda p=progress_pct, c=downloaded_count, t=len(components): 
-                               self._update_progress(p, f"📥 Downloaded {c}/{t} components ({total_files_downloaded} files)"))
-            
-            logger.info(f"✓ Downloaded {total_files_downloaded} files from {downloaded_count} components")
-            
-            # Now run folder comparison between temp snapshot folder and local folder
-            self.root.after(0, lambda: self._update_progress(85, "📊 Comparing snapshot with local folder..."))
-            
-            # Use the same comparison engine as offline→offline mode
-            from src.utils.comparison_engine import compare_folders
-            
-            def comparison_progress(current, total, message):
-                if total > 0:
-                    progress_pct = 85 + ((current / total) * 10)
-                    self.root.after(0, lambda p=progress_pct, m=message: self._update_progress(p, m))
-            
-            result = compare_folders(
-                temp_snapshot_folder,
-                local_folder,
-                progress_callback=comparison_progress,
-                custom_mappings=None,
-                rtc_info=None
-            )
-            
-            if result.get('success'):
-                # Update display names for better clarity
-                result['folder1_display'] = f"{snapshot_name} (RTC)"
-                result['folder2_display'] = os.path.basename(local_folder)
-                
-                # Show results
-                self.root.after(0, lambda: self._update_progress(98, "✅ Opening results..."))
-                self.root.after(0, lambda r=result: self.on_comparison_complete(r))
-                
-                logger.info("=" * 80)
-                logger.info("HYBRID COMPARISON COMPLETED SUCCESSFULLY")
-                logger.info("=" * 80)
-            else:
-                error_msg = result.get('error', 'Unknown error during comparison')
-                logger.error(f"Comparison failed: {error_msg}")
-                self.root.after(0, lambda e=error_msg: messagebox.showerror('Comparison Failed', f"Error: {e}"))
+
+            # ── Component selection dialog ──────────────────────────────────
+            self.root.after(0, lambda: self._update_progress(
+                48, "📋 Opening component selection dialog..."))
+
+            from src.gui.dialogs import show_hybrid_component_selection_dialog
+            import threading as _threading
+
+            dialog_event = _threading.Event()
+            selection_result = {'canceled': True, 'selected': []}
+
+            def _show_dialog():
+                nonlocal selection_result
+                try:
+                    selection_result = show_hybrid_component_selection_dialog(
+                        components, local_root_folder)
+                except Exception as _de:
+                    logger.error(f"Component selection dialog error: {_de}", exc_info=True)
+                    selection_result = {'canceled': True, 'selected': []}
+                finally:
+                    dialog_event.set()
+
+            self.root.after(0, _show_dialog)
+            if not dialog_event.wait(timeout=600):
+                self.root.after(0, lambda: messagebox.showwarning(
+                    'Timeout', 'Component selection timed out.'))
                 self.root.after(0, lambda: self.compare_btn.config(state='normal'))
                 self.root.after(0, lambda: self._update_progress(0, "Ready"))
-            
+                return
+
+            if selection_result['canceled']:
+                logger.info("User cancelled component selection.")
+                self.root.after(0, lambda: messagebox.showinfo(
+                    'Cancelled', 'Comparison cancelled.'))
+                self.root.after(0, lambda: self.compare_btn.config(state='normal'))
+                self.root.after(0, lambda: self._update_progress(0, "Ready"))
+                return
+
+            selected = selection_result['selected']   # list of enriched comp dicts
+            logger.info(f"User selected {len(selected)} component(s).")
+
+            # ── Per-component download + compare ───────────────────────────
+            from src.utils.comparison_engine import compare_folders as _compare_folders
+            import tempfile, shutil
+
+            # Timestamped output directory
+            from datetime import datetime as _dt
+            timestamp = _dt.now().strftime("%Y%m%d_%H%M%S")
+            base_results_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(
+                    os.path.abspath(__file__)))),
+                "Snapshot_Comparison_Results")
+            output_dir = os.path.join(
+                base_results_dir, f"hybrid_{timestamp}")
+            os.makedirs(output_dir, exist_ok=True)
+
+            all_comp_results = []   # list of dicts: {name, local_folder, result}
+            total_selected   = len(selected)
+
+            for comp_idx, comp_entry in enumerate(selected, 1):
+                comp_name    = comp_entry.get('name', 'Unknown')
+                local_folder = comp_entry.get('local_folder', '')
+                baseline_uuid = (comp_entry.get('baseline_uuid', '')
+                                 or comp_entry.get('uuid', ''))
+
+                step_pct = 50 + int((comp_idx / total_selected) * 40)
+
+                # ── Validate local folder ───────────────────────────────
+                if not os.path.isdir(local_folder):
+                    resolved = self._resolve_local_folder_for_component(
+                        local_root_folder, comp_name)
+                    if os.path.isdir(resolved):
+                        local_folder = resolved
+                    else:
+                        logger.warning(
+                            f"[{comp_name}] Local folder not found: {local_folder}\n"
+                            f"  Resolved path: {resolved}")
+                        all_comp_results.append({
+                            'name': comp_name,
+                            'local_folder': local_folder,
+                            'result': None,
+                            'error': (
+                                f"Local folder not found.\n"
+                                f"Expected: {resolved}\n"
+                                f"Check that the root folder contains the correct "
+                                f"sub-directory structure for '{comp_name}'."
+                            ),
+                        })
+                        continue
+
+                self.root.after(0, lambda p=step_pct, n=comp_name:
+                                self._update_progress(
+                                    p,
+                                    f"[{comp_idx}/{total_selected}] "
+                                    f"Downloading online files for: {n}"))
+
+                # ── Fetch online file list for this component ───────────
+                if not baseline_uuid:
+                    logger.warning(f"[{comp_name}] No baseline UUID – skipping download")
+                    all_comp_results.append({
+                        'name': comp_name,
+                        'local_folder': local_folder,
+                        'result': None,
+                        'error': "No baseline UUID available for this component.",
+                    })
+                    continue
+
+                logger.info(f"[{comp_name}] Fetching baseline structure "
+                            f"(uuid={baseline_uuid[:16]}...)")
+                online_structure = rtc_conn.fetch_baseline_folder_structure(
+                    baseline_uuid, comp_name)
+                online_files = online_structure.get('files', [])
+
+                logger.info(f"[{comp_name}] Online file list: {len(online_files)} file(s)")
+
+                # ── Create temp folder and download files ───────────────
+                temp_comp_dir = tempfile.mkdtemp(prefix=f"hybrid_{comp_name[:20]}_")
+                temp_dirs_to_cleanup.append(temp_comp_dir)
+
+                if online_files:
+                    downloaded = 0
+                    for fi in online_files:
+                        file_path = fi.get('path', fi.get('name', ''))
+                        if not file_path:
+                            continue
+                        content = rtc_conn.fetch_file_content_from_baseline(
+                            baseline_uuid, file_path, comp_name)
+                        if content is not None:
+                            dest = os.path.join(
+                                temp_comp_dir,
+                                file_path.replace('/', os.sep).replace('\\', os.sep))
+                            os.makedirs(os.path.dirname(dest), exist_ok=True)
+                            try:
+                                with open(dest, 'w', encoding='utf-8',
+                                          errors='replace') as fh:
+                                    fh.write(content)
+                                downloaded += 1
+                            except Exception as _we:
+                                logger.warning(f"  Write error {file_path}: {_we}")
+                    logger.info(f"[{comp_name}] Downloaded {downloaded}/{len(online_files)} files")
+                else:
+                    logger.warning(
+                        f"[{comp_name}] No files returned from baseline structure fetch.\n"
+                        "  Possible causes: SCM CLI not installed / LSCM_PATH not configured.\n"
+                        "  Comparison will proceed with empty online side – all local files "
+                        "will appear as 'Only in Project'.")
+
+                # ── Compare temp (online) vs local folder ───────────────
+                self.root.after(0, lambda p=step_pct + 2, n=comp_name:
+                                self._update_progress(
+                                    p,
+                                    f"[{comp_idx}/{total_selected}] "
+                                    f"Comparing: {n}"))
+
+                comp_output_dir = os.path.join(output_dir, comp_name.replace('.', '_'))
+                os.makedirs(comp_output_dir, exist_ok=True)
+
+                try:
+                    cmp_result = _compare_folders(
+                        temp_comp_dir,
+                        local_folder,
+                        progress_callback=None,
+                        custom_mappings=None,
+                        rtc_info=None,
+                    )
+
+                    # Override display names
+                    if cmp_result.get('success'):
+                        cmp_result['folder1_display'] = (
+                            f"{comp_name} (RTC snapshot: {snapshot_name})")
+                        cmp_result['folder2_display'] = (
+                            f"{comp_name} (Local: {local_folder})")
+
+                    # ── Generate per-component HTML diff report ─────────
+                    comp_html_path = None
+                    if cmp_result.get('success'):
+                        try:
+                            from src.utils.diff_utils import generate_hybrid_component_html
+                            html_dir = os.path.join(comp_output_dir, 'html_diffs')
+                            comp_html_path = generate_hybrid_component_html(
+                                component_name=comp_name,
+                                compare_results=cmp_result['results'],
+                                temp_online_dir=temp_comp_dir,
+                                local_folder_dir=local_folder,
+                                output_dir=html_dir,
+                                snap1_label=f"{comp_name} — RTC snapshot: {snapshot_name}",
+                                snap2_label=f"{comp_name} — Local: {os.path.basename(local_folder)}",
+                            )
+                            if comp_html_path:
+                                # Also update report_paths so results viewer can link to it
+                                cmp_result.setdefault('report_paths', {})
+                                cmp_result['report_paths']['html'] = comp_html_path
+                                logger.info(f"[{comp_name}] HTML diff report: {comp_html_path}")
+                            else:
+                                logger.warning(f"[{comp_name}] HTML diff generation returned None")
+                        except Exception as _he:
+                            logger.warning(f"[{comp_name}] HTML diff generation error: {_he}",
+                                           exc_info=True)
+
+                    all_comp_results.append({
+                        'name': comp_name,
+                        'local_folder': local_folder,
+                        'result': cmp_result,
+                        'html_path': comp_html_path,
+                    })
+
+                except Exception as _ce:
+                    logger.error(f"[{comp_name}] compare_folders error: {_ce}",
+                                 exc_info=True)
+                    all_comp_results.append({
+                        'name': comp_name,
+                        'local_folder': local_folder,
+                        'result': None,
+                        'error': str(_ce),
+                    })
+
+            # ── Generate master HTML summary report ────────────────────
+            self.root.after(0, lambda: self._update_progress(
+                92, "📊 Generating master HTML report..."))
+
+            master_html_path = self._generate_hybrid_master_report(
+                all_comp_results, snapshot_name, snapshot_url,
+                local_root_folder, output_dir)
+
+            self.root.after(0, lambda: self._update_progress(
+                97, "✅ Opening results..."))
+
+            # ── Display results ─────────────────────────────────────────
+            def _show_results():
+                import webbrowser
+
+                # Open each per-component HTML diff report in the browser
+                for cr in all_comp_results:
+                    html_p = cr.get('html_path')
+                    if html_p and os.path.isfile(html_p):
+                        webbrowser.open(html_p)
+
+                # Also show individual result viewer for each successful component
+                shown = 0
+                for cr in all_comp_results:
+                    r = cr.get('result')
+                    if r and r.get('success'):
+                        try:
+                            show_results_dialog(
+                                self.root,
+                                r['results'],
+                                r['folder1_display'],
+                                r['folder2_display'],
+                                r.get('folder1', ''),
+                                r.get('folder2', ''),
+                                r.get('files1', {}),
+                                r.get('files2', {}),
+                                r.get('report_paths', {}),
+                            )
+                            shown += 1
+                        except Exception as _ve:
+                            logger.warning(f"Viewer error for {cr['name']}: {_ve}")
+
+                # Open master report
+                if master_html_path and os.path.isfile(master_html_path):
+                    webbrowser.open(master_html_path)
+
+                # Summary message
+                success_count = sum(
+                    1 for cr in all_comp_results
+                    if cr.get('result') and cr['result'].get('success'))
+                fail_count    = len(all_comp_results) - success_count
+                summary = (
+                    f"Online → Offline comparison complete!\n\n"
+                    f"Components selected  : {total_selected}\n"
+                    f"Components compared  : {success_count}\n"
+                    f"Failed / skipped     : {fail_count}\n\n"
+                    f"Reports saved to:\n{output_dir}"
+                )
+                if fail_count:
+                    errors = "\n".join(
+                        f"  • {cr['name']}: {cr.get('error', 'unknown')}"
+                        for cr in all_comp_results if cr.get('error'))
+                    summary += f"\n\nErrors:\n{errors}"
+                messagebox.showinfo("Comparison Complete", summary)
+
+            self.root.after(0, _show_results)
+
+            self.root.after(0, lambda: self._update_progress(
+                100,
+                f"✅ Hybrid comparison done: "
+                f"{sum(1 for c in all_comp_results if c.get('result') and c['result'].get('success'))} "
+                f"component(s) compared"))
+
+            logger.info("=" * 80)
+            logger.info("HYBRID COMPARISON COMPLETED")
+            logger.info("=" * 80)
+
+            self.root.after(2000, lambda: self.compare_btn.config(state='normal'))
+
         except Exception as e:
             logger.error(f"Hybrid comparison error: {e}", exc_info=True)
-            error_msg = f"Hybrid comparison failed:\n\n{type(e).__name__}:\n{str(e)[:200]}"
+            error_msg = (f"Hybrid comparison failed:\n\n"
+                         f"{type(e).__name__}:\n{str(e)[:200]}")
             self.root.after(0, lambda: messagebox.showerror('Error', error_msg))
             self.root.after(0, lambda: self.compare_btn.config(state='normal'))
             self.root.after(0, lambda: self._update_progress(0, "Ready"))
-        
+
         finally:
-            # Clean up temp folder
-            if temp_snapshot_folder and os.path.exists(temp_snapshot_folder):
-                try:
-                    import shutil
-                    shutil.rmtree(temp_snapshot_folder)
-                    logger.info(f"Cleaned up temp folder: {temp_snapshot_folder}")
-                except Exception as e:
-                    logger.warning(f"Failed to clean up temp folder: {e}")
-    
+            for td in temp_dirs_to_cleanup:
+                if td and os.path.exists(td):
+                    try:
+                        import shutil
+                        shutil.rmtree(td)
+                        logger.info(f"Cleaned up temp folder: {td}")
+                    except Exception as _e:
+                        logger.warning(f"Failed to clean up temp folder {td}: {_e}")
+
+    def _generate_hybrid_master_report(
+            self, all_comp_results, snapshot_name, snapshot_url,
+            local_root_folder, output_dir):
+        """
+        Generate a self-contained HTML master report for the Online → Offline
+        comparison that summarises every compared component with:
+          • Status badges (found/missing local folder)
+          • File-level change counts (added / modified / removed / identical)
+          • Link to the per-component CSV/Excel/HTML diff reports
+
+        Returns the absolute path to the generated HTML file, or None on error.
+        """
+        import html as _html
+        from datetime import datetime as _dt
+
+        try:
+            html_path = os.path.join(output_dir, "Hybrid_Comparison_Report.html")
+
+            # ── Statistics ─────────────────────────────────────────────
+            total       = len(all_comp_results)
+            succeeded   = sum(1 for c in all_comp_results
+                              if c.get('result') and c['result'].get('success'))
+            failed      = total - succeeded
+            total_diff  = 0
+            total_ident = 0
+            total_added = 0
+            total_remov = 0
+
+            for cr in all_comp_results:
+                r = cr.get('result') or {}
+                if not r.get('success'):
+                    continue
+                for row in (r.get('results') or []):
+                    status = row[4] if len(row) > 4 else ''
+                    if status == 'Different':
+                        total_diff  += 1
+                    elif status == 'Identical':
+                        total_ident += 1
+                    elif 'Only in Platform' in status:
+                        total_remov += 1
+                    elif 'Only in Project' in status:
+                        total_added += 1
+
+            # ── Build component rows ────────────────────────────────────
+            rows_html = ''
+            for cr in all_comp_results:
+                name         = _html.escape(cr['name'])
+                local_folder = _html.escape(cr.get('local_folder', ''))
+                r            = cr.get('result') or {}
+                error_msg    = cr.get('error', '')
+
+                if error_msg:
+                    status_badge = (
+                        '<span style="background:#ffebe9;color:#cf222e;'
+                        'padding:2px 8px;border-radius:8px;font-size:12px;">'
+                        '✘ Error</span>')
+                    detail = _html.escape(error_msg)
+                    diff_link = '—'
+                elif not r.get('success'):
+                    status_badge = (
+                        '<span style="background:#fff3cd;color:#856404;'
+                        'padding:2px 8px;border-radius:8px;font-size:12px;">'
+                        '⚠ No result</span>')
+                    detail = _html.escape(r.get('error', 'No comparison result'))
+                    diff_link = '—'
+                else:
+                    results_list = r.get('results', [])
+                    n_diff  = sum(1 for row in results_list
+                                  if len(row) > 4 and row[4] == 'Different')
+                    n_ident = sum(1 for row in results_list
+                                  if len(row) > 4 and row[4] == 'Identical')
+                    n_added = sum(1 for row in results_list
+                                  if len(row) > 4 and 'Only in Project' in row[4])
+                    n_remov = sum(1 for row in results_list
+                                  if len(row) > 4 and 'Only in Platform' in row[4])
+
+                    if n_diff == 0 and n_added == 0 and n_remov == 0:
+                        status_badge = (
+                            '<span style="background:#dafbe1;color:#1a7f37;'
+                            'padding:2px 8px;border-radius:8px;font-size:12px;">'
+                            '✔ Identical</span>')
+                    else:
+                        status_badge = (
+                            '<span style="background:#fff8c5;color:#9a6700;'
+                            'padding:2px 8px;border-radius:8px;font-size:12px;">'
+                            '± Different</span>')
+
+                    detail = (
+                        f'<span style="color:#cf222e;">−{n_remov} removed  </span>'
+                        f'<span style="color:#9a6700;">±{n_diff} modified  </span>'
+                        f'<span style="color:#1a7f37;">+{n_added} added  </span>'
+                        f'<span style="color:#57606a;">○{n_ident} identical</span>'
+                    )
+
+                    # Link to per-component HTML diff report
+                    rp = r.get('report_paths') or {}
+                    html_rep = (rp.get('html')
+                                or cr.get('html_path')
+                                or rp.get('csv', ''))
+                    if html_rep and os.path.isfile(html_rep):
+                        rel = os.path.relpath(html_rep, output_dir).replace('\\', '/')
+                        diff_link = (
+                            f'<a href="{_html.escape(rel)}" target="_blank">'
+                            f'📄 View report</a>')
+                    else:
+                        diff_link = '—'
+
+                rows_html += f'''
+  <tr>
+    <td style="padding:8px 12px;font-family:monospace;font-size:13px;">{name}</td>
+    <td style="padding:8px 12px;font-size:12px;color:#555;">{local_folder}</td>
+    <td style="padding:8px 12px;">{status_badge}</td>
+    <td style="padding:8px 12px;font-size:13px;">{detail}</td>
+    <td style="padding:8px 12px;font-size:13px;">{diff_link}</td>
+  </tr>'''
+
+            # ── Compose full HTML ───────────────────────────────────────
+            html_content = f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Online → Offline Comparison — {_html.escape(snapshot_name)}</title>
+  <style>
+    body {{ font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #f0f4f8; color: #24292e; }}
+    header {{ background: #003366; color: white; padding: 20px 30px; }}
+    header h1 {{ margin: 0 0 6px; font-size: 22px; }}
+    header p  {{ margin: 0; font-size: 13px; color: #b0c4de; }}
+    .summary  {{ display: flex; gap: 16px; padding: 16px 30px; flex-wrap: wrap; }}
+    .card {{ background: white; border-radius: 8px; padding: 14px 20px;
+              border-left: 4px solid; min-width: 140px; box-shadow: 0 1px 4px rgba(0,0,0,.1); }}
+    .card .num  {{ font-size: 28px; font-weight: 700; }}
+    .card .lbl  {{ font-size: 12px; color: #57606a; margin-top: 2px; }}
+    .c-blue  {{ border-color: #0969da; }}   .c-blue .num  {{ color: #0969da; }}
+    .c-green {{ border-color: #1a7f37; }}   .c-green .num {{ color: #1a7f37; }}
+    .c-amber {{ border-color: #9a6700; }}   .c-amber .num {{ color: #9a6700; }}
+    .c-red   {{ border-color: #cf222e; }}   .c-red .num   {{ color: #cf222e; }}
+    table {{ border-collapse: collapse; width: calc(100% - 60px);
+              margin: 0 30px 30px; background: white; border-radius: 8px;
+              overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,.1); }}
+    thead tr {{ background: #003366; color: white; }}
+    th {{ padding: 10px 12px; text-align: left; font-size: 13px; font-weight: 600; }}
+    tbody tr:nth-child(even) {{ background: #f6f8fa; }}
+    tbody tr:hover {{ background: #eaf3fb; }}
+    td a {{ color: #0969da; text-decoration: none; }}
+    td a:hover {{ text-decoration: underline; }}
+    .ts {{ font-size: 11px; color: #888; padding: 0 30px 20px; }}
+  </style>
+</head>
+<body>
+<header>
+  <h1>🔄 Online → Offline Comparison Report</h1>
+  <p>Snapshot: <strong>{_html.escape(snapshot_name)}</strong> &nbsp;|&nbsp;
+     Local root: <strong>{_html.escape(local_root_folder)}</strong></p>
+</header>
+
+<div class="summary">
+  <div class="card c-blue">
+    <div class="num">{total}</div>
+    <div class="lbl">Components selected</div>
+  </div>
+  <div class="card c-green">
+    <div class="num">{succeeded}</div>
+    <div class="lbl">Successfully compared</div>
+  </div>
+  <div class="card c-amber">
+    <div class="num">{total_diff}</div>
+    <div class="lbl">Files modified</div>
+  </div>
+  <div class="card c-red">
+    <div class="num">{failed}</div>
+    <div class="lbl">Failed / skipped</div>
+  </div>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Component</th>
+      <th>Local Folder</th>
+      <th>Status</th>
+      <th>File Changes</th>
+      <th>Report</th>
+    </tr>
+  </thead>
+  <tbody>
+{rows_html}
+  </tbody>
+</table>
+
+<p class="ts">Generated: {_dt.now().strftime("%Y-%m-%d %H:%M:%S")} &nbsp;|&nbsp;
+Snapshot URL: {_html.escape(snapshot_url)}</p>
+</body>
+</html>'''
+
+            with open(html_path, 'w', encoding='utf-8') as fh:
+                fh.write(html_content)
+
+            logger.info(f"✓ Hybrid master report: {html_path}")
+            return html_path
+
+        except Exception as e:
+            logger.error(f"Error generating hybrid master report: {e}", exc_info=True)
+            return None
 
     def _update_progress(self, value, message):
         """Update progress bar and label"""
@@ -2303,48 +2751,31 @@ Reports generated:
             if enable_changesets and rtc_conn and status == 'Different':
                 changeset_stats['total_modified'] += 1
                 try:
-                    # Get file comparison data
-                    file_comparison = result.get('file_comparison', {})
-                    if file_comparison:
-                        # Get modified file paths from details dict (values are ints, not lists)
-                        modified_files = [
-                            fp for fp, ct in file_comparison.get('details', {}).items()
-                            if ct == 'modified'
-                        ][:5]
-                        if modified_files:
-                            logger.info(f"📋 {comp_name}: Fetching changesets for {len(modified_files)} modified files...")
-                            changeset_map = rtc_conn.fetch_changesets_for_files(
-                                modified_files,
-                                baseline2_uuid,  # Use baseline2 (newer version)
-                                comp_name
-                            )
-                            
-                            if changeset_map:
-                                # Summarize changeset info
-                                changeset_count = len(changeset_map)
-                                first_file = list(changeset_map.keys())[0]
-                                first_cs = changeset_map[first_file]
-                                changeset_uuid = first_cs.get('uuid', 'N/A')[:10]
-                                changeset_info = f"Changeset: {changeset_uuid}... ({changeset_count} file(s))"
-                                changeset_stats['changesets_found'] += 1
-                                logger.info(f"   ✓ {comp_name}: Found changesets for {changeset_count} files - {changeset_info}")
-                            elif not settings.LSCM_PATH:
-                                changeset_info = "LSCM not configured - Install RTC SCM CLI for changeset details"
-                                changeset_stats['changesets_failed'] += 1
-                                logger.warning(f"   ⚠ {comp_name}: LSCM not available")
-                            elif changeset_map is not None and len(changeset_map) == 0:
-                                changeset_info = "No changesets found (LSCM may not be configured correctly)"
-                                changeset_stats['changesets_failed'] += 1
-                                logger.warning(f"   ⚠ {comp_name}: No changesets found")
-                            else:
-                                changeset_info = "Changeset fetch failed"
-                                changeset_stats['changesets_failed'] += 1
-                        else:
-                            logger.debug(f"{comp_name}: No modified files to fetch changesets for")
-                            changeset_info = "No modified files"
+                    if not settings.LSCM_PATH:
+                        changeset_info = "LSCM not configured - Install RTC SCM CLI for changeset details"
+                        changeset_stats['changesets_failed'] += 1
+                        logger.warning(f"   ⚠ {comp_name}: LSCM not available")
                     else:
-                        logger.debug(f"{comp_name}: No file comparison data available")
-                        changeset_info = "No file comparison data"
+                        logger.info(f"📋 {comp_name}: Fetching changesets from baseline2 ({baseline2_uuid[:12]}...)...")
+                        changesets = rtc_conn.fetch_baseline_changesets_scm(baseline2_uuid, comp_name)
+                        if changesets:
+                            changeset_count = len(changesets)
+                            first_cs = changesets[0]
+                            cs_uuid = first_cs.get('uuid', 'N/A')
+                            cs_author = first_cs.get('author', '')
+                            cs_comment = first_cs.get('comment', '')[:60]
+                            changeset_info = (
+                                f"Changesets: {changeset_count} | "
+                                f"Latest: {cs_uuid[:12]}{'...' if len(cs_uuid) > 12 else ''} "
+                                f"by {cs_author}"
+                                + (f" — {cs_comment}" if cs_comment else "")
+                            )
+                            changeset_stats['changesets_found'] += 1
+                            logger.info(f"   ✓ {comp_name}: Found {changeset_count} changeset(s)")
+                        else:
+                            changeset_info = "No changesets found via SCM CLI"
+                            changeset_stats['changesets_failed'] += 1
+                            logger.warning(f"   ⚠ {comp_name}: No changesets returned")
                 except Exception as e:
                     logger.warning(f"{comp_name}: Failed to fetch changesets: {e}", exc_info=True)
                     changeset_info = f"Changeset fetch error: {str(e)[:50]}"

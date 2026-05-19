@@ -1,4 +1,4 @@
-﻿"""Diff generation utilities for Migration Analysis Tool"""
+"""Diff generation utilities for Migration Analysis Tool"""
 
 import os
 import difflib
@@ -1533,6 +1533,430 @@ if(first){
     try:
         with open(out_path, 'w', encoding='utf-8') as f:
             f.write(html_out)
+        return out_path
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Online → Offline per-component HTML diff report
+# ---------------------------------------------------------------------------
+
+def generate_hybrid_component_html(
+    component_name,
+    compare_results,
+    temp_online_dir,
+    local_folder_dir,
+    output_dir,
+    snap1_label='Online (RTC Snapshot)',
+    snap2_label='Local Folder',
+):
+    """
+    Generate a self-contained HTML diff report for a single Online → Offline
+    component comparison, showing line-by-line diffs for every changed file.
+
+    The visual style mirrors ``generate_snapshot_component_html``:
+      - Summary card (component name, folder paths, change counts)
+      - File tree with ± / + / − / ○ indicators
+      - Inline side-by-side diff for each modified/added/removed file
+      - Filter buttons to show/hide file statuses
+
+    Args:
+        component_name   : RTC component name (e.g. "rb.as.ms.fiatgen.cswpr")
+        compare_results  : ``result['results']`` from ``compare_folders`` –
+                           each row is [rel_path, lines1, lines2, line_status,
+                                        status, html_link, purpose, changeset_info]
+        temp_online_dir  : path to temp folder containing downloaded online files
+        local_folder_dir : path to the local folder
+        output_dir       : directory where the HTML file will be written
+        snap1_label      : display label for the online (left) side
+        snap2_label      : display label for the local (right) side
+
+    Returns:
+        Absolute path to the generated HTML file, or None on failure.
+    """
+    import html as _h
+    import difflib
+    from datetime import datetime
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    safe_name = component_name.replace('.', '_').replace(os.sep, '_').replace('/', '_')
+    out_path  = os.path.join(output_dir, f"{safe_name}_diff.html")
+
+    # ── Build file_comparison dict from compare_folders rows ───────────────
+    details   = {}   # {rel_path: 'modified'|'added'|'removed'|'unchanged'}
+    n_mod = n_add = n_rem = n_unch = 0
+
+    for row in (compare_results or []):
+        if len(row) < 5:
+            continue
+        rel_path = row[0].replace('\\', '/')
+        status   = row[4]
+        if status == 'Identical' or status == 'Comments update only':
+            details[rel_path] = 'unchanged'
+            n_unch += 1
+        elif status == 'Different':
+            details[rel_path] = 'modified'
+            n_mod += 1
+        elif 'Only in Platform' in status:   # online side only
+            details[rel_path] = 'removed'
+            n_rem += 1
+        elif 'Only in Project' in status:    # local side only
+            details[rel_path] = 'added'
+            n_add += 1
+
+    # ── Read file contents for inline diffs ────────────────────────────────
+    _BINARY_EXTS = {
+        '.xls', '.xlsx', '.zip', '.exe', '.dll', '.so', '.a', '.o',
+        '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.pdf', '.doc', '.docx',
+        '.ppt', '.pptx', '.bin', '.lib', '.obj', '.jar', '.class', '.pyc',
+    }
+
+    def _read(folder, rel):
+        ext = os.path.splitext(rel.lower())[1]
+        if ext in _BINARY_EXTS:
+            return None
+        abs_path = os.path.join(folder, rel.replace('/', os.sep))
+        if not os.path.isfile(abs_path):
+            return None
+        try:
+            with open(abs_path, 'r', encoding='utf-8', errors='replace') as fh:
+                return fh.read()
+        except Exception:
+            return None
+
+    def _is_binary(text):
+        if not text:
+            return False
+        if text.count('\ufffd') / max(len(text), 1) > 0.02:
+            return True
+        if '\x00' in text:
+            return True
+        sample = text[:2000]
+        if sample and sum(c.isprintable() or c in '\t\n\r' for c in sample) / len(sample) < 0.70:
+            return True
+        return False
+
+    file_contents = {}   # {rel_path: {'snap1': str|None, 'snap2': str|None}}
+    for rel_path, fstatus in details.items():
+        if fstatus == 'unchanged':
+            continue
+        c1 = _read(temp_online_dir, rel_path)
+        c2 = _read(local_folder_dir, rel_path)
+        if c1 is not None or c2 is not None:
+            file_contents[rel_path] = {'snap1': c1, 'snap2': c2}
+
+    # ── Flags ──────────────────────────────────────────────────────────────
+    STATUS_COLOR = {'added': '#1a7f37', 'modified': '#9a6700',
+                    'removed': '#cf222e', 'unchanged': '#57606a'}
+    STATUS_BG    = {'added': '#dafbe1', 'modified': '#fff8c5',
+                    'removed': '#ffebe9', 'unchanged': '#f6f8fa'}
+    STATUS_ICON  = {'added': '+', 'modified': '±', 'removed': '-', 'unchanged': '○'}
+
+    def badge(label, count, color, bg):
+        return (
+            f'<span style="display:inline-block;padding:2px 10px;border-radius:12px;'
+            f'background:{bg};color:{color};font-weight:600;font-size:13px;margin:0 4px;">'
+            f'{label}: {count}</span>'
+        )
+
+    # ── Inline diff builder ────────────────────────────────────────────────
+    _diff_present = [False]
+
+    def _make_inline_diff(snap1_text, snap2_text, fpath, fstatus):
+        try:
+            if _is_binary(snap1_text) or _is_binary(snap2_text):
+                return (
+                    '<div style="padding:12px 16px;background:#fff8c5;border-radius:4px;'
+                    'color:#9a6700;font-size:13px;">'
+                    '⚠ <strong>Binary file</strong> — line-by-line diff not available.</div>'
+                )
+            lines1 = (snap1_text or '').splitlines(keepends=True)
+            lines2 = (snap2_text or '').splitlines(keepends=True)
+            if not lines1 and not lines2:
+                return '<p style="color:#57606a;padding:8px;">Empty file on both sides.</p>'
+            from_lbl = f'{os.path.basename(fpath)} ← {snap1_label}'
+            to_lbl   = f'{os.path.basename(fpath)} → {snap2_label}'
+            if not lines1:
+                body = ''.join(
+                    f'<tr><td class="diff_add" colspan="4" style="padding:1px 6px;">'
+                    f'<code>{_h.escape(ln.rstrip())}</code></td></tr>'
+                    for ln in lines2
+                )
+                return (f'<table class="diff" style="width:100%">'
+                        f'<tr><th colspan="4" style="padding:4px 6px;text-align:left;">'
+                        f'+ New file — {_h.escape(to_lbl)}</th></tr>{body}</table>')
+            if not lines2:
+                body = ''.join(
+                    f'<tr><td class="diff_sub" colspan="4" style="padding:1px 6px;">'
+                    f'<code>{_h.escape(ln.rstrip())}</code></td></tr>'
+                    for ln in lines1
+                )
+                return (f'<table class="diff" style="width:100%">'
+                        f'<tr><th colspan="4" style="padding:4px 6px;text-align:left;">'
+                        f'− Deleted file — {_h.escape(from_lbl)}</th></tr>{body}</table>')
+            differ = difflib.HtmlDiff(wrapcolumn=100)
+            return differ.make_table(lines1, lines2,
+                                     fromdesc=from_lbl, todesc=to_lbl,
+                                     context=False)
+        except Exception as ex:
+            return f'<p style="color:#cf222e;">Could not generate diff: {_h.escape(str(ex))}</p>'
+
+    # ── File tree builder ──────────────────────────────────────────────────
+    def _build_tree(pairs):
+        tree = {}
+        for fpath, fstatus in pairs:
+            parts = fpath.replace('\\', '/').split('/')
+            node  = tree
+            for part in parts[:-1]:
+                node = node.setdefault(part, {'__children__': {}})['__children__']
+            node[parts[-1]] = fstatus
+        return tree
+
+    def _count_changes(node):
+        c = 0
+        for v in node.values():
+            if isinstance(v, dict):
+                c += _count_changes(v.get('__children__', {}))
+            elif v in ('modified', 'added', 'removed'):
+                c += 1
+        return c
+
+    def _render_tree(node, prefix=''):
+        html_parts = []
+        folders = sorted((k, v) for k, v in node.items() if isinstance(v, dict))
+        files   = sorted((k, v) for k, v in node.items() if isinstance(v, str))
+
+        for fname, fnode in folders:
+            fpath    = f'{prefix}{fname}/'
+            children = fnode.get('__children__', {})
+            n        = _count_changes(children)
+            n_badge  = (
+                f' <span style="background:#cf222e;color:#fff;font-size:10px;'
+                f'padding:1px 7px;border-radius:10px;font-weight:600;">'
+                f'{n} change{"s" if n != 1 else ""}</span>'
+            ) if n else ''
+            html_parts.append(
+                f'<details class="rtc-folder" open>'
+                f'<summary class="rtc-folder-sum">'
+                f'<span style="color:#0550ae;font-weight:600;">📁 {_h.escape(fname)}</span>'
+                f'{n_badge}</summary>'
+                f'<div class="rtc-folder-body">{_render_tree(children, fpath)}</div>'
+                f'</details>'
+            )
+
+        for fname, fstatus in files:
+            full_path = f'{prefix}{fname}'
+            color  = STATUS_COLOR.get(fstatus, '#57606a')
+            bg_row = STATUS_BG.get(fstatus, 'transparent') if fstatus != 'unchanged' else 'transparent'
+            icon   = STATUS_ICON.get(fstatus, '○')
+
+            pair       = file_contents.get(full_path, {})
+            c1         = pair.get('snap1')
+            c2         = pair.get('snap2')
+            is_bin     = _is_binary(c1) or _is_binary(c2)
+            has_diff   = (fstatus in ('modified', 'added', 'removed')
+                          and not is_bin
+                          and (c1 is not None or c2 is not None))
+
+            extra = diff_toggle = ''
+            if fstatus in ('modified', 'added', 'removed'):
+                if has_diff:
+                    _diff_present[0] = True
+                    tbl = _make_inline_diff(c1, c2, full_path, fstatus)
+                    diff_toggle = (
+                        f'<details class="file-diff-details">'
+                        f'<summary class="view-diff-btn" style="background:{color};">'
+                        f'▶ View Diff</summary>'
+                        f'<div class="diff-panel">'
+                        f'<div class="diff-snap-bar">'
+                        f'<span>← {_h.escape(snap1_label)}</span>'
+                        f'<span>{_h.escape(snap2_label)} →</span>'
+                        f'</div>{tbl}</div></details>'
+                    )
+                elif is_bin:
+                    extra = '<span class="file-badge file-badge-bin">⊘ binary</span>'
+                else:
+                    extra = '<span class="file-badge file-badge-nc">no content</span>'
+
+            html_parts.append(
+                f'<div class="rtc-file" data-status="{fstatus}" style="background:{bg_row};">'
+                f'<span class="file-icon" style="color:{color};">{icon}</span>'
+                f'<span class="file-name" style="color:{color if fstatus != "unchanged" else "#57606a"};">'
+                f'{_h.escape(fname)}</span>'
+                f'<span class="file-status" style="color:{color};">{fstatus.capitalize()}</span>'
+                f'{extra}{diff_toggle}'
+                f'</div>'
+            )
+        return ''.join(html_parts)
+
+    # ── Build tree HTML ────────────────────────────────────────────────────
+    sorted_details = sorted(details.items(),
+                            key=lambda x: (x[1] == 'unchanged', x[1] != 'modified', x[0]))
+    tree_html = _render_tree(_build_tree(sorted_details))
+
+    # ── CSS ────────────────────────────────────────────────────────────────
+    diff_css = ('''
+    .diff_header { background-color:#F8B862; }
+    td.diff_header { text-align:right; }
+    .diff_next { background-color:#c0c0c0; }
+    .diff_add { background-color:#aaffaa; }
+    .diff_chg { background-color:#ffff77; }
+    .diff_sub { background-color:#ffaaaa; }
+    table.diff { font-family:Consolas,"Courier New",monospace; font-size:12px;
+                 border-collapse:collapse; width:100%; }
+    table.diff td { padding:2px 6px; white-space:pre-wrap; word-break:break-all; }
+    table.diff th { padding:4px 6px; background:#24292f; color:#fff; font-weight:600; }
+    table.diff td:first-child, table.diff td:nth-child(3) {
+        color:#57606a; font-size:11px; min-width:36px; text-align:right;
+        padding-right:8px; user-select:none; }'''
+    ) if _diff_present[0] else ''
+
+    html_doc = f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Diff: {_h.escape(component_name)}</title>
+  <style>
+    body {{ font-family:"Segoe UI",Arial,sans-serif; margin:0; padding:0;
+            background:#f6f8fa; color:#24292f; }}
+    .header {{ background:#003366; color:#fff; padding:20px 32px; }}
+    .header h1 {{ margin:0 0 4px; font-size:20px; }}
+    .header .sub {{ font-size:13px; opacity:.75; }}
+    .content {{ padding:28px 32px; max-width:1400px; margin:auto; }}
+    .card {{ background:#fff; border:1px solid #d0d7de; border-radius:8px;
+             padding:20px 24px; margin-bottom:20px; }}
+    table.main-table {{ border-collapse:collapse; width:100%; }}
+    table.main-table td {{ border-bottom:1px solid #d0d7de; }}
+    h3 {{ color:#0d1117; font-size:15px; border-bottom:1px solid #d0d7de;
+          padding-bottom:6px; margin-top:0; }}
+    .rtc-tree {{ border:1px solid #d0d7de; border-radius:6px; overflow:hidden;
+                 background:#fff; margin-top:10px; }}
+    .rtc-folder {{ border-bottom:1px solid #eaecef; }}
+    .rtc-folder-sum {{ cursor:pointer; padding:6px 10px; background:#f6f8fa;
+                       display:block; list-style:none; font-size:13px; }}
+    .rtc-folder-sum::-webkit-details-marker {{ display:none; }}
+    .rtc-folder-sum:hover {{ background:#eaf3fb; }}
+    .rtc-folder-body {{ padding-left:18px; border-left:2px solid #d0d7de; margin-left:10px; }}
+    .rtc-file {{ display:flex; align-items:flex-start; flex-wrap:wrap;
+                 padding:4px 10px; border-bottom:1px solid #f0f0f0;
+                 font-family:"Segoe UI",Arial,sans-serif; }}
+    .rtc-file:last-child {{ border-bottom:none; }}
+    .rtc-file[data-status="unchanged"] {{ display:none; }}
+    .file-icon {{ font-size:14px; margin-right:6px; flex-shrink:0; padding-top:1px; }}
+    .file-name {{ font-family:Consolas,"Courier New",monospace; font-size:12px;
+                  flex:1; word-break:break-all; min-width:100px; }}
+    .file-status {{ font-size:11px; font-weight:600; margin-left:8px; white-space:nowrap; }}
+    .file-badge {{ font-size:10px; margin-left:6px; padding:1px 7px; border-radius:10px; }}
+    .file-badge-bin {{ background:#fff8c5; color:#9a6700; }}
+    .file-badge-nc  {{ background:#f6f8fa; color:#aaa; }}
+    .file-diff-details {{ width:100%; margin-top:5px; flex-basis:100%; }}
+    .view-diff-btn {{ cursor:pointer; display:inline-block; padding:2px 10px;
+                      border-radius:4px; color:#fff; font-size:11px; font-weight:600;
+                      margin-left:8px; user-select:none; list-style:none; }}
+    .view-diff-btn::-webkit-details-marker {{ display:none; }}
+    .diff-panel {{ margin-top:4px; overflow-x:auto; border:1px solid #d0d7de; border-radius:4px; }}
+    .diff-snap-bar {{ display:flex; justify-content:space-between; background:#003366;
+                      color:#fff; font-size:11px; padding:5px 12px; font-family:monospace; }}
+    .filter-bar {{ margin:10px 0 6px; display:flex; align-items:center; flex-wrap:wrap; gap:6px; }}
+    .filter-btn {{ cursor:pointer; padding:3px 13px; border-radius:20px;
+                   border:1px solid #d0d7de; font-size:12px; font-weight:600;
+                   background:#f6f8fa; color:#57606a; opacity:0.4; transition:opacity 0.15s; }}
+    .filter-btn.active {{ opacity:1; }}
+    .filter-btn-all      {{ background:#e8eaf6; color:#3730a3; border-color:#a5b4fc; opacity:1; }}
+    .filter-btn-modified {{ background:#fff8c5; color:#9a6700; border-color:#d4a72c; }}
+    .filter-btn-added    {{ background:#dafbe1; color:#1a7f37; border-color:#82cfac; }}
+    .filter-btn-removed  {{ background:#ffebe9; color:#cf222e; border-color:#ffaba8; }}
+    .filter-btn-unchanged{{ background:#f6f8fa; color:#57606a; border-color:#d0d7de; }}
+    {diff_css}
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>🔍 Online → Offline Component Diff</h1>
+    <div class="sub">{_h.escape(component_name)}</div>
+    <div class="sub">Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</div>
+  </div>
+  <div class="content">
+    <div class="card">
+      <h3>Comparison Summary</h3>
+      <table class="main-table" style="font-size:13px;">
+        <tr>
+          <td style="padding:8px 12px;width:160px;color:#57606a;font-weight:600;">Component</td>
+          <td style="padding:8px 12px;font-family:monospace;">{_h.escape(component_name)}</td>
+        </tr>
+        <tr style="background:#f6f8fa;">
+          <td style="padding:8px 12px;color:#57606a;font-weight:600;">Online (RTC)</td>
+          <td style="padding:8px 12px;">{_h.escape(snap1_label)}</td>
+        </tr>
+        <tr>
+          <td style="padding:8px 12px;color:#57606a;font-weight:600;">Local Folder</td>
+          <td style="padding:8px 12px;font-family:monospace;font-size:12px;">{_h.escape(local_folder_dir)}</td>
+        </tr>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>File Changes</h3>
+      <div style="margin-bottom:10px;">
+        {badge("Modified",  n_mod,  STATUS_COLOR["modified"],  STATUS_BG["modified"])}
+        {badge("Added",     n_add,  STATUS_COLOR["added"],     STATUS_BG["added"])}
+        {badge("Removed",   n_rem,  STATUS_COLOR["removed"],   STATUS_BG["removed"])}
+        {badge("Unchanged", n_unch, STATUS_COLOR["unchanged"], STATUS_BG["unchanged"])}
+      </div>
+      <div class="filter-bar">
+        <span style="font-size:12px;color:#57606a;font-weight:600;margin-right:2px;">Filter:</span>
+        <button class="filter-btn filter-btn-modified active" id="btn-modified"
+                onclick="toggleFilter('modified')">± Modified ({n_mod})</button>
+        <button class="filter-btn filter-btn-added active" id="btn-added"
+                onclick="toggleFilter('added')">+ Added ({n_add})</button>
+        <button class="filter-btn filter-btn-removed active" id="btn-removed"
+                onclick="toggleFilter('removed')">− Removed ({n_rem})</button>
+        <button class="filter-btn filter-btn-unchanged" id="btn-unchanged"
+                onclick="toggleFilter('unchanged')">○ Unchanged ({n_unch})</button>
+        <button class="filter-btn filter-btn-all" onclick="showAll()">▶ Show All</button>
+      </div>
+      <div class="rtc-tree">{tree_html}</div>
+    </div>
+  </div>
+
+  <script>
+  (function() {{
+    var visible = {{modified:true, added:true, removed:true, unchanged:false}};
+    function applyFilters() {{
+      document.querySelectorAll('.rtc-folder').forEach(function(f){{f.style.display='none';}});
+      document.querySelectorAll('.rtc-file').forEach(function(el) {{
+        var s = el.getAttribute('data-status');
+        var show = visible[s] !== false;
+        el.style.display = show ? 'flex' : 'none';
+        if (show) {{
+          var p = el.parentElement;
+          while (p) {{
+            if (p.classList && p.classList.contains('rtc-folder')) p.style.display = '';
+            p = p.parentElement;
+          }}
+        }}
+      }});
+      ['modified','added','removed','unchanged'].forEach(function(s) {{
+        var b = document.getElementById('btn-'+s);
+        if (b) {{ if (visible[s]) b.classList.add('active'); else b.classList.remove('active'); }}
+      }});
+    }}
+    window.toggleFilter = function(s) {{ visible[s]=!visible[s]; applyFilters(); }};
+    window.showAll = function() {{
+      Object.keys(visible).forEach(function(k){{visible[k]=true;}}); applyFilters();
+    }};
+    document.addEventListener('DOMContentLoaded', applyFilters);
+  }})();
+  </script>
+</body>
+</html>'''
+
+    try:
+        with open(out_path, 'w', encoding='utf-8') as fh:
+            fh.write(html_doc)
         return out_path
     except Exception:
         return None

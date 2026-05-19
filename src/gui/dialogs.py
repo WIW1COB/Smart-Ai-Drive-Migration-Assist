@@ -572,6 +572,219 @@ def show_component_selection_dialog(components1, components2):
     dialog.wait_window()
     return result
 
+def show_hybrid_component_selection_dialog(components, local_root_folder):
+    """
+    Show component selection dialog for Online → Offline comparison.
+
+    Lists all components from the online snapshot.  For each component the
+    tool resolves a candidate local folder by splitting the component name on
+    '.' and traversing the local root hierarchy
+    (e.g. ``rb.as.ms.fiatgen.cswpr`` → ``<root>/rb/as/ms/fiatgen/cswpr``).
+
+    The resolved path is shown next to each component together with a
+    ✔ / ✘ indicator for whether the folder actually exists on disk.
+
+    Args:
+        components (list): component dicts from ``fetch_snapshot_components``
+                           (each must have at least a ``'name'`` key).
+        local_root_folder (str): the local root folder to search.
+
+    Returns:
+        dict: ``{'canceled': bool, 'selected': list[dict]}``
+              Each selected item is the original component dict enriched with
+              ``'local_folder'`` (resolved path, may be non-existent).
+    """
+    import tkinter.ttk as ttk
+    import os as _os
+
+    # ── Helper ─────────────────────────────────────────────────────────────
+    def _resolve(comp_name):
+        """Split component name by '.' and navigate local folder hierarchy."""
+        parts = comp_name.split('.')
+        path = local_root_folder
+        for part in parts:
+            path = _os.path.join(path, part)
+        return path
+
+    # Pre-compute resolved paths
+    comp_entries = []
+    for comp in (components or []):
+        name = comp.get('name', str(comp))
+        resolved = _resolve(name)
+        exists = _os.path.isdir(resolved)
+        comp_entries.append({
+            'comp': comp,
+            'name': name,
+            'resolved': resolved,
+            'exists': exists,
+        })
+
+    has_matches = any(e['exists'] for e in comp_entries)
+
+    # ── Dialog ─────────────────────────────────────────────────────────────
+    dialog = tk.Toplevel()
+    dialog.title("Select Components — Online → Offline Comparison")
+    dialog.geometry("1000x700")
+    dialog.minsize(800, 500)
+    dialog.resizable(True, True)
+    dialog.transient()
+    dialog.grab_set()
+
+    result = {'canceled': True, 'selected': []}
+
+    # ── Header ─────────────────────────────────────────────────────────────
+    hdr = tk.Frame(dialog, bg='#2c3e50')
+    hdr.pack(fill=tk.X)
+    tk.Label(hdr,
+             text="📋  Component Selection  —  Online → Offline",
+             font=("Arial", 13, "bold"), bg='#2c3e50', fg='white').pack(pady=(8, 2))
+
+    matched = sum(1 for e in comp_entries if e['exists'])
+    stats = (
+        f"Snapshot components: {len(comp_entries)}   ·   "
+        f"Local folders found: {matched}   ·   "
+        f"Root: {local_root_folder}"
+    )
+    tk.Label(hdr, text=stats,
+             font=("Arial", 9), bg='#2c3e50', fg='#bdc3c7').pack(pady=(0, 8))
+
+    if not has_matches:
+        banner = tk.Frame(dialog, bg='#fff3cd', bd=1, relief=tk.SOLID)
+        banner.pack(fill=tk.X, padx=10, pady=(8, 0))
+        tk.Label(banner,
+                 text=(
+                     "⚠  No matching local folders were found.\n"
+                     "   Ensure the component name segments match actual folder names under the root path.\n"
+                     "   Example:  rb.as.ms.fiatgen.cswpr  →  <root>/rb/as/ms/fiatgen/cswpr"
+                 ),
+                 font=("Arial", 9), bg='#fff3cd', fg='#856404',
+                 justify=tk.LEFT).pack(anchor=tk.W, padx=8, pady=6)
+
+    # ── Scrollable component list ───────────────────────────────────────────
+    list_frame = tk.Frame(dialog, bg='white')
+    list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
+
+    sc = ttk.Scrollbar(list_frame)
+    sc.pack(side=tk.RIGHT, fill=tk.Y)
+    canvas = tk.Canvas(list_frame, yscrollcommand=sc.set, bg='white', highlightthickness=0)
+    canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    sc.config(command=canvas.yview)
+
+    inner = tk.Frame(canvas, bg='white')
+    cwin = canvas.create_window((0, 0), window=inner, anchor=tk.NW)
+
+    def _on_configure(event=None):
+        canvas.configure(scrollregion=canvas.bbox("all"))
+        canvas.itemconfig(cwin, width=canvas.winfo_width())
+
+    inner.bind("<Configure>", _on_configure)
+    canvas.bind("<Configure>", lambda e: _on_configure())
+    dialog.bind_all("<MouseWheel>",
+                    lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
+
+    # Column header row
+    hrow = tk.Frame(inner, bg='#dfe6e9')
+    hrow.pack(fill=tk.X, padx=2, pady=(2, 0))
+    tk.Label(hrow, text="✔", width=3,  font=("Arial", 9, "bold"), bg='#dfe6e9').pack(side=tk.LEFT)
+    tk.Label(hrow, text="Component Name",   width=40, anchor=tk.W,
+             font=("Arial", 9, "bold"), bg='#dfe6e9').pack(side=tk.LEFT, padx=4)
+    tk.Label(hrow, text="Local Folder (resolved path)", anchor=tk.W,
+             font=("Arial", 9, "bold"), bg='#dfe6e9').pack(side=tk.LEFT, padx=4, fill=tk.X, expand=True)
+    tk.Label(hrow, text="Status", width=8,
+             font=("Arial", 9, "bold"), bg='#dfe6e9').pack(side=tk.LEFT, padx=4)
+
+    # Component rows
+    check_vars = {}
+    for entry in comp_entries:
+        name    = entry['name']
+        exists  = entry['exists']
+        resolved = entry['resolved']
+
+        row_bg = '#f0fff4' if exists else '#fff5f5'
+        row = tk.Frame(inner, bg=row_bg, pady=2)
+        row.pack(fill=tk.X, padx=2, pady=1)
+
+        var = tk.BooleanVar(value=exists)   # pre-check only if folder exists
+        check_vars[name] = var
+
+        tk.Checkbutton(row, variable=var, bg=row_bg, activebackground=row_bg,
+                       width=2).pack(side=tk.LEFT)
+        tk.Label(row, text=name, width=40, anchor=tk.W,
+                 font=("Courier", 9), bg=row_bg).pack(side=tk.LEFT, padx=4)
+        tk.Label(row, text=resolved, anchor=tk.W,
+                 font=("Arial", 8), fg='#2c3e50', bg=row_bg,
+                 wraplength=480).pack(side=tk.LEFT, padx=4, fill=tk.X, expand=True)
+
+        status_text = "✔ Found" if exists else "✘ Missing"
+        status_fg   = '#1a7f37' if exists else '#cf222e'
+        tk.Label(row, text=status_text, width=9,
+                 font=("Arial", 9, "bold"), fg=status_fg, bg=row_bg).pack(side=tk.LEFT, padx=4)
+
+    # ── Button bar ─────────────────────────────────────────────────────────
+    bot = tk.Frame(dialog, bg='#2c3e50')
+    bot.pack(fill=tk.X)
+
+    quick = tk.Frame(bot, bg='#2c3e50')
+    quick.pack(side=tk.LEFT, padx=12, pady=8)
+
+    def _select_all():
+        for v in check_vars.values():
+            v.set(True)
+
+    def _select_found():
+        for entry in comp_entries:
+            check_vars[entry['name']].set(entry['exists'])
+
+    def _deselect_all():
+        for v in check_vars.values():
+            v.set(False)
+
+    tk.Button(quick, text="✔ Select All", font=("Arial", 9, "bold"),
+              bg='#27ae60', fg='white', padx=8, pady=4,
+              command=_select_all).pack(side=tk.LEFT, padx=4)
+    tk.Button(quick, text="✔ Select Found", font=("Arial", 9, "bold"),
+              bg='#2980b9', fg='white', padx=8, pady=4,
+              command=_select_found).pack(side=tk.LEFT, padx=4)
+    tk.Button(quick, text="✗ Deselect All", font=("Arial", 9, "bold"),
+              bg='#888', fg='white', padx=8, pady=4,
+              command=_deselect_all).pack(side=tk.LEFT, padx=4)
+
+    action = tk.Frame(bot, bg='#2c3e50')
+    action.pack(side=tk.RIGHT, padx=12, pady=8)
+
+    def _confirm():
+        chosen = [
+            dict(e['comp'], local_folder=e['resolved'])
+            for e in comp_entries
+            if check_vars.get(e['name'], tk.BooleanVar()).get()
+        ]
+        if not chosen:
+            messagebox.showwarning("No Selection",
+                                   "Please select at least one component to compare.",
+                                   parent=dialog)
+            return
+        result['canceled'] = False
+        result['selected'] = chosen
+        dialog.destroy()
+
+    def _cancel():
+        dialog.destroy()
+
+    tk.Button(action, text="✕ Cancel", font=("Arial", 10, "bold"),
+              bg='#7f8c8d', fg='white', padx=16, pady=6,
+              command=_cancel).pack(side=tk.LEFT, padx=6)
+    tk.Button(action, text="▶ Compare Selected", font=("Arial", 10, "bold"),
+              bg='#003366', fg='white', padx=16, pady=6,
+              command=_confirm).pack(side=tk.LEFT, padx=6)
+
+    # Centre dialog
+    dialog.update_idletasks()
+    x = (dialog.winfo_screenwidth()  // 2) - (dialog.winfo_width()  // 2)
+    y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
+    dialog.geometry(f"+{max(0, x)}+{max(0, y)}")
+
+    dialog.wait_window()
+    return result
 
 def show_file_mapping_dialog(files1, files2, existing_mappings=None):
     """
