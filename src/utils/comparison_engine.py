@@ -11,11 +11,25 @@ import csv
  
 from .file_utils import (
     count_file_lines, read_file_as_text, prepare_folder_path,
-    sanitize_for_excel, remove_comments, is_only_comment_change
+    sanitize_for_excel, remove_comments, is_only_comment_change,
+    is_only_blank_line_change
 )
 from .diff_utils import generate_html_diff, generate_purpose_of_change
 from .excel_utils import write_excel_report
 from src.config import settings
+
+# Extensions compared when component is DEM
+DEM_EXTENSIONS = {'.c', '.h', '.proc', '.bcfg', '.cs', '.xpt', '.arxml', '.txt', '.dpp', '.mk', '.pdm'}
+
+# Extensions always excluded from comparison and overview stats
+EXCLUDED_EXTENSIONS = {'.csv', '.xlsx', '.xls', '.xlsm', '.xlsb', '.tpa', '.docx', '.pptx'}
+
+
+def get_allowed_extensions(component_name):
+    """Return the set of allowed extensions for the given component, or None for all."""
+    if component_name and component_name.upper() == "DEM":
+        return DEM_EXTENSIONS
+    return None  # All extensions allowed for other components
  
  
 def get_line_comparison_status(lines1, lines2, files_identical, text1_lines=None, text2_lines=None):
@@ -88,8 +102,12 @@ def process_file_comparison(args):
             if files_identical:
                 status = "Identical"
             else:
+                # Check if only blank lines were added/removed
+                if is_only_blank_line_change(text1, text2):
+                    status = "Identical"
+                    files_identical = True  # treat as identical for diff/purpose
                 # Check if only comments changed
-                if is_only_comment_change(text1, text2):
+                elif is_only_comment_change(text1, text2):
                     status = "Comments update only"
                 else:
                     status = "Different"
@@ -175,7 +193,7 @@ def process_file_comparison(args):
         ]
  
  
-def compare_folders(folder1, folder2, progress_callback=None, custom_mappings=None, rtc_info=None, output_dir=None, report_name=None):
+def compare_folders(folder1, folder2, progress_callback=None, custom_mappings=None, rtc_info=None, output_dir=None, report_name=None, component_name=None):
     """
     Compare two folders and generate comparison reports.
    
@@ -188,6 +206,7 @@ def compare_folders(folder1, folder2, progress_callback=None, custom_mappings=No
         output_dir (str, optional): Directory to write CSV/Excel/HTML reports. Defaults to Migration_Analysis_Reports/.
         report_name (str, optional): Base filename (without extension) for CSV/Excel reports.
                                      Defaults to 'Migration_Analysis_Report'.
+        component_name (str, optional): Component name for file extension filtering (e.g. "DEM").
        
     Returns:
         dict: Result dictionary with keys:
@@ -250,7 +269,22 @@ def compare_folders(folder1, folder2, progress_callback=None, custom_mappings=No
             files2[rel_path] = os.path.join(dp, f)
    
     all_files = sorted(set(files1.keys()) | set(files2.keys()))
-   
+
+    # Determine allowed and excluded extensions
+    allowed_exts = get_allowed_extensions(component_name)
+
+    def _should_include_file(rel_path):
+        """Return True if this file should be compared."""
+        ext = os.path.splitext(rel_path)[1].lower()
+        if ext in EXCLUDED_EXTENSIONS:
+            return False
+        if allowed_exts is not None and ext not in allowed_exts:
+            return False
+        return True
+
+    # Filter the full file set
+    all_files = [f for f in all_files if _should_include_file(f)]
+
     # Track which files have been processed via custom mappings
     processed_files = set()
    

@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import threading
 import tkinter as tk
+from tkinter import ttk
 import xml.etree.ElementTree as ET
 from tkinter import filedialog, messagebox, scrolledtext
 
@@ -125,6 +126,10 @@ class ComparisonAssistantWindow:
         self.parent = parent
         self.viewer = viewer
         self.busy = False
+
+        # Agent selector (must exist before _build_chat_engine reads it)
+        self._agent_var = None  # tk.StringVar, created after Tk window
+        self._badge_label = None  # header badge widget
         self.engine = self._build_chat_engine()
         
         # Conversation history & memory
@@ -188,9 +193,25 @@ class ComparisonAssistantWindow:
 
         # Show only AI state in badge (cleaner display)
         ai_state = self._get_ai_state_label()
-        badge = tk.Label(header, text=ai_state, font=("Segoe UI", 11, "bold"),
+        self._badge_label = tk.Label(header, text=ai_state, font=("Segoe UI", 11, "bold"),
                          bg="#0F5C8C", fg="white", padx=14, pady=8)
-        badge.pack(side="right", padx=18)
+        self._badge_label.pack(side="right", padx=18)
+
+        # Agent selector dropdown  ── right of header
+        self._agent_var = tk.StringVar(value=self._default_agent_name())
+        agent_options = self._available_agent_names()
+        agent_cb = ttk.Combobox(
+            header,
+            textvariable=self._agent_var,
+            values=agent_options,
+            state="readonly",
+            width=22,
+            font=("Segoe UI", 9),
+        )
+        agent_cb.pack(side="right", padx=(0, 8), pady=16)
+        tk.Label(header, text="Agent:", font=("Segoe UI", 9, "bold"),
+                 bg="#003366", fg="#B8D8FF").pack(side="right", padx=(10, 2), pady=16)
+        agent_cb.bind("<<ComboboxSelected>>", self._on_agent_change)
 
         body = tk.Frame(self.window, bg="#ECF2F6")
         body.grid(row=1, column=0, sticky="nsew", padx=12, pady=12)
@@ -1115,12 +1136,191 @@ class ComparisonAssistantWindow:
             return "⚫ Local agent"
         
         engine_class_name = self.engine.__class__.__name__
-        if "Groq" in engine_class_name:
+        if "Ollama" in engine_class_name:
+            return "🦙 Ollama (Free/Local)"
+        elif "Gemini" in engine_class_name:
+            return "✨ Gemini (Free)"
+        elif "Groq" in engine_class_name:
             return "🤖 Groq AI"
         elif "ChatEngine" in engine_class_name:
-            return "🔵 Azure OpenAI"
+            return "🔵 Bosch AOAI Farm"
         else:
             return "✨ AI enabled"
+
+    # ------------------------------------------------------------------
+    # Agent selector helpers
+    # ------------------------------------------------------------------
+
+    _AGENT_GROQ   = "🤖 Groq AI (llama-3.3-70b)"
+    _AGENT_AOAI   = "🔵 Bosch AOAI Farm (Internal)"
+    _AGENT_GEMINI = "✨ Gemini (Free — Google AI)"
+    _AGENT_OLLAMA = "🦙 Ollama — Free / Local"
+    _AGENT_LOCAL  = "⚫ Local Agent (offline)"
+
+    def _available_agent_names(self) -> list:
+        names = []
+        if os.environ.get("GROQ_API_KEY", "").strip():
+            names.append(self._AGENT_GROQ)
+        if os.environ.get("GENAIPLATFORM_FARM_SUBSCRIPTION_KEY", "").strip() or os.environ.get("AOAI_FARM_KEY", "").strip():
+            names.append(self._AGENT_AOAI)
+        if os.environ.get("GEMINI_API_KEY", "").strip():
+            names.append(self._AGENT_GEMINI)
+        names.append(self._AGENT_OLLAMA)
+        names.append(self._AGENT_LOCAL)
+        return names
+
+    def _default_agent_name(self) -> str:
+        avail = self._available_agent_names()
+        # Reflect whatever engine was auto-selected at startup
+        label = self._get_ai_state_label()
+        if "Ollama" in label and self._AGENT_OLLAMA in avail:
+            return self._AGENT_OLLAMA
+        if "Bosch AOAI" in label and self._AGENT_AOAI in avail:
+            return self._AGENT_AOAI
+        if "Gemini" in label and self._AGENT_GEMINI in avail:
+            return self._AGENT_GEMINI
+        if "Groq" in label and self._AGENT_GROQ in avail:
+            return self._AGENT_GROQ
+        return avail[0] if avail else self._AGENT_LOCAL
+
+    def _on_agent_change(self, _event=None):
+        """Rebuild engine when user picks a different agent from the dropdown."""
+        if self.busy:
+            return
+        choice = self._agent_var.get()
+        self.engine = self._build_engine_for(choice)
+        label = self._get_ai_state_label()
+        if self._badge_label:
+            self._badge_label.config(text=label)
+        self.conversation_history.clear()
+        self._append_system(f"Switched to {choice}. Ready.")
+
+    def _build_engine_for(self, agent_name: str):
+        """Build and return the engine for a given agent dropdown value."""
+        if self._AGENT_OLLAMA in agent_name:
+            return self._try_build_ollama()
+        if self._AGENT_AOAI in agent_name:
+            return self._try_build_aoai_farm()
+        if self._AGENT_GEMINI in agent_name:
+            return self._try_build_gemini()
+        if self._AGENT_GROQ in agent_name:
+            return self._try_build_groq()
+        return None  # Local Agent
+
+    def _try_build_ollama(self):
+        """Attempt to build an OllamaChatEngine; return None on failure."""
+        try:
+            from src.chatbot.chatbot import OllamaChatEngine
+            from src.config import settings
+            base_url = os.environ.get("OLLAMA_BASE_URL", getattr(settings, "OLLAMA_BASE_URL", "http://localhost:11434"))
+            model    = os.environ.get("OLLAMA_MODEL",    getattr(settings, "OLLAMA_MODEL",    "llama3.2:3b"))
+            engine = OllamaChatEngine(base_url=base_url, model=model)
+            print(f"[INFO] Ollama engine configured: {base_url}, model={model}")
+            return engine
+        except Exception as exc:
+            print(f"[WARN] Ollama engine init failed: {exc}")
+            return None
+
+    def _try_build_groq(self):
+        """Attempt to build a GroqChatEngine; return None on failure."""
+        try:
+            groq_key = os.environ.get("GROQ_API_KEY", "")
+            if not groq_key.strip():
+                return None
+            from src.chatbot.chatbot import GroqChatEngine
+            from src.config import settings
+            groq_model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+            proxy_url  = getattr(settings, "GROQ_PROXY_URL",      "") or getattr(settings, "PROXY_URL",  "")
+            proxy_user = getattr(settings, "GROQ_PROXY_USERNAME", "") or getattr(settings, "PROXY_USER", "")
+            proxy_pass = getattr(settings, "GROQ_PROXY_PASSWORD", "") or getattr(settings, "PROXY_PASS", "")
+            domain     = getattr(settings, "PROXY_DOMAIN", "")
+            if domain and proxy_user and "\\" not in proxy_user and "/" not in proxy_user:
+                proxy_user = f"{domain}\\{proxy_user}"
+            return GroqChatEngine(
+                api_key=groq_key, model=groq_model,
+                proxy_url=proxy_url or None,
+                proxy_user=proxy_user or None,
+                proxy_password=proxy_pass or None,
+            )
+        except Exception as exc:
+            print(f"[WARN] Groq engine init failed: {exc}")
+            return None
+
+    def _try_build_gemini(self):
+        """Attempt to build a GeminiChatEngine; return None on failure."""
+        try:
+            gemini_key = os.environ.get("GEMINI_API_KEY", "")
+            if not gemini_key.strip():
+                return None
+            from src.chatbot.chatbot import GeminiChatEngine
+            from src.config import settings
+            gemini_model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+            proxy_url  = getattr(settings, "PROXY_URL",  "") or os.environ.get("HTTPS_PROXY", "")
+            proxy_user = getattr(settings, "PROXY_USER", "") or os.environ.get("PROXY_USER",  "")
+            proxy_pass = getattr(settings, "PROXY_PASS", "") or os.environ.get("PROXY_PASS",  "")
+            domain     = getattr(settings, "PROXY_DOMAIN", "")
+            if domain and proxy_user and "\\" not in proxy_user and "/" not in proxy_user:
+                proxy_user = f"{domain}\\{proxy_user}"
+            return GeminiChatEngine(
+                api_key=gemini_key, model=gemini_model,
+                proxy_url=proxy_url or None,
+                proxy_user=proxy_user or None,
+                proxy_password=proxy_pass or None,
+            )
+        except Exception as exc:
+            print(f"[WARN] Gemini engine init failed: {exc}")
+            return None
+
+    def _try_build_aoai_farm(self):
+        """Attempt to build Bosch AOAI Farm ChatEngine; return None on failure."""
+        try:
+            aoai_key = os.environ.get("GENAIPLATFORM_FARM_SUBSCRIPTION_KEY", "") or os.environ.get("AOAI_FARM_KEY", "")
+            if not aoai_key.strip():
+                return None
+
+            from src.chatbot.chatbot import ChatConfig, ChatEngine
+            endpoint_base = os.environ.get("AOAI_FARM_ENDPOINT", "https://aoai-farm.bosch-temp.com/api").rstrip("/")
+            deployment = os.environ.get("AOAI_CHAT_DEPLOYMENT", "") or os.environ.get("AOAI_FARM_DEPLOYMENT", "gpt-5-nano-2025-08-07")
+            api_version = os.environ.get("AOAI_CHAT_API_VERSION", "") or os.environ.get("AOAI_FARM_API_VERSION", "2025-04-01-preview")
+            endpoint = f"{endpoint_base}/openai/deployments/{deployment}/chat/completions?api-version={api_version}"
+
+            from src.config import settings
+            proxy_url = getattr(settings, "PROXY_URL", "") or os.environ.get("HTTPS_PROXY", "") or os.environ.get("HTTP_PROXY", "")
+            proxy_user = getattr(settings, "PROXY_USER", "") or os.environ.get("PROXY_USER", "")
+            proxy_pass = getattr(settings, "PROXY_PASS", "") or os.environ.get("PROXY_PASS", "")
+            proxy_domain = getattr(settings, "PROXY_DOMAIN", "") or os.environ.get("PROXY_DOMAIN", "BOSCH")
+            ca_cert_path = os.environ.get("AOAI_CA_CERT_PATH", "")
+            if not ca_cert_path:
+                cert_from_settings = getattr(settings, "CERT_PATH", "")
+                if cert_from_settings and os.path.exists(cert_from_settings):
+                    ca_cert_path = cert_from_settings
+
+            cfg = ChatConfig(
+                api_key=aoai_key,
+                endpoint=endpoint,
+                temperature=0.2,
+                max_tokens=1800,
+                timeout_sec=90,
+                proxy_url=proxy_url,
+                proxy_domain=proxy_domain,
+                proxy_user=proxy_user,
+                proxy_pass=proxy_pass,
+                ca_cert_path=ca_cert_path,
+            )
+            return ChatEngine(cfg)
+        except Exception as exc:
+            print(f"[WARN] Bosch AOAI init failed: {exc}")
+            return None
+
+    def _append_system(self, text: str):
+        """Append a small italic system notice to the chat area (thread-safe)."""
+        try:
+            self.chat.config(state="normal")
+            self.chat.insert("end", f"  {text}\n", "system")
+            self.chat.config(state="disabled")
+            self.chat.see("end")
+        except Exception:
+            pass
 
     def _show_startup_message(self):
         """Display startup message showing AI readiness."""
@@ -1128,8 +1328,19 @@ class ComparisonAssistantWindow:
         dep_status = "✓" if DEPENDENCY_GRAPH_AVAILABLE else "✗"
         
         if self.engine:
+            engine_note = ""
+            ec = self.engine.__class__.__name__
+            if "Ollama" in ec:
+                engine_note = "🦙 Ollama (free local LLM — no internet required)\n\n"
+            elif "ChatEngine" in ec:
+                engine_note = "🔵 Bosch AOAI Farm (internal enterprise endpoint)\n\n"
+            elif "Gemini" in ec:
+                engine_note = "✨ Google Gemini (free tier via Google AI Studio)\n\n"
+            elif "Groq" in ec:
+                engine_note = "🤖 Groq AI (cloud, free tier)\n\n"
             greeting = (
                 f"{ai_status}\n\n"
+                f"{engine_note}"
                 "I'm your enterprise migration assistant with agentic capabilities.\n\n"
                 "📋 ANALYSIS:\n"
                 "• Explain file differences and migration risks\n"
@@ -1143,6 +1354,8 @@ class ComparisonAssistantWindow:
                 "• Filter and search comparison results\n"
                 "• Show change statistics and summaries\n\n"
                 f"Dependency Analysis: {dep_status} {'Available' if DEPENDENCY_GRAPH_AVAILABLE else 'Not available'}\n\n"
+                "Use the  Agent  dropdown (top-right) to switch between:\n"
+                "  🤖 Groq AI  •  🔵 Bosch AOAI Farm  •  ✨ Gemini  •  🦙 Ollama  •  ⚫ Local Agent\n\n"
                 "Try commands like:\n"
                 "• \"Show change statistics\"\n"
                 "• \"Open app_main.c in VS Code\"\n"
@@ -1162,10 +1375,21 @@ class ComparisonAssistantWindow:
                 "• Dependency and impact analysis\n"
                 "• Show change statistics\n\n"
                 f"Dependency Analysis: {dep_status} {'Available' if DEPENDENCY_GRAPH_AVAILABLE else 'Not available'}\n\n"
-                "To enable Groq AI:\n"
-                "1. Set GROQ_API_KEY in your .env file\n"
-                "2. Restart the tool\n"
-                "See GROQ_SETUP.md for details."
+                "💡 To use a free local AI agent:\n"
+                "  1. Install Ollama from https://ollama.com\n"
+                "  2. Run:  ollama pull llama3.2:3b\n"
+                "  3. Run:  ollama serve\n"
+                "  4. Select  🦙 Ollama — Free / Local  in the Agent dropdown above.\n\n"
+                "💡 To use Google Gemini (free cloud):\n"
+                "  1. Get a free key at https://aistudio.google.com/app/apikey\n"
+                "  2. Add  GEMINI_API_KEY=<your-key>  to .env\n"
+                "  3. Restart the tool — Gemini will be selected automatically.\n\n"
+                "💡 To use Bosch AOAI Farm (best for corporate network):\n"
+                "  1. Ensure GENAIPLATFORM_FARM_SUBSCRIPTION_KEY exists in .env\n"
+                "  2. Keep AOAI_FARM_ENDPOINT / deployment values in .env\n"
+                "  3. Restart and select 🔵 Bosch AOAI Farm in Agent dropdown.\n\n"
+                "To enable Groq AI (cloud, free tier):\n"
+                "  Set GROQ_API_KEY in your .env file and restart."
             )
         self._append_bot(greeting)
 
@@ -2095,27 +2319,26 @@ class ComparisonAssistantWindow:
                     import traceback
                     traceback.print_exc()
             
-            # ========== Fallback: Try AOAI (Bosch Farm; currently disabled) ==========
-            # Uncomment below when AOAI Farm service is back online.
-            # aoai_key = getattr(settings, "AOAI_FARM_SUBSCRIPTION_KEY", "")
-            # if aoai_key and aoai_key.strip():
-            #     try:
-            #         from src.chatbot.chatbot import ChatConfig, ChatEngine
-            #         endpoint_base = getattr(settings, "AOAI_FARM_ENDPOINT", "").rstrip("/")
-            #         deployment = getattr(settings, "AOAI_CHAT_DEPLOYMENT", None) or getattr(settings, "AOAI_FARM_DEPLOYMENT", "")
-            #         api_version = getattr(settings, "AOAI_CHAT_API_VERSION", None) or getattr(settings, "AOAI_FARM_API_VERSION", "")
-            #         endpoint = f"{endpoint_base}/openai/deployments/{deployment}/chat/completions?api-version={api_version}"
-            #         cfg = ChatConfig(
-            #             api_key=aoai_key,
-            #             endpoint=endpoint,
-            #             temperature=None,
-            #             max_tokens=None,
-            #             timeout_sec=90
-            #         )
-            #         return ChatEngine(cfg)
-            #     except Exception as aoai_err:
-            #         print(f"[INFO] AOAI initialization failed: {aoai_err}")
-            
+            # ========== Fallback: Try Bosch AOAI Farm (internal/corporate-friendly) ==========
+            aoai_engine = self._try_build_aoai_farm()
+            if aoai_engine:
+                print("[INFO] ✅ Bosch AOAI Farm configured")
+                return aoai_engine
+
+            # ========== Fallback 1: Try Gemini (free cloud) ==========
+            gemini_engine = self._try_build_gemini()
+            if gemini_engine:
+                print("[INFO] ✅ Gemini engine configured (will test on first use)")
+                return gemini_engine
+
+            # ========== Fallback 2: Try Ollama (Free/Local) ==========
+            ollama_engine = self._try_build_ollama()
+            if ollama_engine and ollama_engine.is_available():
+                print("[INFO] ✅ Ollama engine available — using free local LLM")
+                return ollama_engine
+            if ollama_engine:
+                print("[INFO] Ollama server not running; falling back to local agent mode")
+
             print("[INFO] No LLM engine available. Running in local agent mode.")
             return None
         except Exception as exc:
@@ -2151,6 +2374,53 @@ class ComparisonAssistantWindow:
                 self.conversation_history = self.conversation_history[-self.max_history_turns * 2:]
             return reply
         except Exception as exc:
+            err = str(exc)
+            # Corporate networks may block some providers with proxy 407.
+            # Auto-fallback to providers that are usually more network-friendly.
+            if "407" in err or "Proxy Authentication Required" in err:
+                fallback_builders = [
+                    ("Groq", self._try_build_groq),
+                    ("Ollama", self._try_build_ollama),
+                    ("Local Agent", lambda: None),
+                ]
+                current_name = self.engine.__class__.__name__ if self.engine else ""
+
+                for provider_name, builder in fallback_builders:
+                    if provider_name in current_name:
+                        continue
+                    try:
+                        candidate = builder()
+                        if provider_name == "Ollama" and candidate and hasattr(candidate, "is_available") and not candidate.is_available():
+                            continue
+                        if candidate is None:
+                            self.engine = None
+                            return local_context + "\n\nNote: cloud agent blocked by proxy (407), switched to Local Agent mode."
+
+                        self.engine = candidate
+                        fallback_reply = self.engine.complete(messages)
+                        return fallback_reply + f"\n\nNote: previous agent was blocked by proxy (407), auto-switched to {provider_name}."
+                    except Exception:
+                        continue
+
+            # Ollama reachable but model missing: switch to another agent automatically.
+            if "not installed locally" in err or "ollama model" in err.lower():
+                fallback_builders = [
+                    ("Groq", self._try_build_groq),
+                    ("Bosch AOAI", self._try_build_aoai_farm),
+                    ("Local Agent", lambda: None),
+                ]
+                for provider_name, builder in fallback_builders:
+                    try:
+                        candidate = builder()
+                        if candidate is None:
+                            self.engine = None
+                            return local_context + "\n\nNote: local Ollama model is missing; switched to Local Agent mode."
+                        self.engine = candidate
+                        fallback_reply = self.engine.complete(messages)
+                        return fallback_reply + f"\n\nNote: Ollama model is missing locally, auto-switched to {provider_name}."
+                    except Exception:
+                        continue
+
             raise RuntimeError(f"Model call failed: {exc}") from exc
 
     def _execute_agent_action(self, action_name: str, args: dict = None) -> str:

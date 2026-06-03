@@ -111,6 +111,13 @@ class ChatConfig:
         default_factory=lambda: os.environ.get("PROXY_PASS", "")
     )
 
+    # --- TLS/Certificate ---
+    # Optional CA bundle/CRT path for corporate TLS interception.
+    # If set and file exists, requests will verify with this certificate file.
+    ca_cert_path: str = field(
+        default_factory=lambda: os.environ.get("AOAI_CA_CERT_PATH", os.environ.get("SSL_CERT_FILE", ""))
+    )
+
     # --- Conversation ---
     max_history_turns: int = 8       # past turns kept in the context window
 
@@ -328,12 +335,16 @@ class ChatEngine:
         }
 
         try:
+            verify_value = True
+            if self._cfg.ca_cert_path and os.path.exists(self._cfg.ca_cert_path):
+                verify_value = self._cfg.ca_cert_path
+
             resp = self._session_().post(
                 self._cfg.endpoint,
                 data=payload,
                 headers=headers,
                 timeout=self._cfg.timeout_sec,
-                verify=True,
+                verify=verify_value,
             )
             if not resp.ok:
                 detail = resp.text[:1000] if resp.text else resp.reason
@@ -354,9 +365,23 @@ class ChatEngine:
 
         sess = requests.Session()
         if self._cfg.proxy_url and self._cfg.proxy_url.strip():
+            proxy_url = self._cfg.proxy_url
+
+            # Embed proxy credentials in the proxy URL when available.
+            # This helps environments that reject unauthenticated CONNECT with 407.
+            if self._cfg.proxy_user and "@" not in proxy_url:
+                parsed = urlsplit(proxy_url if "://" in proxy_url else f"http://{proxy_url}")
+                auth_user = self._cfg.proxy_user
+                if self._cfg.proxy_domain and "\\" not in auth_user and "/" not in auth_user:
+                    auth_user = f"{self._cfg.proxy_domain}\\{auth_user}"
+                auth = quote(auth_user, safe="")
+                if self._cfg.proxy_pass:
+                    auth = f"{auth}:{quote(self._cfg.proxy_pass, safe='')}"
+                proxy_url = urlunsplit((parsed.scheme, f"{auth}@{parsed.netloc}", parsed.path, parsed.query, parsed.fragment))
+
             proxies = {
-                "http":  self._cfg.proxy_url,
-                "https": self._cfg.proxy_url,
+                "http":  proxy_url,
+                "https": proxy_url,
             }
             try:
                 from requests_ntlm import HttpNtlmAuth  # type: ignore
@@ -556,6 +581,255 @@ class GroqChatEngine:
                 )
             
             raise RuntimeError(f"Groq API request failed:\n{error_msg}") from exc
+
+
+# ===========================================================================
+# Gemini Engine — free tier via Google AI Studio REST API
+# ===========================================================================
+
+class GeminiChatEngine:
+    """
+    Google Gemini wrapper using the Generative Language REST API.
+
+    Free tier (Google AI Studio):
+      - gemini-2.0-flash  : 15 RPM / 1 500 RPD   (recommended)
+      - gemini-1.5-flash  : 15 RPM / 1 500 RPD
+      - gemini-1.5-pro    : 2 RPM / 50 RPD
+
+    Get a free key at https://aistudio.google.com/app/apikey
+    Set it in .env:
+        GEMINI_API_KEY=AIza...
+
+    Compatible call signature: engine.complete(messages) → str
+    """
+
+    DEFAULT_MODEL = "gemini-2.0-flash"
+    _API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = DEFAULT_MODEL,
+        proxy_url: str | None = None,
+        proxy_user: str | None = None,
+        proxy_password: str | None = None,
+    ) -> None:
+        self.api_key = api_key.strip()
+        self.model = model
+        self.proxy_url = proxy_url or os.environ.get("HTTPS_PROXY", "").strip() or os.environ.get("HTTP_PROXY", "").strip()
+        self._proxy_user = proxy_user or os.environ.get("PROXY_USER", "").strip()
+        self._proxy_password = proxy_password or os.environ.get("PROXY_PASS", "").strip()
+        proxy_domain = os.environ.get("PROXY_DOMAIN", "").strip()
+        if proxy_domain and self._proxy_user and "\\" not in self._proxy_user and "/" not in self._proxy_user:
+            self._proxy_user = f"{proxy_domain}\\{self._proxy_user}"
+
+    def _proxy_url_with_credentials(self) -> str:
+        """Return proxy URL with credentials embedded when provided."""
+        if not self.proxy_url:
+            return ""
+
+        parsed = urlsplit(self.proxy_url if "://" in self.proxy_url else f"http://{self.proxy_url}")
+        if "@" in parsed.netloc or not self._proxy_user:
+            return urlunsplit(parsed)
+
+        auth = quote(self._proxy_user, safe="")
+        if self._proxy_password:
+            auth = f"{auth}:{quote(self._proxy_password, safe='')}"
+        return urlunsplit((parsed.scheme, f"{auth}@{parsed.netloc}", parsed.path, parsed.query, parsed.fragment))
+
+    # ------------------------------------------------------------------ #
+    def complete(self, messages: List[Dict]) -> str:
+        """
+        Send an OpenAI-style messages list to Gemini and return the reply.
+
+        Converts the messages to Gemini's `contents` format:
+          system → prepended to the first user turn as a text part
+          user/assistant → user/model roles with text parts
+        """
+        import httpx
+
+        # --- convert messages to Gemini format ---
+        system_parts = []
+        contents = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            text = msg.get("content", "")
+            if role == "system":
+                system_parts.append({"text": text})
+            elif role == "assistant":
+                contents.append({"role": "model", "parts": [{"text": text}]})
+            else:
+                contents.append({"role": "user", "parts": [{"text": text}]})
+
+        # Prepend system instruction into the first user turn
+        if system_parts and contents:
+            first_user = next((c for c in contents if c["role"] == "user"), None)
+            if first_user:
+                first_user["parts"] = system_parts + first_user["parts"]
+        elif system_parts:
+            contents.insert(0, {"role": "user", "parts": system_parts})
+
+        url = f"{self._API_BASE}/{self.model}:generateContent?key={self.api_key}"
+        payload = {
+            "contents": contents,
+            "generationConfig": {"maxOutputTokens": 2048, "temperature": 0.7},
+        }
+
+        try:
+            if self.proxy_url:
+                proxy_str = self._proxy_url_with_credentials()
+                with httpx.Client(proxy=proxy_str, trust_env=False, verify=False, timeout=90.0) as client:
+                    resp = client.post(url, json=payload)
+            else:
+                with httpx.Client(trust_env=False, verify=True, timeout=90.0) as client:
+                    resp = client.post(url, json=payload)
+
+            if resp.status_code >= 400:
+                raise RuntimeError(
+                    f"Gemini API error {resp.status_code}: {resp.text}\n"
+                    "Check your GEMINI_API_KEY/model and proxy settings."
+                )
+            body = resp.json()
+        except Exception as exc:
+            raise RuntimeError(
+                f"Cannot reach Gemini API ({exc}).\n"
+                "Check internet/proxy credentials in .env (HTTPS_PROXY/PROXY_USER/PROXY_PASS)."
+            ) from exc
+
+        try:
+            return body["candidates"][0]["content"]["parts"][0]["text"].strip()
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError(f"Unexpected Gemini response: {body!r}") from exc
+
+
+# ===========================================================================
+# Ollama Engine — free / local LLM via http://localhost:11434
+# ===========================================================================
+
+class OllamaChatEngine:
+    """
+    Ollama local-LLM wrapper.
+
+    Communicates with a locally running Ollama server
+    (https://ollama.com) via its REST API.  No API key required —
+    completely free and offline once the model is pulled.
+
+    Supported call signature is identical to GroqChatEngine:
+        engine.complete(messages)  →  str
+    """
+
+    def __init__(
+        self,
+        base_url: str = "http://localhost:11434",
+        model: str = "llama3.2:3b",
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+
+    # ------------------------------------------------------------------ #
+    def complete(self, messages: List[Dict]) -> str:
+        """
+        Send *messages* (OpenAI-compatible list) to Ollama and return the
+        assistant reply as a plain string.
+
+        Raises RuntimeError on any network or server error so callers can
+        fall back gracefully.
+        """
+        import json as _json
+        import urllib.request
+        import urllib.error
+
+        # Always bypass environment proxies for local Ollama endpoints.
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+        url = f"{self.base_url}/api/chat"
+        payload = _json.dumps(
+            {"model": self.model, "messages": messages, "stream": False}
+        ).encode("utf-8")
+
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with opener.open(req, timeout=120) as resp:
+                body = _json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            error_body = ""
+            try:
+                error_body = exc.read().decode("utf-8", errors="ignore")
+            except Exception:
+                error_body = ""
+
+            if exc.code == 404 and ("model" in error_body.lower() and "not found" in error_body.lower()):
+                raise RuntimeError(
+                    f"Ollama model '{self.model}' is not installed locally.\n"
+                    f"Run: ollama pull {self.model}\n"
+                    "Then retry the chat."
+                ) from exc
+
+            # Some local servers expose an OpenAI-compatible API instead
+            # of Ollama's native /api/chat endpoint.
+            if exc.code == 404:
+                try:
+                    v1_url = f"{self.base_url}/v1/chat/completions"
+                    v1_payload = _json.dumps(
+                        {
+                            "model": self.model,
+                            "messages": messages,
+                            "temperature": 0.7,
+                            "max_tokens": 2000,
+                        }
+                    ).encode("utf-8")
+                    v1_req = urllib.request.Request(
+                        v1_url,
+                        data=v1_payload,
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    with opener.open(v1_req, timeout=120) as v1_resp:
+                        v1_body = _json.loads(v1_resp.read().decode("utf-8"))
+                    return v1_body["choices"][0]["message"]["content"].strip()
+                except Exception:
+                    pass
+            raise RuntimeError(
+                f"Cannot reach Ollama at {self.base_url}.\n"
+                "Make sure Ollama is running:  ollama serve\n"
+                f"Original error: {exc}\n"
+                f"Response: {error_body[:300]}"
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(
+                f"Cannot reach Ollama at {self.base_url}.\n"
+                "Make sure Ollama is running:  ollama serve\n"
+                f"Original error: {exc}"
+            ) from exc
+
+        # Ollama response: {"message": {"role": "assistant", "content": "..."}, ...}
+        try:
+            return body["message"]["content"].strip()
+        except (KeyError, TypeError) as exc:
+            raise RuntimeError(
+                f"Unexpected Ollama response format: {body!r}"
+            ) from exc
+
+    # ------------------------------------------------------------------ #
+    def is_available(self) -> bool:
+        """Return True if the Ollama server is reachable (non-blocking check)."""
+        import urllib.request
+        import urllib.error
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(f"{self.base_url}/api/tags", timeout=3):
+                return True
+        except Exception:
+            try:
+                with opener.open(f"{self.base_url}/v1/models", timeout=3):
+                    return True
+            except Exception:
+                return False
 
 
 # ===========================================================================

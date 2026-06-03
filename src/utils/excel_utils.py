@@ -17,6 +17,15 @@ def create_overview_sheet(wb, results, folder1, folder2):
     """
     from datetime import datetime
     from openpyxl.styles import Border, Side
+
+    # Extensions excluded from overview statistics
+    _EXCLUDED_EXTS = {'.csv', '.xlsx', '.xls', '.xlsm', '.xlsb', '.tpa', '.docx', '.pptx'}
+
+    def _ext(r):
+        return os.path.splitext(str(r[0]))[1].lower()
+
+    # Filter results for overview calculations (exclude certain file types)
+    results = [r for r in results if _ext(r) not in _EXCLUDED_EXTS]
    
     ws = wb.active
     ws.title = "Overview"
@@ -73,6 +82,10 @@ def create_overview_sheet(wb, results, folder1, folder2):
             return "Medium"
         else:
             return "Major"
+
+    def pct_formula(expr):
+        """Clamp percentage formulas to [0, 100%] and avoid divide-by-zero errors."""
+        return f"=MIN(1,MAX(0,IFERROR({expr},0)))"
    
     # Title
     ws.merge_cells('A1:D1')
@@ -141,12 +154,12 @@ def create_overview_sheet(wb, results, folder1, folder2):
     ws.append([
         "Total",
         f"=B{row+1}+B{row+2}+B{row+3}+B{row+4}+B{row+6}",  # Sum of files
-        f"=C{row+1}+C{row+2}+C{row+3}+C{row+4}+C{row+6}",  # Sum of file %
-        f"=SUM(D{row+1}+D{row+4})",  # Platform vs Project %
+        pct_formula(f"C{row+1}+C{row+2}+C{row+3}+C{row+4}+C{row+6}"),  # Sum of file %
+        pct_formula(f"SUM(D{row+1}+D{row+4})"),  # Platform vs Project %
         None,
         f"=F{row+1}+F{row+3}+F{row+4}+F{row+5}+F{row+6}",  # Sum of lines
-        f"=G{row+1}+G{row+3}+G{row+4}+G{row+6}",  # Sum of line %
-        f"=H{row+1}+H{row+4}",  # Platform vs Project line %
+        pct_formula(f"G{row+1}+G{row+3}+G{row+4}+G{row+6}"),  # Sum of line %
+        pct_formula(f"H{row+1}+H{row+4}"),  # Platform vs Project line %
         overall_complexity if all_same_complexity else None  # Complexity (merged if all same)
     ])
     ws.cell(row, 1).font = Font(bold=True, size=11)
@@ -160,12 +173,12 @@ def create_overview_sheet(wb, results, folder1, folder2):
     ws.append([
         "Identical (Files with no differences)",
         identical_count,
-        f"=B{row}/$B${header_row+1}",
-        f"=SUM(C{row}:C{row+2})",
+        pct_formula(f"B{row}/$B${header_row+1}"),
+        pct_formula(f"SUM(C{row}:C{row+2})"),
         None,
         identical_lines,
-        f"=F{row}/F${header_row+1}",
-        f"=SUM(G{row}:G{row+2})",
+        pct_formula(f"F{row}/F${header_row+1}"),
+        pct_formula(f"SUM(G{row}:G{row+2})"),
         complexity_identical if not all_same_complexity else None
     ])
     ws.cell(row, 1).fill = PatternFill(start_color="FFC6EFCE", end_color="FFC6EFCE", fill_type="solid")
@@ -179,7 +192,7 @@ def create_overview_sheet(wb, results, folder1, folder2):
     ws.append([
         "Files exist only in platform",
         only_folder1_count,
-        f"=B{row}/$B${header_row+1}",
+        pct_formula(f"B{row}/$B${header_row+1}"),
         None,
         None,
         "Not Applicable" if only_folder1_count > 0 else 0,
@@ -198,11 +211,11 @@ def create_overview_sheet(wb, results, folder1, folder2):
     ws.append([
         "Comments update only",
         comments_only_count,
-        f"=B{row}/$B${header_row+1}",
+        pct_formula(f"B{row}/$B${header_row+1}"),
         None,
         None,
         comments_only_lines if comments_only_count > 0 else 0,
-        f"=F{row}/F${header_row+1}" if comments_only_count > 0 else 0,
+        pct_formula(f"F{row}/F${header_row+1}") if comments_only_count > 0 else 0,
         None,
         complexity_comments if not all_same_complexity else None
     ])
@@ -226,12 +239,12 @@ def create_overview_sheet(wb, results, folder1, folder2):
     ws.append([
         "Files with code differences in Project",
         different_count,
-        f"=B{row}/B${header_row+1}",
-        f"=SUM(C{row}:C{row+2})",
+        pct_formula(f"B{row}/B${header_row+1}"),
+        pct_formula(f"SUM(C{row}:C{row+2})"),
         "Added",
         added_lines_diff,
-        f"=F{row}/F${header_row+1}",
-        f"=SUM(G{row}:G{row+2})",
+        pct_formula(f"F{row}/F${header_row+1}"),
+        pct_formula(f"SUM(G{row}:G{row+2})"),
         complexity_different if not all_same_complexity else None
     ])
     ws.cell(row, 1).fill = PatternFill(start_color="FF9999", end_color="FF9999", fill_type="solid")
@@ -249,7 +262,7 @@ def create_overview_sheet(wb, results, folder1, folder2):
         None,
         "Removed",
         removed_lines_diff,
-        f"=F{row}/F${header_row+1}",
+        pct_formula(f"F{row}/F${header_row+1}"),
         None,
         None
     ])
@@ -262,11 +275,11 @@ def create_overview_sheet(wb, results, folder1, folder2):
     ws.append([
         "Files exist only in Project",
         only_folder2_count,
-        f"=B{row}/B${header_row+1}",
+        pct_formula(f"B{row}/B${header_row+1}"),
         None,
         "Added",
         only_folder2_lines,
-        f"=F{row}/F${header_row+1}",
+        pct_formula(f"F{row}/F${header_row+1}"),
         None,
         complexity_project_only if not all_same_complexity else None
     ])

@@ -22,14 +22,14 @@ def sanitize_for_excel(text):
 
 
 def count_file_lines(file_path):
-    """Count the number of lines in a file."""
+    """Count the number of non-blank lines in a file (ignores whitespace-only lines)."""
     try:
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-            return sum(1 for _ in f)
+            return sum(1 for line in f if line.strip())
     except Exception:
         try:
             with open(file_path, 'rb') as f:
-                return sum(1 for _ in f)
+                return sum(1 for line in f if line.strip())
         except:
             return 0
 
@@ -109,6 +109,16 @@ def is_only_comment_change(text1_lines, text2_lines):
     
     # If code without comments is the same, only comments changed
     return text1_normalized == text2_normalized
+
+
+def is_only_blank_line_change(text1_lines, text2_lines):
+    """
+    Check if the only difference between two files is blank/whitespace-only lines.
+    Returns True when the non-blank lines are identical in both files.
+    """
+    non_blank1 = [l.rstrip('\r\n') for l in text1_lines if l.strip()]
+    non_blank2 = [l.rstrip('\r\n') for l in text2_lines if l.strip()]
+    return non_blank1 == non_blank2
 
 
 def get_line_comparison_status(lines1, lines2, files_identical, text1_lines=None, text2_lines=None):

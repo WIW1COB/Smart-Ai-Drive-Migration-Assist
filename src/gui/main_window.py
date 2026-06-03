@@ -51,6 +51,7 @@ class MigrationAnalysisGUI:
         self.keep_signed_in_var = tk.BooleanVar(value=False)
         self.cached_credentials_loaded = False
         self.save_credentials_on_success = False
+        self.component_name = tk.StringVar(value="ALL")
         
         self.setup_ui()
         self._load_cached_credentials()
@@ -62,6 +63,9 @@ class MigrationAnalysisGUI:
         
         # Comparison Mode Selection
         self.create_mode_selection()
+        
+        # Component Name Selection
+        self.create_component_selection()
         
         # Input frames (all modes)
         self.create_folder_input_frame()       # Offline → Offline
@@ -187,6 +191,37 @@ class MigrationAnalysisGUI:
             command=self.toggle_input_mode
         ).pack(side="left", padx=10)
     
+    def create_component_selection(self):
+        """Create Component Name selection dropdown"""
+        comp_frame = tk.Frame(self.root, bg="#EAF3FB")
+        comp_frame.pack(pady=(0, 5))
+
+        tk.Label(
+            comp_frame,
+            text="Component Name:",
+            bg="#EAF3FB",
+            font=("Segoe UI", 11, "bold")
+        ).pack(side="left", padx=5)
+
+        component_options = ["ALL", "DEM", "DCOM", "NET", "RTE", "VAR"]
+        component_cb = ttk.Combobox(
+            comp_frame,
+            textvariable=self.component_name,
+            values=component_options,
+            state="readonly",
+            width=10,
+            font=("Segoe UI", 10)
+        )
+        component_cb.pack(side="left", padx=5)
+
+        tk.Label(
+            comp_frame,
+            text="(DEM: filters to .c/.h/.proc/.bcfg/.cs/.xpt/.arxml/.txt/.dpp/.mk/.pdm only)",
+            bg="#EAF3FB",
+            font=("Segoe UI", 8),
+            fg="#555555"
+        ).pack(side="left", padx=5)
+
     def create_folder_input_frame(self):
         """Create offline → offline input section (Folders/ZIPs)"""
         self.folder_input_frame = tk.Frame(self.root, bg="#EAF3FB")
@@ -634,7 +669,7 @@ class MigrationAnalysisGUI:
                 return
             
             # Show progress and start comparison in background thread
-            self.run_folder_comparison(folder1, folder2)
+            self.run_folder_comparison(folder1, folder2, self.component_name.get())
         
         elif mode == "online_online":
             # Online → Online: RTC Snapshots/URLs
@@ -2113,6 +2148,7 @@ Reports generated:
                         rtc_info=None,
                         output_dir=comp_output_dir,
                         report_name=f"Migration_Analysis_Report_{safe_comp_name}",
+                        component_name=self.component_name.get(),
                     )
 
                     # Override display names
@@ -3610,7 +3646,7 @@ Snapshot URL: {_html.escape(snapshot_url)}</p>
         ).pack()
 
     
-    def run_folder_comparison(self, folder1, folder2):
+    def run_folder_comparison(self, folder1, folder2, component_name="ALL"):
         """Run folder comparison in background thread"""
         # Reset progress
         self.progress_bar['value'] = 0
@@ -3647,7 +3683,8 @@ Snapshot URL: {_html.escape(snapshot_url)}</p>
                     folder2,
                     progress_callback=update_progress,
                     custom_mappings=None,  # TODO: Add file mapping dialog
-                    rtc_info=rtc_info
+                    rtc_info=rtc_info,
+                    component_name=component_name
                 )
                 
                 # Update UI on completion (must run in main thread)
