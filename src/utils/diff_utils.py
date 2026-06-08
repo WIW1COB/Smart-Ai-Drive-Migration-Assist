@@ -2,21 +2,60 @@
 
 import os
 import difflib
+import html as _html
 from .file_utils import read_file_as_text
 from .xml_utils import normalize_xml
+
+# Files larger than this combined line count use a fast unified-diff fallback
+# instead of the O(n²) HtmlDiff / ndiff algorithms.
+MAX_DIFF_LINES = 5000
 
 
 def generate_html_diff(file1, file2, file_name, output_dir):
     """Generate HTML diff report for two files"""
     # Check if files are XML
     is_xml = file1.lower().endswith('.xml') and file2.lower().endswith('.xml')
-    
+
     if is_xml:
         text1 = normalize_xml(file1)
         text2 = normalize_xml(file2)
     else:
         text1 = read_file_as_text(file1)
         text2 = read_file_as_text(file2)
+
+    output_path = os.path.join(output_dir, f"{file_name.replace(os.sep,'_')}_diff.html")
+
+    # For large files skip the O(n²) HtmlDiff and emit a lightweight unified-diff page.
+    if len(text1) + len(text2) > MAX_DIFF_LINES:
+        udiff = list(difflib.unified_diff(text1, text2, fromfile=file1, tofile=file2, n=3))
+        rows = []
+        for line in udiff:
+            esc = _html.escape(line.rstrip('\n'))
+            if line.startswith('+') and not line.startswith('+++'):
+                rows.append(f'<tr style="background:#e6ffed"><td><pre>{esc}</pre></td></tr>')
+            elif line.startswith('-') and not line.startswith('---'):
+                rows.append(f'<tr style="background:#ffeef0"><td><pre>{esc}</pre></td></tr>')
+            elif line.startswith('@'):
+                rows.append(f'<tr style="background:#f1f8ff;color:#005cc5"><td><pre>{esc}</pre></td></tr>')
+            else:
+                rows.append(f'<tr><td><pre>{esc}</pre></td></tr>')
+        page = (
+            '<!DOCTYPE html><html><head><meta charset="utf-8">'
+            f'<title>Diff: {_html.escape(file_name)}</title>'
+            '<style>body{font-family:monospace;font-size:12px}'
+            'table{border-collapse:collapse;width:100%}'
+            'td{padding:1px 4px;vertical-align:top}pre{margin:0}</style>'
+            '</head><body>'
+            f'<h3>Unified Diff &mdash; {_html.escape(file_name)}</h3>'
+            f'<p>File&nbsp;1:&nbsp;{len(text1)}&nbsp;lines&nbsp;&nbsp;'
+            f'File&nbsp;2:&nbsp;{len(text2)}&nbsp;lines'
+            f'&nbsp;&nbsp;<em>(large file &mdash; side-by-side view skipped)</em></p>'
+            f'<table>{chr(10).join(rows)}</table>'
+            '</body></html>'
+        )
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(page)
+        return output_path, text1, text2
 
     differ = difflib.HtmlDiff(wrapcolumn=120)
     html_diff = differ.make_file(
@@ -25,7 +64,6 @@ def generate_html_diff(file1, file2, file_name, output_dir):
         todesc=f"{file2} (Migration Analysis)"
     )
 
-    output_path = os.path.join(output_dir, f"{file_name.replace(os.sep,'_')}_diff.html")
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(html_diff)
     return output_path, text1, text2
@@ -33,6 +71,14 @@ def generate_html_diff(file1, file2, file_name, output_dir):
 
 def generate_purpose_of_change(text1, text2):
     """Generate summary of changes between two files"""
+    # For large files avoid O(n²) ndiff and return a fast line-count summary instead.
+    if len(text1) + len(text2) > MAX_DIFF_LINES:
+        set1 = set(text1)
+        set2 = set(text2)
+        added_count = len(set2 - set1)
+        removed_count = len(set1 - set2)
+        return (f"Large file ({len(text1)} → {len(text2)} lines): "
+                f"~{added_count} unique lines added, ~{removed_count} unique lines removed")
     diff = list(difflib.ndiff(text1, text2))
     comments = []
     for line in diff:

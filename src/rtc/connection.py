@@ -585,12 +585,17 @@ class RTCConnection:
         """
         Use the EWM/RTC SCM CLI (scm.exe) to list all files in a component baseline.
 
-        Command:
-            scm --non-interactive --config <dir> list files -b -D all -j
-                -r <server> -u <user> -P <pass> <baseline_uuid>
+        Two command variants are tried in order so that different EWM/RTC versions
+        are handled automatically:
+          Variant A:  scm list files -b --depth all -j  -r .. -u .. -P .. <uuid>
+          Variant B:  scm list files -b  -D    all -j  -r .. -u .. -P .. <uuid>
 
-        A module-level semaphore limits concurrency to 3 simultaneous scm.exe
-        processes so the server is not overwhelmed by parallel JVM+auth sessions.
+        JSON key extraction covers all structures seen across EWM 6.x / 7.x:
+          * workspaces[*].components[*].remote-files   <- EWM 7.x (most common)
+          * workspaces[*].components[*].files
+          * baseline.components[*].remote-files
+          * baseline.remote-files
+          * root-level files[] / remote-files[]
 
         Returns {'files': [...], 'folders': {}} or None on failure.
         """
@@ -603,41 +608,44 @@ class RTCConnection:
             buuid      = baseline_uuid if baseline_uuid.startswith('_') else '_' + baseline_uuid
             config_dir = self._scm_login()   # no-op if already done
 
-            cmd = [scm_path, '--non-interactive']
+            base_cmd = [scm_path, '--non-interactive']
             if config_dir:
-                cmd += ['--config', config_dir]
-            cmd += [
-                'list', 'files',
-                '-b',          # flag: selector is a baseline
-                '-D', 'all',   # infinite depth
-                '-j',          # JSON output
-                '-r', self.server_url,
-                '-u', self.username,
-                '-P', self.password,
-                buuid,         # positional <selector> ΓÇö MUST be last
-            ]
+                base_cmd += ['--config', config_dir]
 
             env = os.environ.copy()
             for pv in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy',
                        'NO_PROXY', 'no_proxy'):
                 env.pop(pv, None)
 
-            with _scm_semaphore:   # max 3 concurrent scm.exe processes
-                logger.info(f"[SCM CLI] Running list files for baseline {buuid[:16]}...")
-                result = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=300, env=env,
-                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
+            # Try two depth-flag variants; stop at the first that returns JSON
+            variants = [
+                base_cmd + ['list', 'files', '-b', '--depth', 'all', '-j',
+                            '-r', self.server_url, '-u', self.username,
+                            '-P', self.password, buuid],
+                base_cmd + ['list', 'files', '-b', '-D', 'all', '-j',
+                            '-r', self.server_url, '-u', self.username,
+                            '-P', self.password, buuid],
+            ]
+
+            raw = ''
+            for cmd in variants:
+                with _scm_semaphore:
+                    logger.info(f"[SCM CLI] list files (variant) baseline {buuid[:16]}...")
+                    result = subprocess.run(
+                        cmd, capture_output=True, text=True, timeout=300, env=env,
+                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
+                    )
+                logger.info(
+                    f"[SCM CLI] rc={result.returncode} "
+                    f"stdout_len={len(result.stdout.strip())} "
+                    f"stderr={result.stderr.strip()[:300]!r}"
                 )
+                raw = result.stdout.strip()
+                if raw:
+                    break  # got output — parse it below
 
-            logger.info(
-                f"[SCM CLI] list files: rc={result.returncode} "
-                f"stdout_len={len(result.stdout.strip())} "
-                f"stderr={result.stderr.strip()[:300]!r}"
-            )
-
-            raw = result.stdout.strip()
             if not raw:
-                logger.warning("[SCM CLI] empty stdout \u2014 CLI unavailable or auth failed")
+                logger.warning("[SCM CLI] empty stdout — CLI unavailable or auth failed")
                 return None
 
             try:
@@ -651,22 +659,45 @@ class RTCConnection:
             else:
                 logger.info(f"[SCM CLI] JSON root type: {type(data).__name__}")
 
-            # Try multiple JSON structures that different EWM versions return
+            # ── Extract raw file list from all known JSON structures ───────────
             raw_files = []
-            if isinstance(data, dict) and 'baseline' in data:
-                raw_files = data['baseline'].get('remote-files', [])
-            if not raw_files and isinstance(data, dict) and 'workspaces' in data:
+
+            def _extend_from_comp(comp):
+                """Pull files from a component dict regardless of key name."""
+                raw_files.extend(comp.get('remote-files', []))
+                raw_files.extend(comp.get('files', []))
+
+            if isinstance(data, dict):
+                # {"baseline": {"remote-files": [...], "components": [...]}}
+                bl = data.get('baseline', {})
+                if isinstance(bl, dict):
+                    raw_files.extend(bl.get('remote-files', []))
+                    for comp in bl.get('components', []):
+                        _extend_from_comp(comp)
+
+                # {"workspaces": [{"components": [...]}]}
                 for ws in data.get('workspaces', []):
                     for comp in ws.get('components', []):
-                        raw_files.extend(comp.get('files', []))
-            if not raw_files and isinstance(data, list):
+                        _extend_from_comp(comp)
+
+                # Root-level flat structures
+                if not raw_files:
+                    raw_files.extend(data.get('remote-files', []))
+                    raw_files.extend(data.get('files', []))
+
+            elif isinstance(data, list):
                 raw_files = data
-            if not raw_files and isinstance(data, dict) and 'files' in data:
-                raw_files = data['files']
+
+            if not raw_files:
+                logger.warning(
+                    f"[SCM CLI] raw_files=0 after all extraction patterns. "
+                    f"Full JSON (first 1000 chars): {raw[:1000]!r}"
+                )
+                return None
 
             logger.info(
                 f"[SCM CLI] raw_files count={len(raw_files)}  "
-                f"sample={str(raw_files[:1])[:200]}"
+                f"sample={str(raw_files[:1])[:300]}"
             )
 
             files = []
@@ -687,10 +718,12 @@ class RTCConnection:
                 })
 
             logger.info(f"[SCM CLI] \u2713 {len(files)} files for baseline {buuid[:16]}")
+            if not files:
+                return None   # treat 0 parsed files same as CLI failure
             return {'files': files, 'folders': {}}
 
         except subprocess.TimeoutExpired:
-            logger.warning("[SCM CLI] Timed out (300s) \u2014 baseline may be very large")
+            logger.warning("[SCM CLI] Timed out (300s) — baseline may be very large")
             return None
         except Exception as e:
             logger.warning(f"[SCM CLI] Error: {e}")
@@ -1456,12 +1489,59 @@ class RTCConnection:
                 logger.warning(f"No root folder in component {component_name}")
                 return {'folders': {}, 'files': []}
 
-            # Step 3: BFS via /service/ endpoint.
-            # NOTE: Disabled on Bosch RTC (returns HTTP 400 CRJAZ1168E).
-            # Return empty so the caller keeps the UUID-based 'Different' status.
+            # Step 3: BFS via /service/ endpoint or Jazz session.
+            # The IVersionableRestService BFS endpoint is disabled on some Bosch
+            # RTC servers (returns HTTP 400 CRJAZ1168E) but may work on others.
+            # We try it opportunistically — if it fails, we log and return empty
+            # so the caller keeps the UUID-based 'Different' status.
+            logger.info(
+                f"[{component_name}] SCM CLI returned 0 files — trying REST BFS "
+                f"(root folder {root_folder_id[:16]})..."
+            )
+            try:
+                jazz_session = self._make_jazz_session()
+                children = self._get_folder_children(
+                    root_folder_id, baseline_uuid,
+                    current_path='',
+                    baseline_uri=baseline_uri,
+                    jazz_session=jazz_session,
+                )
+                if children and (children.get('files') or children.get('folders')):
+                    # BFS succeeded — collect all files recursively
+                    all_files = list(children.get('files', []))
+                    # Recursive BFS on sub-folders
+                    pending = list(children.get('folders', {}).values())
+                    depth = 0
+                    while pending and depth < 50:
+                        depth += 1
+                        next_pending = []
+                        for sub_folder in pending:
+                            sub_id   = sub_folder.get('itemId', sub_folder.get('uuid', ''))
+                            sub_path = sub_folder.get('path', '')
+                            if not sub_id:
+                                continue
+                            sub_children = self._get_folder_children(
+                                sub_id, baseline_uuid,
+                                current_path=sub_path,
+                                baseline_uri=baseline_uri,
+                                jazz_session=jazz_session,
+                            )
+                            if sub_children:
+                                all_files.extend(sub_children.get('files', []))
+                                next_pending.extend(
+                                    sub_children.get('folders', {}).values()
+                                )
+                        pending = next_pending
+                    logger.info(
+                        f"[{component_name}] REST BFS succeeded: {len(all_files)} files"
+                    )
+                    return {'folders': {}, 'files': all_files}
+            except Exception as bfs_err:
+                logger.warning(f"[{component_name}] REST BFS failed: {bfs_err}")
+
             logger.warning(
-                f"[{component_name}] SCM CLI returned 0 files and REST BFS is disabled "
-                f"on this server \u2014 no file-level data available"
+                f"[{component_name}] All file-listing strategies exhausted — "
+                f"no file-level data available"
             )
             return {'folders': {}, 'files': []}
 

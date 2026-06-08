@@ -52,7 +52,13 @@ class MigrationAnalysisGUI:
         self.cached_credentials_loaded = False
         self.save_credentials_on_success = False
         self.component_name = tk.StringVar(value="ALL")
-        
+
+        # GenMake / Cfg_DBFiles filter
+        self.genmake_enabled_var = tk.BooleanVar(value=False)
+        self.genmake_csv_path = tk.StringVar(value="")
+        self._genmake_filter = None          # GenMakeFilter instance when loaded
+        self._genmake_type_vars: dict = {}   # {type_str: BooleanVar}
+
         self.setup_ui()
         self._load_cached_credentials()
     
@@ -66,7 +72,10 @@ class MigrationAnalysisGUI:
         
         # Component Name Selection
         self.create_component_selection()
-        
+
+        # GenMake CSV filter section
+        self.create_genmake_section()
+
         # Input frames (all modes)
         self.create_folder_input_frame()       # Offline → Offline
         self.create_snapshot_input_frame()     # Online → Online
@@ -221,6 +230,159 @@ class MigrationAnalysisGUI:
             font=("Segoe UI", 8),
             fg="#555555"
         ).pack(side="left", padx=5)
+
+    def create_genmake_section(self):
+        """Create the GenMake / Cfg_DBFiles compilation-filter section."""
+        outer = tk.LabelFrame(
+            self.root,
+            text=" 📋 GenMake Compilation Filter (Cfg_DBFiles_GenMake.csv) ",
+            bg="#EAF3FB",
+            font=("Segoe UI", 9, "bold"),
+            fg="#003366",
+            pady=4,
+        )
+        outer.pack(fill="x", padx=10, pady=(0, 4))
+        self._genmake_outer_frame = outer
+
+        top_row = tk.Frame(outer, bg="#EAF3FB")
+        top_row.pack(fill="x", padx=6, pady=2)
+
+        tk.Checkbutton(
+            top_row,
+            text="Enable: compare only files listed in GenMake CSV",
+            variable=self.genmake_enabled_var,
+            bg="#EAF3FB",
+            font=("Segoe UI", 10),
+            command=self._on_genmake_toggle,
+        ).pack(side="left")
+
+        self._genmake_detail_frame = tk.Frame(outer, bg="#EAF3FB")
+
+        csv_row = tk.Frame(self._genmake_detail_frame, bg="#EAF3FB")
+        csv_row.pack(fill="x", padx=6, pady=2)
+
+        tk.Label(
+            csv_row, text="CSV file:", bg="#EAF3FB", font=("Segoe UI", 10)
+        ).pack(side="left")
+
+        self._genmake_path_entry = tk.Entry(
+            csv_row, textvariable=self.genmake_csv_path, width=60, state="readonly"
+        )
+        self._genmake_path_entry.pack(side="left", padx=(4, 4))
+
+        tk.Button(
+            csv_row,
+            text="Browse",
+            bg="#007B3E",
+            fg="white",
+            font=("Segoe UI", 9),
+            command=self._browse_genmake_csv,
+        ).pack(side="left", padx=2)
+
+        tk.Button(
+            csv_row,
+            text="Clear",
+            bg="#666666",
+            fg="white",
+            font=("Segoe UI", 9),
+            command=self._clear_genmake_csv,
+        ).pack(side="left", padx=2)
+
+        self._genmake_status_label = tk.Label(
+            self._genmake_detail_frame,
+            text="",
+            bg="#EAF3FB",
+            font=("Segoe UI", 8),
+            fg="#555555",
+        )
+        self._genmake_status_label.pack(anchor="w", padx=6)
+
+        # File-type multi-select (populated after CSV load)
+        self._genmake_types_frame = tk.Frame(self._genmake_detail_frame, bg="#EAF3FB")
+        self._genmake_types_frame.pack(fill="x", padx=6, pady=(2, 4))
+
+    def _on_genmake_toggle(self):
+        """Show/hide the GenMake detail controls based on the checkbox."""
+        if self.genmake_enabled_var.get():
+            self._genmake_detail_frame.pack(fill="x")
+        else:
+            self._genmake_detail_frame.pack_forget()
+
+    def _browse_genmake_csv(self):
+        """Open file dialog to pick a Cfg_DBFiles_GenMake.csv file."""
+        path = filedialog.askopenfilename(
+            title="Select Cfg_DBFiles_GenMake CSV",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        self._load_genmake_csv(path)
+
+    def _load_genmake_csv(self, path: str):
+        """Parse the selected CSV and update the filter + type-selector UI."""
+        from src.utils.genmake_filter import GenMakeFilter
+        try:
+            gf = GenMakeFilter.from_csv(path)
+            self._genmake_filter = gf
+            self.genmake_csv_path.set(path)
+            self._genmake_status_label.config(
+                text=f"✓ Loaded {len(gf)} entries  |  File types: {', '.join(gf.all_file_types) or 'none'}",
+                fg="#007B3E",
+            )
+            self._rebuild_type_checkboxes(gf.all_file_types)
+        except Exception as exc:
+            self._genmake_filter = None
+            self._genmake_status_label.config(
+                text=f"✗ Failed to load: {exc}", fg="#B00020"
+            )
+
+    def _clear_genmake_csv(self):
+        """Remove the loaded CSV filter."""
+        self._genmake_filter = None
+        self.genmake_csv_path.set("")
+        self._genmake_status_label.config(text="", fg="#555555")
+        for widget in self._genmake_types_frame.winfo_children():
+            widget.destroy()
+        self._genmake_type_vars.clear()
+
+    def _rebuild_type_checkboxes(self, file_types: list):
+        """Recreate the file-type checkbox grid after a CSV load."""
+        for widget in self._genmake_types_frame.winfo_children():
+            widget.destroy()
+        self._genmake_type_vars.clear()
+
+        if not file_types:
+            return
+
+        tk.Label(
+            self._genmake_types_frame,
+            text="Include file types (uncheck to exclude):",
+            bg="#EAF3FB",
+            font=("Segoe UI", 9),
+        ).grid(row=0, column=0, columnspan=10, sticky="w")
+
+        cols = 6
+        for idx, ft in enumerate(file_types):
+            var = tk.BooleanVar(value=True)
+            self._genmake_type_vars[ft] = var
+            tk.Checkbutton(
+                self._genmake_types_frame,
+                text=ft,
+                variable=var,
+                bg="#EAF3FB",
+                font=("Segoe UI", 8),
+            ).grid(row=1 + idx // cols, column=idx % cols, sticky="w", padx=4)
+
+    def _get_active_genmake_filter(self):
+        """Return the active GenMakeFilter (with selected types applied), or None."""
+        if not self.genmake_enabled_var.get() or self._genmake_filter is None:
+            return None
+        # Apply type selection
+        selected_types = {
+            ft for ft, var in self._genmake_type_vars.items() if var.get()
+        } or None  # None means all types
+        self._genmake_filter.filter_file_types(selected_types)
+        return self._genmake_filter
 
     def create_folder_input_frame(self):
         """Create offline → offline input section (Folders/ZIPs)"""
@@ -669,7 +831,11 @@ class MigrationAnalysisGUI:
                 return
             
             # Show progress and start comparison in background thread
-            self.run_folder_comparison(folder1, folder2, self.component_name.get())
+            self.run_folder_comparison(
+                folder1, folder2,
+                self.component_name.get(),
+                genmake_filter=self._get_active_genmake_filter(),
+            )
         
         elif mode == "online_online":
             # Online → Online: RTC Snapshots/URLs
@@ -701,7 +867,10 @@ class MigrationAnalysisGUI:
                 self.show_credential_dialog()
             else:
                 # Start comparison with existing credentials
-                self.start_snapshot_comparison(url1, url2)
+                self.start_snapshot_comparison(
+                    url1, url2,
+                    genmake_filter=self._get_active_genmake_filter(),
+                )
         
         elif mode == "online_offline":
             # Online → Offline: RTC Snapshot + Local Root Folder
@@ -1055,7 +1224,10 @@ Reports generated:
                 url1 = self.snapshot1_entry.get().strip()
                 url2 = self.snapshot2_entry.get().strip()
                 # Start comparison
-                self.start_snapshot_comparison(url1, url2)
+                self.start_snapshot_comparison(
+                    url1, url2,
+                    genmake_filter=self._get_active_genmake_filter(),
+                )
         
         def on_cancel():
             dialog.destroy()
@@ -1190,7 +1362,7 @@ Reports generated:
                 "RTC credentials have been cleared from this session and local secure storage."
             )
     
-    def start_snapshot_comparison(self, url1, url2):
+    def start_snapshot_comparison(self, url1, url2, genmake_filter=None):
         """Start RTC snapshot comparison in background thread"""
         # Disable button during processing
         self.save_credentials_on_success = self.keep_signed_in_var.get()
@@ -1198,19 +1370,20 @@ Reports generated:
         self.progress_bar['value'] = 0
         self.progress_label.config(text="🌐 Connecting to RTC server...")
         self.root.update()
-        
+
         # Run in background thread
         thread = threading.Thread(
             target=self._snapshot_comparison_thread,
             args=(url1, url2),
+            kwargs={'genmake_filter': genmake_filter},
             daemon=True
         )
         thread.start()
     
-    def _snapshot_comparison_thread(self, url1, url2):
+    def _snapshot_comparison_thread(self, url1, url2, genmake_filter=None):
         """
         Background thread for snapshot comparison with comprehensive error handling
-        
+
         Steps:
         1. Validate inputs
         2. Test RTC connection
@@ -1515,11 +1688,65 @@ Reports generated:
                 self.root.after(0, lambda p=progress_pct, m=message: self._update_progress(p, m))
             
             comparison_results = rtc_conn.compare_snapshots(
-                snap1_filtered, 
-                snap2_filtered, 
+                snap1_filtered,
+                snap2_filtered,
                 progress_callback=comparison_progress_callback
             )
-            
+
+            # ── Apply GenMake filter to per-component file details ────────────────
+            # Filter the 'details' dict inside each component's file_comparison so
+            # only files listed in the CSV are shown in HTML reports and counted.
+            #
+            # Path mismatch handling
+            # ─────────────────────
+            # The SCM CLI often returns flat filenames (e.g. 'PostBuild.mk') with no
+            # sub-directory prefix, while the CSV stores full workspace-relative paths
+            # (e.g. 'rb\as\ms\ESP10E_MFA2\cswpr\cfg\PrePostBuild\PostBuild.mk').
+            # A 1-component key will never match a ≥2-component suffix in the index,
+            # so we also try prepending the component directory derived from its name
+            # (dots → slashes) before concluding there is no match.
+            if genmake_filter is not None:
+                logger.info("Applying GenMake filter to component file details...")
+                _genmake_excluded_total = 0
+                for comp in comparison_results:
+                    cname = comp.get('name', '')
+                    # 'rb.as.ms.ESP10E_MFA2.cswpr' → 'rb/as/ms/ESP10E_MFA2/cswpr'
+                    comp_dir = cname.replace('.', '/') if cname else ''
+
+                    fcmp = comp.get('file_comparison')
+                    if not fcmp or 'details' not in fcmp:
+                        continue
+                    original_details = fcmp['details']
+                    filtered_details = {}
+                    for fp, st in original_details.items():
+                        # 1. Direct suffix-index match (path already has ≥2 components)
+                        if genmake_filter.matches(fp):
+                            filtered_details[fp] = st
+                            continue
+                        # 2. Flat-filename fallback: prefix with component dir and retry
+                        #    e.g. 'PostBuild.mk' → 'rb/as/ms/ESP10E_MFA2/cswpr/PostBuild.mk'
+                        if comp_dir:
+                            if genmake_filter.matches(comp_dir + '/' + fp):
+                                filtered_details[fp] = st
+                                continue
+
+                    excluded = len(original_details) - len(filtered_details)
+                    _genmake_excluded_total += excluded
+                    fcmp['details'] = filtered_details
+                    # Recompute file-count summary from filtered details
+                    fcmp['modified']  = sum(1 for s in filtered_details.values() if s == 'modified')
+                    fcmp['added']     = sum(1 for s in filtered_details.values() if s == 'added')
+                    fcmp['removed']   = sum(1 for s in filtered_details.values() if s == 'removed')
+                    fcmp['unchanged'] = sum(1 for s in filtered_details.values() if s == 'unchanged')
+                    logger.info(
+                        f"  [{cname}] GenMake filter: {len(filtered_details)} kept, "
+                        f"{excluded} excluded (comp_dir={comp_dir!r})"
+                    )
+                logger.info(
+                    f"GenMake filter: excluded {_genmake_excluded_total} file entries "
+                    f"across {len(comparison_results)} components"
+                )
+
             # Calculate statistics
             different = sum(1 for r in comparison_results if r['status'] == 'Different')
             identical = sum(1 for r in comparison_results if r['status'] == 'Identical')
@@ -1579,12 +1806,24 @@ Reports generated:
                 files1_map = _RTCConn._get_all_files_from_structure(struct1)
                 files2_map = _RTCConn._get_all_files_from_structure(struct2)
 
+                # comp_dir for flat-filename fallback (same logic as details filter above)
+                comp_dir_ft = cname.replace('.', '/') if cname else ''
+
                 comp_jobs = 0
                 for fpath_key, fstatus in sorted(details.items()):
                     if fstatus not in ('modified', 'added', 'removed'):
                         continue
                     if os.path.splitext(fpath_key.lower())[1] in _BINARY_EXTS:
                         continue
+                    # GenMake filter — details dict is already filtered above, but guard
+                    # here too in case of edge cases.  Use the same component-dir fallback
+                    # so flat filenames (e.g. 'PostBuild.mk') aren't incorrectly skipped.
+                    if genmake_filter is not None:
+                        _passes = genmake_filter.matches(fpath_key)
+                        if not _passes and comp_dir_ft:
+                            _passes = genmake_filter.matches(comp_dir_ft + '/' + fpath_key)
+                        if not _passes:
+                            continue
                     if comp_jobs >= MAX_FILES_PER_COMP:
                         break
                     if len(fetch_tasks) >= MAX_TOTAL_FETCH_JOBS:
@@ -3646,7 +3885,7 @@ Snapshot URL: {_html.escape(snapshot_url)}</p>
         ).pack()
 
     
-    def run_folder_comparison(self, folder1, folder2, component_name="ALL"):
+    def run_folder_comparison(self, folder1, folder2, component_name="ALL", genmake_filter=None):
         """Run folder comparison in background thread"""
         # Reset progress
         self.progress_bar['value'] = 0
@@ -3684,7 +3923,8 @@ Snapshot URL: {_html.escape(snapshot_url)}</p>
                     progress_callback=update_progress,
                     custom_mappings=None,  # TODO: Add file mapping dialog
                     rtc_info=rtc_info,
-                    component_name=component_name
+                    component_name=component_name,
+                    genmake_filter=genmake_filter,
                 )
                 
                 # Update UI on completion (must run in main thread)

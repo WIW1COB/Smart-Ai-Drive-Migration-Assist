@@ -193,7 +193,7 @@ def process_file_comparison(args):
         ]
  
  
-def compare_folders(folder1, folder2, progress_callback=None, custom_mappings=None, rtc_info=None, output_dir=None, report_name=None, component_name=None):
+def compare_folders(folder1, folder2, progress_callback=None, custom_mappings=None, rtc_info=None, output_dir=None, report_name=None, component_name=None, genmake_filter=None):
     """
     Compare two folders and generate comparison reports.
    
@@ -207,6 +207,8 @@ def compare_folders(folder1, folder2, progress_callback=None, custom_mappings=No
         report_name (str, optional): Base filename (without extension) for CSV/Excel reports.
                                      Defaults to 'Migration_Analysis_Report'.
         component_name (str, optional): Component name for file extension filtering (e.g. "DEM").
+        genmake_filter (GenMakeFilter, optional): When provided only files listed in the
+            Cfg_DBFiles_GenMake CSV are included in the comparison.
        
     Returns:
         dict: Result dictionary with keys:
@@ -279,6 +281,8 @@ def compare_folders(folder1, folder2, progress_callback=None, custom_mappings=No
         if ext in EXCLUDED_EXTENSIONS:
             return False
         if allowed_exts is not None and ext not in allowed_exts:
+            return False
+        if genmake_filter is not None and not genmake_filter.matches(rel_path):
             return False
         return True
 
