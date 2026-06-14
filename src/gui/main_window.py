@@ -711,11 +711,39 @@ class MigrationAnalysisGUI:
             command=self.open_platform_dependency_analysis
         )
         self.platform_dep_btn.pack(side="left", padx=10)
+
+        # Manual File Change Analysis button
+        self.manual_change_btn = tk.Button(
+            button_frame,
+            text="🛠 Manual File Change\n     Analyzer",
+            bg="#6A0DAD",
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+            width=18,
+            height=2,
+            command=self.open_manual_file_change_analyzer
+        )
+        self.manual_change_btn.pack(side="left", padx=10)
     
     def open_platform_dependency_analysis(self):
         """Open Platform Dependency Analysis tool for single folder analysis"""
         from src.gui.platform_dependency_viewer import PlatformDependencyViewer
         PlatformDependencyViewer(self.root)
+
+    def open_manual_file_change_analyzer(self):
+        """Open Manual File Change Analyzer tool"""
+        from src.gui.manual_file_change_analyzer import ManualFileChangeAnalyzer
+        # Pre-fill workspace from current folder inputs
+        ws = ""
+        mode = self.comparison_mode.get()
+        if mode == "offline_offline":
+            ws = self.folder1_entry.get().strip()
+        elif mode == "interface_check":
+            if self.interface_check_mode.get() == "single":
+                ws = self.single_workspace_entry.get().strip()
+            else:
+                ws = self.platform_workspace_entry.get().strip()
+        ManualFileChangeAnalyzer(self.root, workspace_path=ws)
     
     def create_progress_section(self):
         """Create progress display section"""

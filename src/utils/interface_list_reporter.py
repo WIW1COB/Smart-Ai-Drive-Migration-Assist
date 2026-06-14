@@ -304,6 +304,16 @@ class InterfaceListReportGenerator:
         
         # Flow Information section
         html_content += self._generate_flow_html(analysis.flow_info, analysis.workspace_path)
+
+        # Traceability section (build if not already done)
+        try:
+            from src.utils.interface_list_analyzer import InterfaceListAnalyzer
+            if not analysis.traceability:
+                analyzer = InterfaceListAnalyzer()
+                analyzer.build_traceability(analysis)
+            html_content += self._generate_traceability_html(analysis.traceability)
+        except Exception as _te:
+            self.logger.warning(f"Traceability section skipped: {_te}")
         
         html_content += """
 </body>
@@ -318,30 +328,47 @@ class InterfaceListReportGenerator:
         html = """
     <div class="section" id="interfaces-section">
         <h2>📋 Interfaces Catalog</h2>
+        <!-- Color Legend -->
+        <div style="display:flex; flex-wrap:wrap; gap:10px; margin-bottom:14px; align-items:center;">
+            <span style="font-weight:600; color:#003366;">Color Legend:</span>
+            <span style="background:#D1ECF1; color:#0C5460; padding:4px 12px; border-radius:12px; font-size:0.85em;">function</span>
+            <span style="background:#D4EDDA; color:#155724; padding:4px 12px; border-radius:12px; font-size:0.85em;">struct / enum</span>
+            <span style="background:#FFF3CD; color:#856404; padding:4px 12px; border-radius:12px; font-size:0.85em;">variable</span>
+            <span style="background:#FDECEA; color:#721C24; padding:4px 12px; border-radius:12px; font-size:0.85em;">other</span>
+            <span style="font-size:0.82em; color:#666; margin-left:10px;">🟢 Declaration &nbsp; 🔵 Definition &nbsp; 🟡 Usage</span>
+        </div>
         <table>
             <thead>
                 <tr>
                     <th>Interface Name</th>
                     <th>Type</th>
                     <th>Data Type</th>
+                    <th>Kind</th>
                     <th>File</th>
                     <th>Line</th>
                 </tr>
             </thead>
             <tbody>
 """
+        _TYPE_COLORS = {
+            "function":    "#D1ECF1",
+            "struct/enum": "#D4EDDA",
+            "variable":    "#FFF3CD",
+        }
         
         for interface in interfaces:
-            full_path = interface.file_path.replace('\\', '/')  # Normalize path separators
-            # Create unique anchor ID for this interface
+            full_path = interface.file_path.replace('\\', '/')
             anchor_id = f"interface-{interface.interface_name}-{interface.line_number}".replace(' ', '-').replace('/', '-')
-            # Create vscode link to open file at line
             file_link = f"vscode://file/{interface.file_path.replace(chr(92), '/')}:{interface.line_number}"
+            bg = _TYPE_COLORS.get(interface.interface_type, "#FDECEA")
+            kind_icon = "🟢" if interface.is_declaration else ("🔵" if interface.is_definition else "🟡")
+            kind_text = "Declaration" if interface.is_declaration else ("Definition" if interface.is_definition else "Usage")
             html += f"""
-                <tr id="{anchor_id}">
+                <tr id="{anchor_id}" style="background:{bg};">
                     <td><code>{interface.interface_name}</code></td>
                     <td><span class="type-badge">{interface.interface_type}</span></td>
                     <td><code>{interface.data_type}</code></td>
+                    <td>{kind_icon} {kind_text}</td>
                     <td class="file-path"><a href="{file_link}" title="Open in editor">{full_path}</a></td>
                     <td>{interface.line_number}</td>
                 </tr>
@@ -527,6 +554,90 @@ class InterfaceListReportGenerator:
 """
         
         html += """
+    </div>
+"""
+        return html
+
+    def _generate_traceability_html(self, traceability: Dict) -> str:
+        """Generate HTML for interface traceability / end-to-end usage section."""
+        if not traceability:
+            return ""
+
+        # Show top-30 by impact radius
+        top = sorted(traceability.values(),
+                     key=lambda t: len(t.impacted_files), reverse=True)[:30]
+
+        html = """
+    <div class="section" id="traceability-section">
+        <h2>🔍 Interface Traceability &amp; Usage Report</h2>
+        <p>
+            For each interface: where it is <strong>defined</strong>,
+            where it is <strong>declared</strong>, where it is <strong>used</strong>,
+            <strong>caller / callee</strong> relationships, and which files are
+            <strong>impacted</strong> if it changes.
+            Sorted by impact radius (highest first, top 30 shown).
+        </p>
+        <!-- Legend -->
+        <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:14px;">
+            <span style="background:#003366; color:white; padding:4px 10px; border-radius:8px; font-size:0.82em;">🔵 Definition</span>
+            <span style="background:#007B3E; color:white; padding:4px 10px; border-radius:8px; font-size:0.82em;">🟢 Declaration</span>
+            <span style="background:#E65100; color:white; padding:4px 10px; border-radius:8px; font-size:0.82em;">🟡 Usage site</span>
+            <span style="background:#B71C1C; color:white; padding:4px 10px; border-radius:8px; font-size:0.82em;">⚡ Impacted file</span>
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Interface</th>
+                    <th>Defined in</th>
+                    <th>Declared in</th>
+                    <th>Usage count</th>
+                    <th>Callers</th>
+                    <th>Callees</th>
+                    <th>Impact radius</th>
+                    <th>Impacted files</th>
+                </tr>
+            </thead>
+            <tbody>
+"""
+        for t in top:
+            def_str  = "; ".join(
+                f"{os.path.basename(d['file'])}:{d['line']}" for d in t.definitions[:3]
+            ) or "–"
+            decl_str = "; ".join(
+                f"{os.path.basename(d['file'])}:{d['line']}" for d in t.declarations[:3]
+            ) or "–"
+            callers_str = "; ".join(
+                f"{c['caller_func']} ({os.path.basename(c['file'])}:{c['line']})"
+                for c in t.callers[:3]
+            ) or "–"
+            callees_str = ", ".join(t.callees[:5]) or "–"
+            impacted_str = "<br>".join(
+                f"<span style='color:#B71C1C'>⚡ {os.path.basename(f)}</span>"
+                for f in t.impacted_files[:8]
+            )
+            if len(t.impacted_files) > 8:
+                impacted_str += f"<br><em>…+{len(t.impacted_files)-8} more</em>"
+            impact_color = (
+                "#B71C1C" if len(t.impacted_files) > 20 else
+                "#E65100" if len(t.impacted_files) > 5 else
+                "#1B5E20"
+            )
+
+            html += f"""
+                <tr>
+                    <td><code><strong>{t.name}</strong></code></td>
+                    <td style="font-size:0.85em;">{def_str}</td>
+                    <td style="font-size:0.85em;">{decl_str}</td>
+                    <td style="text-align:center;">{len(t.usages)}</td>
+                    <td style="font-size:0.82em;">{callers_str}</td>
+                    <td style="font-size:0.82em;"><code>{callees_str}</code></td>
+                    <td style="text-align:center; font-weight:bold; color:{impact_color};">{len(t.impacted_files)}</td>
+                    <td style="font-size:0.82em;">{impacted_str or "–"}</td>
+                </tr>
+"""
+        html += """
+            </tbody>
+        </table>
     </div>
 """
         return html
@@ -915,6 +1026,13 @@ class InterfaceListReportGenerator:
         html = """
     <div class="section">
         <h2>📋 Interface Differences</h2>
+        <!-- Color Legend -->
+        <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px; align-items:center;">
+            <span style="font-weight:600; color:#003366;">Color Legend:</span>
+            <span style="background:#FFCDD2; color:#B71C1C; padding:4px 12px; border-radius:12px; font-size:0.85em;">🔴 Removed (only in Platform)</span>
+            <span style="background:#C8E6C9; color:#1B5E20; padding:4px 12px; border-radius:12px; font-size:0.85em;">🟢 Added (only in Project)</span>
+            <span style="background:#FFF9C4; color:#827717; padding:4px 12px; border-radius:12px; font-size:0.85em;">🟡 Modified</span>
+        </div>
 """
         
         # Only in platform

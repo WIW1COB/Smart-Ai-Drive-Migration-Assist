@@ -1,6 +1,8 @@
 """
 Interface List Analyzer - Advanced Interface Analysis Tool
 Analyzes interfaces, switches, dependencies, and data types from C/C++ source files
+Includes: traceability (definition/usage locations), caller/callee maps,
+          end-to-end interface usage reports.
 """
 
 import os
@@ -76,6 +78,26 @@ class WorkspaceAnalysis:
     data_types_used: Dict[str, int] = field(default_factory=dict)
     total_files: int = 0
     analyzed_files: int = 0
+    # Traceability (populated by build_traceability)
+    traceability: Dict[str, "InterfaceTraceability"] = field(default_factory=dict)
+
+
+@dataclass
+class InterfaceTraceability:
+    """Full traceability record for a single interface/API name."""
+    name: str
+    # Where it is DEFINED (function body / struct / enum body)
+    definitions: List[Dict] = field(default_factory=list)  # [{file, line, context}]
+    # Where it is DECLARED (prototype / extern)
+    declarations: List[Dict] = field(default_factory=list)  # [{file, line, context}]
+    # Where it is CALLED / USED
+    usages: List[Dict] = field(default_factory=list)        # [{file, line, context}]
+    # Callers: functions that call THIS interface
+    callers: List[Dict] = field(default_factory=list)       # [{caller_func, file, line}]
+    # Callees: functions called BY this interface's body
+    callees: List[str] = field(default_factory=list)
+    # Files affected if this interface changes
+    impacted_files: List[str] = field(default_factory=list)
 
 
 class InterfaceListAnalyzer:
@@ -521,6 +543,178 @@ class InterfaceListAnalyzer:
                 })
         
         return differences
+
+    # ------------------------------------------------------------------
+    # Traceability analysis
+    # ------------------------------------------------------------------
+
+    def build_traceability(self, analysis: WorkspaceAnalysis) -> Dict[str, InterfaceTraceability]:
+        """
+        Build a comprehensive traceability map for every named interface in the
+        workspace analysis.  Populates ``analysis.traceability`` in-place and
+        also returns the map.
+
+        For each interface name we record:
+          • where it is defined (function body)
+          • where it is declared (prototype / extern)
+          • where it is used / called
+          • caller functions (who calls it)
+          • callee functions (what it calls, from flow_info)
+          • impacted files (files that include the header that declares it)
+        """
+        trace: Dict[str, InterfaceTraceability] = {}
+
+        # Index all source files for fast content lookup
+        file_contents: Dict[str, str] = {}
+        for file_path in analysis.dependencies:
+            try:
+                with open(file_path, "r", encoding="utf-8", errors="ignore") as fh:
+                    file_contents[file_path] = fh.read()
+            except Exception:
+                pass
+
+        # Build name → header file map (for impact radius)
+        name_to_header: Dict[str, str] = {}   # interface_name → file_path
+
+        # Seed from interface list
+        for iface in analysis.interfaces:
+            name = iface.interface_name
+            if name not in trace:
+                trace[name] = InterfaceTraceability(name=name)
+            t = trace[name]
+
+            entry = {
+                "file":    iface.file_path,
+                "line":    iface.line_number,
+                "context": iface.context,
+            }
+            if iface.is_definition:
+                t.definitions.append(entry)
+            elif iface.is_declaration:
+                t.declarations.append(entry)
+                # Track which header declares this name
+                if iface.file_path.endswith((".h", ".hpp", ".hxx")):
+                    name_to_header[name] = iface.file_path
+
+        # Scan all files for usages (call sites) and build caller/callee
+        _call_re   = re.compile(r'\b(\w+)\s*\(')
+        _func_def_re = re.compile(
+            r'^(?:(?:static|inline|extern|const|volatile)\s+)*'
+            r'([\w\*]+(?:\s+[\w\*]+)*)\s+(\w+)\s*\([^)]*\)\s*\{',
+            re.MULTILINE
+        )
+
+        for file_path, content in file_contents.items():
+            lines = content.splitlines()
+
+            # Find function bodies and the calls made within them
+            funcs_in_file: List[Tuple[int, int, str]] = []   # (start_offset, end_offset, name)
+            for m in _func_def_re.finditer(content):
+                fname = m.group(2)
+                start = m.start()
+                # Approximate body end by counting braces
+                depth = 0
+                end   = start
+                for i, ch in enumerate(content[m.start():], m.start()):
+                    if ch == '{':
+                        depth += 1
+                    elif ch == '}':
+                        depth -= 1
+                        if depth == 0:
+                            end = i
+                            break
+                funcs_in_file.append((start, end, fname))
+
+            # For each call site in the file, attribute it to the enclosing function
+            for call_match in _call_re.finditer(content):
+                callee_name = call_match.group(1)
+                if callee_name not in trace:
+                    continue
+                call_offset = call_match.start()
+                lno = content[:call_offset].count("\n") + 1
+                ctx = lines[max(0, lno - 2): min(len(lines), lno + 2)]
+
+                # Register as usage
+                trace[callee_name].usages.append({
+                    "file":    file_path,
+                    "line":    lno,
+                    "context": "\n".join(ctx),
+                })
+
+                # Find enclosing function → that function is a caller
+                caller_name = None
+                for (fs, fe, fn) in funcs_in_file:
+                    if fs <= call_offset <= fe:
+                        caller_name = fn
+                        break
+                if caller_name and caller_name != callee_name:
+                    trace[callee_name].callers.append({
+                        "caller_func": caller_name,
+                        "file":        file_path,
+                        "line":        lno,
+                    })
+
+            # Populate callees for every function defined in this file
+            for (fs, fe, fn) in funcs_in_file:
+                if fn not in trace:
+                    trace[fn] = InterfaceTraceability(name=fn)
+                body = content[fs:fe]
+                called: Set[str] = set()
+                for cm in _call_re.finditer(body):
+                    cname = cm.group(1)
+                    if cname != fn:
+                        called.add(cname)
+                trace[fn].callees = sorted(called)
+
+        # Compute impacted files: files that include the declaring header
+        for name, t in trace.items():
+            header = name_to_header.get(name)
+            if not header:
+                continue
+            header_base = os.path.basename(header)
+            impacted: Set[str] = set()
+            for fp, dep_info in analysis.dependencies.items():
+                if any(os.path.basename(inc) == header_base for inc in dep_info.includes):
+                    impacted.add(fp)
+                    # Also add files that include those files (transitive)
+                    for fp2, dep2 in analysis.dependencies.items():
+                        if fp in dep2.included_by:
+                            impacted.add(fp2)
+            t.impacted_files = sorted(impacted)
+
+        analysis.traceability = trace
+        return trace
+
+    def generate_traceability_report(self, analysis: WorkspaceAnalysis) -> List[Dict]:
+        """
+        Build (or reuse) the traceability map and return a flat list of records
+        suitable for report generation.
+
+        Each record:
+            {name, definitions, declarations, usage_count, caller_count,
+             callee_count, impacted_file_count, impacted_files}
+        """
+        if not analysis.traceability:
+            self.build_traceability(analysis)
+
+        records = []
+        for name, t in analysis.traceability.items():
+            records.append({
+                "name":               name,
+                "definitions":        t.definitions,
+                "declarations":       t.declarations,
+                "usages":             t.usages,
+                "callers":            t.callers,
+                "callees":            t.callees,
+                "usage_count":        len(t.usages),
+                "caller_count":       len(t.callers),
+                "callee_count":       len(t.callees),
+                "impacted_files":     t.impacted_files,
+                "impacted_file_count": len(t.impacted_files),
+            })
+        # Sort by impacted file count descending (highest-risk first)
+        records.sort(key=lambda r: r["impacted_file_count"], reverse=True)
+        return records
 
 
 def format_relative_path(full_path: str, base_path: str) -> str:

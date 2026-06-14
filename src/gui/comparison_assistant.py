@@ -1133,55 +1133,20 @@ class ComparisonAssistantWindow:
     def _get_ai_state_label(self) -> str:
         """Return a human-readable AI state label based on the engine type."""
         if not self.engine:
-            return "⚫ Local agent"
-        
-        engine_class_name = self.engine.__class__.__name__
-        if "Ollama" in engine_class_name:
-            return "🦙 Ollama (Free/Local)"
-        elif "Gemini" in engine_class_name:
-            return "✨ Gemini (Free)"
-        elif "Groq" in engine_class_name:
-            return "🤖 Groq AI"
-        elif "ChatEngine" in engine_class_name:
-            return "🔵 Bosch AOAI Farm"
-        else:
-            return "✨ AI enabled"
+            return "⚫ Bosch AOAI Farm (unavailable)"
+        return "🔵 Bosch AOAI Farm"
 
     # ------------------------------------------------------------------
     # Agent selector helpers
     # ------------------------------------------------------------------
 
-    _AGENT_GROQ   = "🤖 Groq AI (llama-3.3-70b)"
     _AGENT_AOAI   = "🔵 Bosch AOAI Farm (Internal)"
-    _AGENT_GEMINI = "✨ Gemini (Free — Google AI)"
-    _AGENT_OLLAMA = "🦙 Ollama — Free / Local"
-    _AGENT_LOCAL  = "⚫ Local Agent (offline)"
 
     def _available_agent_names(self) -> list:
-        names = []
-        if os.environ.get("GROQ_API_KEY", "").strip():
-            names.append(self._AGENT_GROQ)
-        if os.environ.get("GENAIPLATFORM_FARM_SUBSCRIPTION_KEY", "").strip() or os.environ.get("AOAI_FARM_KEY", "").strip():
-            names.append(self._AGENT_AOAI)
-        if os.environ.get("GEMINI_API_KEY", "").strip():
-            names.append(self._AGENT_GEMINI)
-        names.append(self._AGENT_OLLAMA)
-        names.append(self._AGENT_LOCAL)
-        return names
+        return [self._AGENT_AOAI]
 
     def _default_agent_name(self) -> str:
-        avail = self._available_agent_names()
-        # Reflect whatever engine was auto-selected at startup
-        label = self._get_ai_state_label()
-        if "Ollama" in label and self._AGENT_OLLAMA in avail:
-            return self._AGENT_OLLAMA
-        if "Bosch AOAI" in label and self._AGENT_AOAI in avail:
-            return self._AGENT_AOAI
-        if "Gemini" in label and self._AGENT_GEMINI in avail:
-            return self._AGENT_GEMINI
-        if "Groq" in label and self._AGENT_GROQ in avail:
-            return self._AGENT_GROQ
-        return avail[0] if avail else self._AGENT_LOCAL
+        return self._AGENT_AOAI
 
     def _on_agent_change(self, _event=None):
         """Rebuild engine when user picks a different agent from the dropdown."""
@@ -1197,79 +1162,7 @@ class ComparisonAssistantWindow:
 
     def _build_engine_for(self, agent_name: str):
         """Build and return the engine for a given agent dropdown value."""
-        if self._AGENT_OLLAMA in agent_name:
-            return self._try_build_ollama()
-        if self._AGENT_AOAI in agent_name:
-            return self._try_build_aoai_farm()
-        if self._AGENT_GEMINI in agent_name:
-            return self._try_build_gemini()
-        if self._AGENT_GROQ in agent_name:
-            return self._try_build_groq()
-        return None  # Local Agent
-
-    def _try_build_ollama(self):
-        """Attempt to build an OllamaChatEngine; return None on failure."""
-        try:
-            from src.chatbot.chatbot import OllamaChatEngine
-            from src.config import settings
-            base_url = os.environ.get("OLLAMA_BASE_URL", getattr(settings, "OLLAMA_BASE_URL", "http://localhost:11434"))
-            model    = os.environ.get("OLLAMA_MODEL",    getattr(settings, "OLLAMA_MODEL",    "llama3.2:3b"))
-            engine = OllamaChatEngine(base_url=base_url, model=model)
-            print(f"[INFO] Ollama engine configured: {base_url}, model={model}")
-            return engine
-        except Exception as exc:
-            print(f"[WARN] Ollama engine init failed: {exc}")
-            return None
-
-    def _try_build_groq(self):
-        """Attempt to build a GroqChatEngine; return None on failure."""
-        try:
-            groq_key = os.environ.get("GROQ_API_KEY", "")
-            if not groq_key.strip():
-                return None
-            from src.chatbot.chatbot import GroqChatEngine
-            from src.config import settings
-            groq_model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
-            proxy_url  = getattr(settings, "GROQ_PROXY_URL",      "") or getattr(settings, "PROXY_URL",  "")
-            proxy_user = getattr(settings, "GROQ_PROXY_USERNAME", "") or getattr(settings, "PROXY_USER", "")
-            proxy_pass = getattr(settings, "GROQ_PROXY_PASSWORD", "") or getattr(settings, "PROXY_PASS", "")
-            domain     = getattr(settings, "PROXY_DOMAIN", "")
-            if domain and proxy_user and "\\" not in proxy_user and "/" not in proxy_user:
-                proxy_user = f"{domain}\\{proxy_user}"
-            return GroqChatEngine(
-                api_key=groq_key, model=groq_model,
-                proxy_url=proxy_url or None,
-                proxy_user=proxy_user or None,
-                proxy_password=proxy_pass or None,
-            )
-        except Exception as exc:
-            print(f"[WARN] Groq engine init failed: {exc}")
-            return None
-
-    def _try_build_gemini(self):
-        """Attempt to build a GeminiChatEngine; return None on failure."""
-        try:
-            gemini_key = os.environ.get("GEMINI_API_KEY", "")
-            if not gemini_key.strip():
-                return None
-            from src.chatbot.chatbot import GeminiChatEngine
-            from src.config import settings
-            gemini_model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
-            proxy_url  = getattr(settings, "PROXY_URL",  "") or os.environ.get("HTTPS_PROXY", "")
-            proxy_user = getattr(settings, "PROXY_USER", "") or os.environ.get("PROXY_USER",  "")
-            proxy_pass = getattr(settings, "PROXY_PASS", "") or os.environ.get("PROXY_PASS",  "")
-            domain     = getattr(settings, "PROXY_DOMAIN", "")
-            if domain and proxy_user and "\\" not in proxy_user and "/" not in proxy_user:
-                proxy_user = f"{domain}\\{proxy_user}"
-            return GeminiChatEngine(
-                api_key=gemini_key, model=gemini_model,
-                proxy_url=proxy_url or None,
-                proxy_user=proxy_user or None,
-                proxy_password=proxy_pass or None,
-            )
-        except Exception as exc:
-            print(f"[WARN] Gemini engine init failed: {exc}")
-            return None
+        return self._try_build_aoai_farm()
 
     def _try_build_aoai_farm(self):
         """Attempt to build Bosch AOAI Farm ChatEngine; return None on failure."""
@@ -1328,19 +1221,9 @@ class ComparisonAssistantWindow:
         dep_status = "✓" if DEPENDENCY_GRAPH_AVAILABLE else "✗"
         
         if self.engine:
-            engine_note = ""
-            ec = self.engine.__class__.__name__
-            if "Ollama" in ec:
-                engine_note = "🦙 Ollama (free local LLM — no internet required)\n\n"
-            elif "ChatEngine" in ec:
-                engine_note = "🔵 Bosch AOAI Farm (internal enterprise endpoint)\n\n"
-            elif "Gemini" in ec:
-                engine_note = "✨ Google Gemini (free tier via Google AI Studio)\n\n"
-            elif "Groq" in ec:
-                engine_note = "🤖 Groq AI (cloud, free tier)\n\n"
             greeting = (
                 f"{ai_status}\n\n"
-                f"{engine_note}"
+                "🔵 Bosch AOAI Farm (internal enterprise endpoint)\n\n"
                 "I'm your enterprise migration assistant with agentic capabilities.\n\n"
                 "📋 ANALYSIS:\n"
                 "• Explain file differences and migration risks\n"
@@ -1354,8 +1237,6 @@ class ComparisonAssistantWindow:
                 "• Filter and search comparison results\n"
                 "• Show change statistics and summaries\n\n"
                 f"Dependency Analysis: {dep_status} {'Available' if DEPENDENCY_GRAPH_AVAILABLE else 'Not available'}\n\n"
-                "Use the  Agent  dropdown (top-right) to switch between:\n"
-                "  🤖 Groq AI  •  🔵 Bosch AOAI Farm  •  ✨ Gemini  •  🦙 Ollama  •  ⚫ Local Agent\n\n"
                 "Try commands like:\n"
                 "• \"Show change statistics\"\n"
                 "• \"Open app_main.c in VS Code\"\n"
@@ -1366,7 +1247,7 @@ class ComparisonAssistantWindow:
             )
         else:
             greeting = (
-                "⚫ Local agent (offline mode)\n\n"
+                "⚫ Bosch AOAI Farm (unavailable)\n\n"
                 "AI engine unavailable. Running in local mode with agentic features.\n\n"
                 "I can still help with:\n"
                 "• Open files (Notepad/VS Code)\n"
@@ -1375,21 +1256,10 @@ class ComparisonAssistantWindow:
                 "• Dependency and impact analysis\n"
                 "• Show change statistics\n\n"
                 f"Dependency Analysis: {dep_status} {'Available' if DEPENDENCY_GRAPH_AVAILABLE else 'Not available'}\n\n"
-                "💡 To use a free local AI agent:\n"
-                "  1. Install Ollama from https://ollama.com\n"
-                "  2. Run:  ollama pull llama3.2:3b\n"
-                "  3. Run:  ollama serve\n"
-                "  4. Select  🦙 Ollama — Free / Local  in the Agent dropdown above.\n\n"
-                "💡 To use Google Gemini (free cloud):\n"
-                "  1. Get a free key at https://aistudio.google.com/app/apikey\n"
-                "  2. Add  GEMINI_API_KEY=<your-key>  to .env\n"
-                "  3. Restart the tool — Gemini will be selected automatically.\n\n"
-                "💡 To use Bosch AOAI Farm (best for corporate network):\n"
+                "💡 To use Bosch AOAI Farm:\n"
                 "  1. Ensure GENAIPLATFORM_FARM_SUBSCRIPTION_KEY exists in .env\n"
                 "  2. Keep AOAI_FARM_ENDPOINT / deployment values in .env\n"
-                "  3. Restart and select 🔵 Bosch AOAI Farm in Agent dropdown.\n\n"
-                "To enable Groq AI (cloud, free tier):\n"
-                "  Set GROQ_API_KEY in your .env file and restart."
+                "  3. Restart the tool."
             )
         self._append_bot(greeting)
 
@@ -2265,79 +2135,16 @@ class ComparisonAssistantWindow:
         return None
 
     def _build_chat_engine(self):
-        """Build chat engine: tries Groq first, then AOAI (if available)."""
+        """Build chat engine using Bosch AOAI Farm."""
         try:
             from src.config import settings
             print("Starting AI engine initialization")
 
-            # ========== Try Groq (Primary) ==========
-            groq_key = os.environ.get("GROQ_API_KEY", "")
-            print("API Key Exists:", bool(groq_key))
-
-            if groq_key and groq_key.strip():
-                try:
-                    from src.chatbot.chatbot import GroqChatEngine
-                    groq_model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
-                    
-                    # Get proxy configuration (if corporate network). Prefer
-                    groq_proxy_url = (
-                        getattr(settings, "GROQ_PROXY_URL", "")
-                        or getattr(settings, "PROXY_URL", "")
-                    )
-                    groq_proxy_user = (
-                        getattr(settings, "GROQ_PROXY_USERNAME", "")
-                        or getattr(settings, "PROXY_USER", "")
-                    )
-                    groq_proxy_pass = (
-                        getattr(settings, "GROQ_PROXY_PASSWORD", "")
-                        or getattr(settings, "PROXY_PASS", "")
-                    )
-                    groq_proxy_domain = getattr(settings, "PROXY_DOMAIN", "")
-                    if (
-                        groq_proxy_domain
-                        and groq_proxy_user
-                        and "\\" not in groq_proxy_user
-                        and "/" not in groq_proxy_user
-                    ):
-                        groq_proxy_user = f"{groq_proxy_domain}\\{groq_proxy_user}"
-                    
-                    if groq_proxy_url and groq_proxy_url.strip():
-                        print(f"[INFO] Groq configured with corporate proxy")
-                    
-                    engine = GroqChatEngine(
-                        api_key=groq_key,
-                        model=groq_model,
-                        proxy_url=groq_proxy_url if groq_proxy_url and groq_proxy_url.strip() else None,
-                        proxy_user=groq_proxy_user if groq_proxy_user and groq_proxy_user.strip() else None,
-                        proxy_password=groq_proxy_pass if groq_proxy_pass and groq_proxy_pass.strip() else None
-                    )
-                    print("[INFO] ✅ Groq engine configured (will test on first use)")
-                    return engine
-                except Exception as groq_err:
-                    # Fall through to AOAI if Groq fails
-                    print(f"[WARN] Groq initialization failed: {groq_err}")
-                    import traceback
-                    traceback.print_exc()
-            
-            # ========== Fallback: Try Bosch AOAI Farm (internal/corporate-friendly) ==========
+            # ========== Bosch AOAI Farm ==========
             aoai_engine = self._try_build_aoai_farm()
             if aoai_engine:
                 print("[INFO] ✅ Bosch AOAI Farm configured")
                 return aoai_engine
-
-            # ========== Fallback 1: Try Gemini (free cloud) ==========
-            gemini_engine = self._try_build_gemini()
-            if gemini_engine:
-                print("[INFO] ✅ Gemini engine configured (will test on first use)")
-                return gemini_engine
-
-            # ========== Fallback 2: Try Ollama (Free/Local) ==========
-            ollama_engine = self._try_build_ollama()
-            if ollama_engine and ollama_engine.is_available():
-                print("[INFO] ✅ Ollama engine available — using free local LLM")
-                return ollama_engine
-            if ollama_engine:
-                print("[INFO] Ollama server not running; falling back to local agent mode")
 
             print("[INFO] No LLM engine available. Running in local agent mode.")
             return None

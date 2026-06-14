@@ -590,6 +590,17 @@ class ComparisonResultsDialog:
         )
         self.assistant_btn.pack(side="left", padx=2)
         ToolTip(self.assistant_btn, "Ask questions about this comparison, selected file, reports, or online components")
+
+        tk.Button(
+            button_row,
+            text="🛠 File Change",
+            command=self.open_manual_file_change_analyzer,
+            bg="#6A0DAD",
+            fg="white",
+            font=("Segoe UI", 8, "bold"),
+            padx=8,
+            pady=4,
+        ).pack(side="left", padx=2)
         
         tk.Button(
             button_row,
@@ -614,6 +625,19 @@ class ComparisonResultsDialog:
             messagebox.showerror(
                 "Assistant Error",
                 f"Could not open the comparison assistant:\n\n{str(e)}"
+            )
+
+    def open_manual_file_change_analyzer(self):
+        """Open Manual File Change Analyzer pre-loaded with the current workspace."""
+        try:
+            from src.gui.manual_file_change_analyzer import ManualFileChangeAnalyzer
+            # Prefer folder1 as the workspace context
+            ws = getattr(self, "folder1", "") or ""
+            ManualFileChangeAnalyzer(self.dialog, workspace_path=str(ws))
+        except Exception as e:
+            messagebox.showerror(
+                "Analyzer Error",
+                f"Could not open the Manual File Change Analyzer:\n\n{str(e)}"
             )
     
     def populate_results(self):
