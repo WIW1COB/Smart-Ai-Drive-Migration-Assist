@@ -724,6 +724,19 @@ class MigrationAnalysisGUI:
             command=self.open_manual_file_change_analyzer
         )
         self.manual_change_btn.pack(side="left", padx=10)
+
+        # Switch Comparison button
+        self.switch_cmp_btn = tk.Button(
+            button_frame,
+            text="🔀 Switch\n  Comparison",
+            bg="#8B4513",
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+            width=14,
+            height=2,
+            command=self.open_switch_comparison
+        )
+        self.switch_cmp_btn.pack(side="left", padx=10)
     
     def open_platform_dependency_analysis(self):
         """Open Platform Dependency Analysis tool for single folder analysis"""
@@ -744,6 +757,41 @@ class MigrationAnalysisGUI:
             else:
                 ws = self.platform_workspace_entry.get().strip()
         ManualFileChangeAnalyzer(self.root, workspace_path=ws)
+
+    def open_switch_comparison(self):
+        """Open Switch Comparison tool, pre-filling paths from the current mode inputs."""
+        from src.gui.switch_comparison import SwitchComparisonViewer
+        mode = self.comparison_mode.get()
+        f1 = f2 = ""
+        s1_name = "Source 1 / Snapshot 1"
+        s2_name = "Source 2 / Snapshot 2"
+
+        if mode == "offline_offline":
+            f1 = self.folder1_entry.get().strip()
+            f2 = self.folder2_entry.get().strip()
+            s1_name = os.path.basename(f1) or "Platform Folder"
+            s2_name = os.path.basename(f2) or "Project Folder"
+        elif mode == "online_offline":
+            f1 = self.hybrid_folder_entry.get().strip()
+            s1_name = os.path.basename(f1) or "Local Folder"
+            s2_name = "Snapshot (online — fetch folder first)"
+        elif mode == "interface_check":
+            if self.interface_check_mode.get() == "single":
+                f1 = self.single_workspace_entry.get().strip()
+                s1_name = os.path.basename(f1) or "Workspace"
+            else:
+                f1 = self.platform_workspace_entry.get().strip()
+                f2 = self.project_workspace_entry.get().strip()
+                s1_name = os.path.basename(f1) or "Platform Workspace"
+                s2_name = os.path.basename(f2) or "Project Workspace"
+
+        SwitchComparisonViewer(
+            parent=self.root,
+            folder1_path=f1,
+            folder2_path=f2,
+            source1_name=s1_name,
+            source2_name=s2_name,
+        )
     
     def create_progress_section(self):
         """Create progress display section"""
@@ -1747,14 +1795,25 @@ Reports generated:
                     original_details = fcmp['details']
                     filtered_details = {}
                     for fp, st in original_details.items():
-                        # 1. Direct suffix-index match (path already has ≥2 components)
-                        if genmake_filter.matches(fp):
-                            filtered_details[fp] = st
-                            continue
-                        # 2. Flat-filename fallback: prefix with component dir and retry
-                        #    e.g. 'PostBuild.mk' → 'rb/as/ms/ESP10E_MFA2/cswpr/PostBuild.mk'
+                        # Primary: use full path (comp_dir + fp) for matching.
+                        # This prevents false positives caused by short suffix keys
+                        # (e.g. 'api/RBAPPLIF_ROMSafety.h' would otherwise match any
+                        # component that has a file at that sub-path, not just the
+                        # component whose full CSV path resolves to that suffix).
                         if comp_dir:
                             if genmake_filter.matches(comp_dir + '/' + fp):
+                                filtered_details[fp] = st
+                                continue
+                            # Secondary: accept direct fp only when it is already a
+                            # long path (≥3 components) — specific enough to be
+                            # unambiguous even without the component prefix.
+                            _norm_fp = fp.replace('\\', '/').lstrip('/')
+                            if _norm_fp.count('/') >= 2 and genmake_filter.matches(fp):
+                                filtered_details[fp] = st
+                                continue
+                        else:
+                            # No component dir available: fall back to suffix matching.
+                            if genmake_filter.matches(fp):
                                 filtered_details[fp] = st
                                 continue
 
@@ -1844,12 +1903,17 @@ Reports generated:
                     if os.path.splitext(fpath_key.lower())[1] in _BINARY_EXTS:
                         continue
                     # GenMake filter — details dict is already filtered above, but guard
-                    # here too in case of edge cases.  Use the same component-dir fallback
-                    # so flat filenames (e.g. 'PostBuild.mk') aren't incorrectly skipped.
+                    # here too in case of edge cases.  Mirror the same path-first logic
+                    # used in the details filter to avoid short-suffix false positives.
                     if genmake_filter is not None:
-                        _passes = genmake_filter.matches(fpath_key)
-                        if not _passes and comp_dir_ft:
+                        if comp_dir_ft:
                             _passes = genmake_filter.matches(comp_dir_ft + '/' + fpath_key)
+                            if not _passes:
+                                _norm_key = fpath_key.replace('\\', '/').lstrip('/')
+                                _passes = (_norm_key.count('/') >= 2
+                                           and genmake_filter.matches(fpath_key))
+                        else:
+                            _passes = genmake_filter.matches(fpath_key)
                         if not _passes:
                             continue
                     if comp_jobs >= MAX_FILES_PER_COMP:
@@ -3165,10 +3229,10 @@ Snapshot URL: {_html.escape(snapshot_url)}</p>
         logger.info(f"Transformed {len(viewer_results)} results for viewer (format: 8-element list)")
         return viewer_results
     
-    def _export_snapshot_results_to_reports(self, viewer_results, csv_path, excel_path, snap1_name, snap2_name, comparison_results=None):
+    def _export_snapshot_results_to_reports(self, viewer_results, csv_path, excel_path, snap1_name, snap2_name, comparison_results=None, file_contents_by_component=None):
         """
         Export snapshot comparison results to CSV and Excel files with file-level details
-        
+
         Args:
             viewer_results: List of 8-element result lists from viewer format
             csv_path: Path to save CSV file
@@ -3176,6 +3240,8 @@ Snapshot URL: {_html.escape(snapshot_url)}</p>
             snap1_name: Display name for snapshot 1
             snap2_name: Display name for snapshot 2
             comparison_results: Original comparison results with file diff info
+            file_contents_by_component: Dict {comp_name: {file_path: {'snap1': str, 'snap2': str}}}
+                                        Fetched file text content used for LOC (Line-of-Code) calculation.
         """
         try:
             import csv
@@ -3202,7 +3268,66 @@ Snapshot URL: {_html.escape(snapshot_url)}</p>
                         total_files_added += file_comp.get('added', 0) if isinstance(file_comp.get('added'), int) else 0
                         total_files_removed += file_comp.get('removed', 0) if isinstance(file_comp.get('removed'), int) else 0
                         total_files_unchanged += file_comp.get('unchanged', 0) if isinstance(file_comp.get('unchanged'), int) else 0
-            
+
+            # ── LOC (Line-of-Code) statistics from fetched file contents ──────
+            _fcc = file_contents_by_component or {}
+
+            def _count_loc(text):
+                """Return non-empty line count for a text string."""
+                if not text:
+                    return 0
+                return len(text.splitlines())
+
+            total_loc_snap1 = 0   # sum of LOC for all files in snapshot 1 (changed files only)
+            total_loc_snap2 = 0   # sum of LOC for all files in snapshot 2 (changed files only)
+            total_loc_added = 0   # LOC in files added in snap2
+            total_loc_removed = 0 # LOC in files removed in snap2
+            total_loc_modified_snap1 = 0  # LOC of modified files in snap1
+            total_loc_modified_snap2 = 0  # LOC of modified files in snap2
+
+            # Build per-component LOC summary used later in Component Details sheet
+            comp_loc_summary = {}  # {comp_name: {'loc_snap1': int, 'loc_snap2': int, 'net_change': int}}
+
+            if comparison_results and _fcc:
+                for comp in comparison_results:
+                    cname = comp.get('name', '')
+                    file_comp = comp.get('file_comparison', {})
+                    details = file_comp.get('details', {}) if file_comp else {}
+                    comp_files = _fcc.get(cname, {})
+
+                    c_loc1 = 0
+                    c_loc2 = 0
+                    for fpath, fstatus in details.items():
+                        contents = comp_files.get(fpath, {})
+                        s1_text = contents.get('snap1', '')
+                        s2_text = contents.get('snap2', '')
+                        loc1 = _count_loc(s1_text)
+                        loc2 = _count_loc(s2_text)
+
+                        if fstatus == 'added':
+                            total_loc_added += loc2
+                            total_loc_snap2 += loc2
+                            c_loc2 += loc2
+                        elif fstatus == 'removed':
+                            total_loc_removed += loc1
+                            total_loc_snap1 += loc1
+                            c_loc1 += loc1
+                        elif fstatus == 'modified':
+                            total_loc_modified_snap1 += loc1
+                            total_loc_modified_snap2 += loc2
+                            total_loc_snap1 += loc1
+                            total_loc_snap2 += loc2
+                            c_loc1 += loc1
+                            c_loc2 += loc2
+
+                    comp_loc_summary[cname] = {
+                        'loc_snap1': c_loc1,
+                        'loc_snap2': c_loc2,
+                        'net_change': c_loc2 - c_loc1,
+                    }
+
+            net_loc_change = total_loc_snap2 - total_loc_snap1
+
             # Write MAIN CSV report (component-level)
             logger.info(f"Exporting snapshot comparison to CSV: {csv_path}")
             with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
@@ -3355,7 +3480,39 @@ Snapshot URL: {_html.escape(snapshot_url)}</p>
                     ws_summary['B17'] = total_files_removed
                     ws_summary['A18'] = "Total Unchanged Files"
                     ws_summary['B18'] = total_files_unchanged
-                
+
+                # LOC (Line-of-Code) statistics
+                if _fcc:
+                    _note = " (changed files w/ fetched content)"
+                    ws_summary['A20'] = "LOC (LINE-OF-CODE) CHANGES" + _note
+                    ws_summary['A20'].font = Font(bold=True, size=12, color="1F3864")
+                    ws_summary['A21'] = "Total LOC in Snapshot 1 (changed files)"
+                    ws_summary['B21'] = total_loc_snap1
+                    ws_summary['A22'] = "Total LOC in Snapshot 2 (changed files)"
+                    ws_summary['B22'] = total_loc_snap2
+                    ws_summary['A23'] = "Net LOC Change (Snap2 - Snap1)"
+                    _net_cell = ws_summary['B23']
+                    _net_cell.value = net_loc_change
+                    _net_cell.font = Font(bold=True,
+                                         color="375623" if net_loc_change >= 0 else "C00000")
+                    ws_summary['A24'] = "LOC Added (new files)"
+                    ws_summary['B24'] = total_loc_added
+                    ws_summary['A25'] = "LOC Removed (deleted files)"
+                    ws_summary['B25'] = total_loc_removed
+                    ws_summary['A26'] = "LOC in Modified Files - Snapshot 1"
+                    ws_summary['B26'] = total_loc_modified_snap1
+                    ws_summary['A27'] = "LOC in Modified Files - Snapshot 2"
+                    ws_summary['B27'] = total_loc_modified_snap2
+                    ws_summary['A28'] = "Net LOC Change in Modified Files"
+                    _mod_net = total_loc_modified_snap2 - total_loc_modified_snap1
+                    _mod_cell = ws_summary['B28']
+                    _mod_cell.value = _mod_net
+                    _mod_cell.font = Font(bold=True,
+                                         color="375623" if _mod_net >= 0 else "C00000")
+                    for _r in range(20, 29):
+                        ws_summary.cell(_r, 1).fill = PatternFill(
+                            start_color="DCE6F1", end_color="DCE6F1", fill_type="solid")
+
                 # Column widths
                 ws_summary.column_dimensions['A'].width = 30
                 ws_summary.column_dimensions['B'].width = 50
@@ -3372,7 +3529,10 @@ Snapshot URL: {_html.escape(snapshot_url)}</p>
                     "Status",
                     "Details",
                     "Type",
-                    "Changeset Info"  # Column 8: Changeset information
+                    "Changeset Info",          # Column 8: Changeset information
+                    "LOC Snap1\n(changed files)",  # Column 9: LOC in snapshot 1
+                    "LOC Snap2\n(changed files)",  # Column 10: LOC in snapshot 2
+                    "Net LOC Change",              # Column 11: delta
                 ]
                 
                 header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
@@ -3382,7 +3542,8 @@ Snapshot URL: {_html.escape(snapshot_url)}</p>
                     cell = ws_components.cell(row=1, column=col_idx, value=header)
                     cell.fill = header_fill
                     cell.font = header_font
-                    cell.alignment = Alignment(horizontal='center', vertical='center')
+                    cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                ws_components.row_dimensions[1].height = 30
                 
                 # Data rows
                 hyperlink_font = Font(color="0563C1", underline="single")
@@ -3405,10 +3566,25 @@ Snapshot URL: {_html.escape(snapshot_url)}</p>
                                 cell.value = "Open Diff Report"
                                 cell.hyperlink = 'file:///' + html_abs.replace('\\', '/')
                                 cell.font = hyperlink_font
+
+                    # Append LOC columns (9, 10, 11) for this component row
+                    cname_row = row[0] if row else ''
+                    _loc_data = comp_loc_summary.get(cname_row, {})
+                    _l1 = _loc_data.get('loc_snap1', 0)
+                    _l2 = _loc_data.get('loc_snap2', 0)
+                    _ld = _loc_data.get('net_change', 0)
+                    for _ci, _cv in [(9, _l1), (10, _l2), (11, _ld)]:
+                        _c = ws_components.cell(row=row_idx, column=_ci, value=_cv)
+                        _c.alignment = Alignment(horizontal='center', vertical='center')
+                        if _ci == 11 and isinstance(_ld, int) and _ld != 0:
+                            _c.font = Font(bold=True,
+                                          color="375623" if _ld > 0 else "C00000")
                 
                 # Auto-adjust column widths
                 for col_idx in range(1, len(headers) + 1):
                     ws_components.column_dimensions[chr(64 + col_idx)].width = 25
+                # Wider name column
+                ws_components.column_dimensions['A'].width = 40
                 
                 # ========== SHEET 3: FILE-LEVEL DETAILS ==========
                 if comparison_results:
@@ -3468,8 +3644,110 @@ Snapshot URL: {_html.escape(snapshot_url)}</p>
                     ws_files.column_dimensions['C'].width = 15
                     ws_files.column_dimensions['D'].width = 60
                     
-                    logger.info(f"Added {file_row - 2} file-level entries to Excel")                
-                
+                    logger.info(f"Added {file_row - 2} file-level entries to Excel")
+
+                # ========== SHEET 4: LOC CHANGES (per-file) ==========
+                # Mirrors the offline-offline "Detailed Results" sheet layout.
+                # Populated only when file contents were fetched (online-online mode).
+                if comparison_results and _fcc:
+                    ws_loc = wb.create_sheet("LOC Changes", 3)
+
+                    loc_hdr_fill = PatternFill(start_color="1F3864", end_color="1F3864", fill_type="solid")
+                    loc_hdr_font = Font(bold=True, color="FFFFFF", size=11)
+                    loc_headers = [
+                        "Component Name",
+                        f"File Path",
+                        f"LOC in Snapshot 1\n({snap1_name})",
+                        f"LOC in Snapshot 2\n({snap2_name})",
+                        "LOC Change\n(Snap2 - Snap1)",
+                        "Change Type",
+                        "HTML Diff Report",
+                    ]
+                    for _ci, _h in enumerate(loc_headers, 1):
+                        _c = ws_loc.cell(row=1, column=_ci, value=_h)
+                        _c.fill = loc_hdr_fill
+                        _c.font = loc_hdr_font
+                        _c.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                    ws_loc.row_dimensions[1].height = 35
+
+                    _loc_fill = {
+                        'modified': PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid"),
+                        'added':    PatternFill(start_color="D4EDDA", end_color="D4EDDA", fill_type="solid"),
+                        'removed':  PatternFill(start_color="F8D7DA", end_color="F8D7DA", fill_type="solid"),
+                    }
+                    _loc_label = {'modified': 'Modified', 'added': 'Added', 'removed': 'Removed'}
+                    _hyp_font  = Font(color="0563C1", underline="single")
+
+                    # Build comp HTML lookup (same as for File Details)
+                    _comp_html_lk = {}
+                    for vr in viewer_results:
+                        _hv = vr[5] if len(vr) > 5 else ''
+                        if _hv and str(_hv).lower().endswith('.html') and os.path.isfile(str(_hv)):
+                            _comp_html_lk[vr[0]] = str(_hv)
+
+                    loc_row = 2
+                    for comp in comparison_results:
+                        cname = comp.get('name', 'Unknown')
+                        file_comp = comp.get('file_comparison', {})
+                        details = file_comp.get('details', {}) if file_comp else {}
+                        comp_files = _fcc.get(cname, {})
+                        comp_html = _comp_html_lk.get(cname)
+
+                        for fpath, fstatus in sorted(details.items()):
+                            if fstatus not in _loc_label:
+                                continue
+                            contents = comp_files.get(fpath, {})
+                            s1_text  = contents.get('snap1', '')
+                            s2_text  = contents.get('snap2', '')
+                            loc1 = _count_loc(s1_text) if s1_text else ('N/A' if fstatus != 'added' else 0)
+                            loc2 = _count_loc(s2_text) if s2_text else ('N/A' if fstatus != 'removed' else 0)
+                            if isinstance(loc1, int) and isinstance(loc2, int):
+                                loc_delta = loc2 - loc1
+                            else:
+                                loc_delta = 'N/A'
+
+                            _row_fill = _loc_fill[fstatus]
+                            ws_loc.cell(loc_row, 1, cname).fill = _row_fill
+                            ws_loc.cell(loc_row, 2, fpath).fill = _row_fill
+
+                            _c_l1 = ws_loc.cell(loc_row, 3, loc1)
+                            _c_l1.fill = _row_fill
+                            _c_l1.alignment = Alignment(horizontal='center')
+
+                            _c_l2 = ws_loc.cell(loc_row, 4, loc2)
+                            _c_l2.fill = _row_fill
+                            _c_l2.alignment = Alignment(horizontal='center')
+
+                            _c_ld = ws_loc.cell(loc_row, 5, loc_delta)
+                            _c_ld.fill = _row_fill
+                            _c_ld.alignment = Alignment(horizontal='center')
+                            if isinstance(loc_delta, int) and loc_delta != 0:
+                                _c_ld.font = Font(bold=True,
+                                                  color="375623" if loc_delta > 0 else "C00000")
+
+                            ws_loc.cell(loc_row, 6, _loc_label[fstatus]).fill = _row_fill
+
+                            if comp_html:
+                                _lnk = ws_loc.cell(loc_row, 7, "Open Diff Report")
+                                _lnk.hyperlink = 'file:///' + comp_html.replace('\\', '/')
+                                _lnk.font = _hyp_font
+                                _lnk.fill = _row_fill
+                            else:
+                                ws_loc.cell(loc_row, 7, 'N/A').fill = _row_fill
+
+                            loc_row += 1
+
+                    # Column widths for LOC Changes sheet
+                    ws_loc.column_dimensions['A'].width = 40
+                    ws_loc.column_dimensions['B'].width = 55
+                    ws_loc.column_dimensions['C'].width = 18
+                    ws_loc.column_dimensions['D'].width = 18
+                    ws_loc.column_dimensions['E'].width = 18
+                    ws_loc.column_dimensions['F'].width = 14
+                    ws_loc.column_dimensions['G'].width = 55
+
+                    logger.info(f"Added {loc_row - 2} file LOC entries to LOC Changes sheet")
+
                 wb.save(excel_path)
                 logger.info(f"✓ Excel report exported with {len(wb.sheetnames)} sheets: {excel_path}")
             
@@ -3619,7 +3897,8 @@ Snapshot URL: {_html.escape(snapshot_url)}</p>
                 excel_report,
                 snap1_name,
                 snap2_name,
-                comparison_results  # Pass comparison results for file diff links
+                comparison_results,  # Pass comparison results for file diff links
+                file_contents_by_component=comparison_metadata.get('file_contents_by_component', {})
             )
 
             # ── Generate Beyond Compare master report ────────────────────────
