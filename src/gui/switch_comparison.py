@@ -268,16 +268,21 @@ class SwitchComparisonViewer:
         folder2_path: str = "",
         source1_name: str = "Folder 1 / Snapshot 1",
         source2_name: str = "Folder 2 / Snapshot 2",
+        auto_run: bool = False,
     ):
         self.parent = parent
         self.source1_name = source1_name
         self.source2_name = source2_name
+        self.auto_run = auto_run
         self._all_diffs: List[dict] = []
         self._visible_diffs: List[dict] = []
         self._sw1: Dict[str, dict] = {}
         self._sw2: Dict[str, dict] = {}
 
         self._build_ui(folder1_path, folder2_path)
+
+        if auto_run and folder1_path and folder2_path:
+            self.win.after(150, self._run)
 
     # ------------------------------------------------------------------
     # UI construction
@@ -338,42 +343,61 @@ class SwitchComparisonViewer:
         opt = tk.Frame(win, bg="#EAF3FB")
         opt.pack(fill="x", padx=10, pady=(6, 0))
 
-        tk.Label(
-            opt, text="Filter (name contains):", bg="#EAF3FB", font=("Segoe UI", 10)
-        ).pack(side="left", padx=(0, 4))
-        self.filter_var = tk.StringVar()
-        self.filter_var.trace_add("write", lambda *_: self._apply_filter())
-        tk.Entry(opt, textvariable=self.filter_var, width=22).pack(side="left", padx=(0, 8))
-
+        # Status filter vars — always-on when auto_run (show everything)
         self.show_only_diff_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(
-            opt,
-            text="Show only changed values",
-            variable=self.show_only_diff_var,
-            bg="#EAF3FB",
-            font=("Segoe UI", 10),
-            command=self._apply_filter,
-        ).pack(side="left", padx=4)
+        self.show_only_in_1_var = tk.BooleanVar(value=True)
+        self.show_only_in_2_var = tk.BooleanVar(value=True)
+        self.filter_var = tk.StringVar()
 
-        self.show_only_in_1_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(
-            opt,
-            text="Include only-in-S1",
-            variable=self.show_only_in_1_var,
-            bg="#EAF3FB",
-            font=("Segoe UI", 10),
-            command=self._apply_filter,
-        ).pack(side="left", padx=4)
+        if not self.auto_run:
+            # Manual mode: show filter controls and Run button
+            tk.Label(
+                opt, text="Filter (name contains):", bg="#EAF3FB", font=("Segoe UI", 10)
+            ).pack(side="left", padx=(0, 4))
+            self.filter_var.trace_add("write", lambda *_: self._apply_filter())
+            tk.Entry(opt, textvariable=self.filter_var, width=22).pack(side="left", padx=(0, 8))
 
-        self.show_only_in_2_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(
-            opt,
-            text="Include only-in-S2",
-            variable=self.show_only_in_2_var,
-            bg="#EAF3FB",
-            font=("Segoe UI", 10),
-            command=self._apply_filter,
-        ).pack(side="left", padx=4)
+            self.show_only_diff_var.set(True)
+            self.show_only_in_1_var.set(False)
+            self.show_only_in_2_var.set(False)
+
+            tk.Checkbutton(
+                opt,
+                text="Show only changed values",
+                variable=self.show_only_diff_var,
+                bg="#EAF3FB",
+                font=("Segoe UI", 10),
+                command=self._apply_filter,
+            ).pack(side="left", padx=4)
+
+            tk.Checkbutton(
+                opt,
+                text="Include only-in-S1",
+                variable=self.show_only_in_1_var,
+                bg="#EAF3FB",
+                font=("Segoe UI", 10),
+                command=self._apply_filter,
+            ).pack(side="left", padx=4)
+
+            tk.Checkbutton(
+                opt,
+                text="Include only-in-S2",
+                variable=self.show_only_in_2_var,
+                bg="#EAF3FB",
+                font=("Segoe UI", 10),
+                command=self._apply_filter,
+            ).pack(side="left", padx=4)
+
+            tk.Button(
+                opt,
+                text="▶  Run Comparison",
+                bg="#003366",
+                fg="white",
+                font=("Segoe UI", 10, "bold"),
+                padx=12,
+                pady=4,
+                command=self._run,
+            ).pack(side="right", padx=4)
 
         tk.Button(
             opt,
@@ -386,24 +410,13 @@ class SwitchComparisonViewer:
             command=self._export_html,
         ).pack(side="right", padx=4)
 
-        tk.Button(
-            opt,
-            text="▶  Run Comparison",
-            bg="#003366",
-            fg="white",
-            font=("Segoe UI", 10, "bold"),
-            padx=12,
-            pady=4,
-            command=self._run,
-        ).pack(side="right", padx=4)
-
         # ── Progress ──────────────────────────────────────────────────
         prog_frame = tk.Frame(win, bg="#EAF3FB")
         prog_frame.pack(fill="x", padx=10, pady=(4, 0))
 
         self.progress_label = tk.Label(
             prog_frame,
-            text="Ready. Select folders and click  ▶ Run Comparison.",
+            text="Scanning…" if self.auto_run else "Ready. Select folders and click  ▶ Run Comparison.",
             bg="#EAF3FB",
             font=("Segoe UI", 9),
             fg="#555555",
@@ -470,6 +483,7 @@ class SwitchComparisonViewer:
         tk.Label(
             win,
             text=(
+                "Only RBFS_ switches are shown.   "
                 "Double-click a row to open its source file.   "
                 "🟡 Changed value   🟢 Only in Source 1   🔴 Only in Source 2"
             ),
@@ -597,6 +611,9 @@ class SwitchComparisonViewer:
 
         visible: List[dict] = []
         for d in self._all_diffs:
+            # Mandatory prefix filter: only RBFS_ switches are shown
+            if not d["name"].startswith("RBFS_"):
+                continue
             st = d["status"]
             # Status filter
             if st == "different":
@@ -608,7 +625,7 @@ class SwitchComparisonViewer:
             elif st == "only_in_2":
                 if not inc_only2:
                     continue
-            # Name filter
+            # Name filter (additional user text filter on top of RBFS_ prefix)
             if filter_text and filter_text not in d["name"].lower():
                 continue
             visible.append(d)

@@ -16,24 +16,23 @@ The comparison engine produces paths relative to the *selected* folder root,
 which may not be the workspace root (e.g. a user who selected ``rb/`` as the
 comparison folder would see ``as/core/.../foo.c``).
 
-To handle this mismatch robustly the filter builds a *suffix index*:
-for each CSV path every trailing sub-path of depth ≥ MIN_SUFFIX_DEPTH is
-stored.  A comparison rel_path matches if its normalised form appears in
-that index.
+To handle this mismatch the filter checks whether the normalised rel_path
+is an EXACT component-boundary-aligned suffix of any full CSV path:
+
+    csv_path == rel_path            (exact match)
+    csv_path.endswith("/" + rel_path)   (rel_path starts at a folder boundary)
+
+This prevents false-positive matches based on short or unrelated sub-paths.
+A file is ONLY included if its full path (relative to the selected folder
+root) matches a complete trailing segment of the CSV entry — never by
+filename alone.
 
 Example:
-    CSV path  : rb/as/core/hwp/rbsys/RBSYS_Config.mk   (5 components)
-    Index keys: rb/as/core/hwp/rbsys/rbsys_config.mk
-                as/core/hwp/rbsys/rbsys_config.mk
-                core/hwp/rbsys/rbsys_config.mk
-                hwp/rbsys/rbsys_config.mk
-                (rbsys_config.mk alone is NOT stored — too short, causes
-                 false positives with common filenames)
-
-    rel_path = "as/core/hwp/rbsys/RBSYS_Config.mk"  → normalised →
-               "as/core/hwp/rbsys/rbsys_config.mk"  → found in index → MATCH
-    rel_path = "other/path/RBSYS_Config.mk"          → normalised →
-               "other/path/rbsys_config.mk"          → NOT in index → NO MATCH
+    CSV path  : rb/as/core/app/dsm/rbrss/src/RBRSS_SupplyLossRequest.h
+    User root : rb/                 → rel_path = as/core/app/dsm/rbrss/src/RBRSS_SupplyLossRequest.h  → MATCH
+    User root : rb/as/core/         → rel_path = app/dsm/rbrss/src/RBRSS_SupplyLossRequest.h          → MATCH
+    Other dir : other/src/RBRSS_SupplyLossRequest.h                                                    → NO MATCH
+    Filename  : RBRSS_SupplyLossRequest.h                                                              → NO MATCH
 """
 
 import csv
@@ -42,10 +41,6 @@ import logging
 from typing import Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
-
-# Minimum number of path components a suffix must have to be indexed.
-# Prevents single-filename keys like "config.h" that cause false positives.
-MIN_SUFFIX_DEPTH = 2
 
 
 class GenMakeFilter:
@@ -57,16 +52,13 @@ class GenMakeFilter:
 
         f = GenMakeFilter.from_csv("Cfg_DBFiles_GenMake.csv")
         f.filter_file_types({"PreBuild", "PostBuild"})   # optional restriction
-        if f.matches("rb/as/core/.../RBSYS_PrePostBuild_Config.mk"):
+        if f.matches("as/core/.../RBRSS_SupplyLossRequest.h"):
             ...
     """
 
     def __init__(self):
         # {normalised_full_path: file_type}  – canonical CSV entries
         self._entries: Dict[str, str] = {}
-        # suffix index: {normalised_suffix: file_type}  – for depth-aware matching
-        # Only suffixes with >= MIN_SUFFIX_DEPTH components are stored.
-        self._suffix_index: Dict[str, str] = {}
         self._active_file_types: Optional[Set[str]] = None  # None = all types
         self.csv_path: str = ""
         self.all_file_types: List[str] = []  # sorted list of every type found
@@ -105,26 +97,10 @@ class GenMakeFilter:
                 file_types_seen.add(file_type)
                 rows_loaded += 1
 
-                # Build suffix index: store every trailing sub-path whose
-                # depth (number of path components) >= MIN_SUFFIX_DEPTH.
-                # The full path itself is always stored regardless of depth.
-                parts = norm.split("/")
-                n = len(parts)
-                for i in range(n):
-                    depth = n - i          # components remaining
-                    suffix = "/".join(parts[i:])
-                    # Always store if this is the FULL path or depth >= threshold.
-                    # For single-component entries (just a filename) we still store
-                    # them — the CSV author explicitly listed just the filename.
-                    if depth >= MIN_SUFFIX_DEPTH or n == 1:
-                        if suffix not in self._suffix_index:
-                            self._suffix_index[suffix] = file_type
-
         self.all_file_types = sorted(file_types_seen, key=str.lower)
         logger.info(
             f"GenMakeFilter: loaded {rows_loaded} entries, "
-            f"{len(file_types_seen)} file types, "
-            f"{len(self._suffix_index)} suffix-index keys from {csv_path}"
+            f"{len(file_types_seen)} file types from {csv_path}"
         )
 
     # ------------------------------------------------------------------
@@ -147,23 +123,26 @@ class GenMakeFilter:
 
     def matches(self, rel_path: str) -> bool:
         """
-        Return True if *rel_path* exists in the CSV (satisfying any active
-        file-type filter).
+        Return True if *rel_path* is a component-boundary-aligned suffix of any
+        CSV entry (satisfying any active file-type filter).
 
-        Matching is done via the suffix index:
-        - If the normalised rel_path appears as a suffix key of any CSV entry
-          the file is considered a match.
-        - This correctly handles workspace-root differences: a CSV path
-          ``rb/as/core/foo.c`` will match a rel_path ``as/core/foo.c`` (when
-          the user selected the ``rb/`` sub-folder as the comparison root).
-        - Filename-only matches (single component) are only possible if the
-          CSV itself listed a single-component path.
+        A match requires that the normalised rel_path either:
+        - exactly equals a CSV entry's full path, OR
+        - is a trailing segment of a CSV entry starting at a folder boundary
+          (i.e. ``csv_path.endswith("/" + norm)``).
+
+        This guarantees no false-positive matches by filename alone or by
+        short unrelated sub-paths.  The file must reside at the exact location
+        specified in the CSV relative to the user-selected comparison root.
         """
         norm = self._normalise(rel_path)
-        found_type = self._suffix_index.get(norm)
-        if found_type is None:
-            return False
-        return self._type_allowed(found_type)
+        slash_norm = "/" + norm
+        for csv_path, file_type in self._entries.items():
+            if not self._type_allowed(file_type):
+                continue
+            if csv_path == norm or csv_path.endswith(slash_norm):
+                return True
+        return False
 
     def __len__(self) -> int:
         return len(self._entries)

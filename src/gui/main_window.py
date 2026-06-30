@@ -724,19 +724,6 @@ class MigrationAnalysisGUI:
             command=self.open_manual_file_change_analyzer
         )
         self.manual_change_btn.pack(side="left", padx=10)
-
-        # Switch Comparison button
-        self.switch_cmp_btn = tk.Button(
-            button_frame,
-            text="🔀 Switch\n  Comparison",
-            bg="#8B4513",
-            fg="white",
-            font=("Segoe UI", 10, "bold"),
-            width=14,
-            height=2,
-            command=self.open_switch_comparison
-        )
-        self.switch_cmp_btn.pack(side="left", padx=10)
     
     def open_platform_dependency_analysis(self):
         """Open Platform Dependency Analysis tool for single folder analysis"""
@@ -758,41 +745,6 @@ class MigrationAnalysisGUI:
                 ws = self.platform_workspace_entry.get().strip()
         ManualFileChangeAnalyzer(self.root, workspace_path=ws)
 
-    def open_switch_comparison(self):
-        """Open Switch Comparison tool, pre-filling paths from the current mode inputs."""
-        from src.gui.switch_comparison import SwitchComparisonViewer
-        mode = self.comparison_mode.get()
-        f1 = f2 = ""
-        s1_name = "Source 1 / Snapshot 1"
-        s2_name = "Source 2 / Snapshot 2"
-
-        if mode == "offline_offline":
-            f1 = self.folder1_entry.get().strip()
-            f2 = self.folder2_entry.get().strip()
-            s1_name = os.path.basename(f1) or "Platform Folder"
-            s2_name = os.path.basename(f2) or "Project Folder"
-        elif mode == "online_offline":
-            f1 = self.hybrid_folder_entry.get().strip()
-            s1_name = os.path.basename(f1) or "Local Folder"
-            s2_name = "Snapshot (online — fetch folder first)"
-        elif mode == "interface_check":
-            if self.interface_check_mode.get() == "single":
-                f1 = self.single_workspace_entry.get().strip()
-                s1_name = os.path.basename(f1) or "Workspace"
-            else:
-                f1 = self.platform_workspace_entry.get().strip()
-                f2 = self.project_workspace_entry.get().strip()
-                s1_name = os.path.basename(f1) or "Platform Workspace"
-                s2_name = os.path.basename(f2) or "Project Workspace"
-
-        SwitchComparisonViewer(
-            parent=self.root,
-            folder1_path=f1,
-            folder2_path=f2,
-            source1_name=s1_name,
-            source2_name=s2_name,
-        )
-    
     def create_progress_section(self):
         """Create progress display section"""
         self.progress_frame = tk.Frame(self.root, bg="#EAF3FB")

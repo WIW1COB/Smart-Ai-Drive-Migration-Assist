@@ -601,7 +601,18 @@ class ComparisonResultsDialog:
             padx=8,
             pady=4,
         ).pack(side="left", padx=2)
-        
+
+        tk.Button(
+            button_row,
+            text="🔀 Switch\nComparison",
+            command=self.open_switch_comparison,
+            bg="#8B4513",
+            fg="white",
+            font=("Segoe UI", 8, "bold"),
+            padx=8,
+            pady=4,
+        ).pack(side="left", padx=2)
+
         tk.Button(
             button_row,
             text="✕ Close",
@@ -625,6 +636,24 @@ class ComparisonResultsDialog:
             messagebox.showerror(
                 "Assistant Error",
                 f"Could not open the comparison assistant:\n\n{str(e)}"
+            )
+
+    def open_switch_comparison(self):
+        """Open Switch Comparison tool pre-filled with the current comparison folders."""
+        try:
+            from src.gui.switch_comparison import SwitchComparisonViewer
+            SwitchComparisonViewer(
+                parent=self.dialog,
+                folder1_path=self.folder1_actual or "",
+                folder2_path=self.folder2_actual or "",
+                source1_name=self.folder1_display or "Source 1",
+                source2_name=self.folder2_display or "Source 2",
+                auto_run=True,
+            )
+        except Exception as e:
+            messagebox.showerror(
+                "Switch Comparison Error",
+                f"Could not open the Switch Comparison tool:\n\n{str(e)}"
             )
 
     def open_manual_file_change_analyzer(self):
