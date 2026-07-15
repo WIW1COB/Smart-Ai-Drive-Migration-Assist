@@ -5,6 +5,7 @@ A comprehensive tool for analyzing code migration differences between platforms,
 ## 🌟 Features
 WIW1COB
 
+
 - **Folder/ZIP Comparison**: Compare entire directories or ZIP archives
 - **RTC Snapshot Comparison**: Compare snapshots from IBM Rational Team Concert
 - **File Mapping**: Manual and automatic file mapping for accurate comparisons
